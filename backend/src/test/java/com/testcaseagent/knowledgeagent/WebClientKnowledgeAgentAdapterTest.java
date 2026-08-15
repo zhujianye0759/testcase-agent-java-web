@@ -111,6 +111,117 @@ class WebClientKnowledgeAgentAdapterTest {
     }
 
     @Test
+    void reusesOnePreparedReconciliationSessionAfterVerifiedSkillLoading() {
+        stubAgentAndSession();
+        String prompt = "逐字保留：核对功能清单与需求候选项。";
+        knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
+                .inScenario("prepared reconciliation session")
+                .whenScenarioStateIs(Scenario.STARTED)
+                .withRequestBody(containing("会话准备"))
+                .willSetStateTo("skill-loaded")
+                .willReturn(sseWithReadSkill("SKILL_READY", RECONCILIATION_SKILL)));
+        knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
+                .inScenario("prepared reconciliation session")
+                .whenScenarioStateIs("skill-loaded")
+                .withRequestBody(containing(prompt))
+                .willReturn(sse("## 双向核对结论\n")));
+
+        KnowledgeAgentPort port = adapter();
+        FeatureReconciliationInvocation invocation = reconciliationInvocation(prompt);
+        port.prepareReconciliationSession(invocation);
+        KnowledgeAgentInvocationResult result = port.reconcileFeatures(invocation);
+        port.closePreparedSession();
+
+        assertThat(result.sessionId()).isEqualTo("session-1");
+        assertThat(result.terminalMarkdown()).isEqualTo("## 双向核对结论\n");
+        knowledgeEngine.verify(2, postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-1")));
+        knowledgeEngine.verify(1, getRequestedFor(urlEqualTo("/api/v1/agents/" + AGENT_ID)));
+    }
+
+    @Test
+    void refusesBusinessReconciliationWhenPreparedSessionCannotProveExactSkillLoading() {
+        stubAgentAndSession();
+        knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
+                .withRequestBody(containing("会话准备"))
+                .willReturn(sse("SKILL_READY")));
+
+        KnowledgeAgentPort port = adapter();
+        assertThatThrownBy(() -> port.prepareReconciliationSession(reconciliationInvocation("核对提示")))
+                .isInstanceOf(KnowledgeAgentInvocationException.class)
+                .hasMessageContaining("required read_skill evidence");
+        knowledgeEngine.verify(0, postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-1"))
+                .withRequestBody(containing("核对提示")));
+    }
+
+    @Test
+    void reusesOnePreparedGenerationSessionAfterVerifiedSkillLoading() {
+        stubAgentAndSession();
+        knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
+                .inScenario("prepared generation session")
+                .whenScenarioStateIs(Scenario.STARTED)
+                .withRequestBody(containing("会话准备"))
+                .willSetStateTo("skill-loaded")
+                .willReturn(sseWithReadSkill("SKILL_READY", GENERATION_SKILL)));
+        knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
+                .inScenario("prepared generation session")
+                .whenScenarioStateIs("skill-loaded")
+                .withRequestBody(containing("严格按以下两张 Markdown 表返回"))
+                .willReturn(sse(markdownResult())));
+
+        KnowledgeAgentPort port = adapter();
+        KnowledgeAgentInvocation invocation = invocation(FewShotPolicy.NONE);
+        port.prepareGenerationSession(invocation);
+        KnowledgeAgentInvocationResult result = port.invoke(invocation);
+        port.closePreparedSession();
+
+        assertThat(result.sessionId()).isEqualTo("session-1");
+        assertThat(result.terminalMarkdown()).contains("## 测试用例");
+        knowledgeEngine.verify(2, postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-1")));
+        knowledgeEngine.verify(1, getRequestedFor(urlEqualTo("/api/v1/agents/" + AGENT_ID)));
+    }
+
+    @Test
+    void retriesIsolatedPreparationBeforeAnyBusinessReconciliationIsSent() {
+        stubAgent();
+        knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/sessions"))
+                .inScenario("preparation retry")
+                .whenScenarioStateIs(Scenario.STARTED)
+                .willSetStateTo("second session")
+                .willReturn(okJson("{\"success\":true,\"data\":{\"id\":\"session-1\"}}")));
+        knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/sessions"))
+                .inScenario("preparation retry")
+                .whenScenarioStateIs("second session")
+                .willReturn(okJson("{\"success\":true,\"data\":{\"id\":\"session-2\"}}")));
+        knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
+                .withRequestBody(containing("会话准备"))
+                .willReturn(sse("SKILL_READY")));
+        knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-2"))
+                .inScenario("prepared retry session")
+                .whenScenarioStateIs(Scenario.STARTED)
+                .withRequestBody(containing("会话准备"))
+                .willSetStateTo("skill-loaded")
+                .willReturn(sseWithReadSkill("SKILL_READY", RECONCILIATION_SKILL)));
+        knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-2"))
+                .inScenario("prepared retry session")
+                .whenScenarioStateIs("skill-loaded")
+                .withRequestBody(containing("核对提示"))
+                .willReturn(sse("## 双向核对结论\n")));
+
+        KnowledgeAgentPort port = new WebClientKnowledgeAgentAdapter(knowledgeEngine.baseUrl() + "/api/v1",
+                "test-key", FIXTURE_TIMEOUT, 2, 20_000);
+        FeatureReconciliationInvocation invocation = reconciliationInvocation("核对提示");
+        port.prepareReconciliationSession(invocation);
+        assertThat(port.reconcileFeatures(invocation).terminalMarkdown()).isEqualTo("## 双向核对结论\n");
+        port.closePreparedSession();
+
+        knowledgeEngine.verify(2, postRequestedFor(urlEqualTo("/api/v1/sessions")));
+        knowledgeEngine.verify(1, postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-1"))
+                .withRequestBody(containing("会话准备")));
+        knowledgeEngine.verify(1, postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-2"))
+                .withRequestBody(containing("核对提示")));
+    }
+
+    @Test
     void rejectsReconciliationMarkdownWithoutPairedExactReadSkillEvidence() {
         stubAgentAndSession();
         knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
@@ -324,12 +435,16 @@ class WebClientKnowledgeAgentAdapterTest {
     }
 
     private static void stubAgentAndSession() {
-        knowledgeEngine.stubFor(get(urlEqualTo("/api/v1/agents/" + AGENT_ID))
-                .withHeader("X-API-Key", equalTo("test-key"))
-                .willReturn(okJson("{\"success\":true,\"data\":{\"id\":\"" + AGENT_ID + "\"}}")));
+        stubAgent();
         knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/sessions"))
                 .withHeader("X-API-Key", equalTo("test-key"))
                 .willReturn(okJson("{\"success\":true,\"data\":{\"id\":\"session-1\"}}")));
+    }
+
+    private static void stubAgent() {
+        knowledgeEngine.stubFor(get(urlEqualTo("/api/v1/agents/" + AGENT_ID))
+                .withHeader("X-API-Key", equalTo("test-key"))
+                .willReturn(okJson("{\"success\":true,\"data\":{\"id\":\"" + AGENT_ID + "\"}}")));
     }
 
     private static void stubExample(String documentId, String kind, String body) {

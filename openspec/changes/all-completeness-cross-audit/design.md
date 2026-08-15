@@ -77,9 +77,11 @@ Java 控制处理哪个源单元，并为每个单元记录终态结果。它绝
 
 在所有清单单元和候选项均处于终态且稳定功能集合已耐久化前，不创建任何生成批次。后续批次响应不得引入新功能或改变冻结映射。
 
-### 5. 按阶段调用测试专业 Skill，并保持模型输出为严格 Markdown
+### 5. 按阶段准备测试专业 Skill 会话，并保持模型输出为严格 Markdown
 
-双向审查阶段在 agent-chat 请求中仅传入 `skill_names=["feature-scope-reconciliation"]`；冻结单功能生成阶段仅传入 `skill_names=["functional-testcase-design"]`。Java 不配置 KEE sandbox mode，也不依赖 Skill 的版本、哈希、manifest、outcome 或新 list/read API DTO。对每一次调用，Java 在既有 SSE `tool_call`/`tool_result` 事件中观察精确 `skill_name` 的 `read_skill` 成功；缺失、其他名称、失败或流截断均拒绝本次结果。前者只负责清单/需求双向核对和最终生成范围建议，后者只对 Java 已冻结的功能设计用例。
+双向审查阶段在 agent-chat 请求中仅传入 `skill_names=["feature-scope-reconciliation"]`；冻结单功能生成阶段仅传入 `skill_names=["functional-testcase-design"]`。每个阶段先用同一冻结范围创建隔离准备会话，请求模型只读取该精确 Skill；Java 仅在准备 SSE 的 `tool_call`/`tool_result` 成功配对且有显式完成终态后，才将该会话绑定到当前执行线程。随后连续、有界的材料审查或单功能生成请求必须复用同一会话、冻结范围和唯一 `skill_names`，每个业务流仍须有显式完成终态。这样不把 92 个材料单元都交给模型临场决定是否读取同一规则，也不把提示词或普通回答误作 Skill 证据。
+
+准备失败时，Java 最多以三个新的隔离会话进行有界重试；每次仍必须重新观察真实 SSE 工具成功事件，绝不将前一会话的证据移植到下一会话。会话、Skill、智能体、材料类型或冻结范围任一不匹配均失败关闭。Java 不配置 KEE sandbox mode，也不依赖 Skill 的版本、哈希、manifest、outcome 或新 list/read API DTO。前者只负责清单/需求双向核对和最终生成范围建议，后者只对 Java 已冻结的功能设计用例。
 
 内部扫描/审查调用使用由 Java 提供源单元标识符的、刻意保持较小的固定 Markdown 表。最终生成响应必须且只能包含两个 H2：`## 需求与功能清单审查发现`、`## 测试用例`；紧随其后的表头必须分别精确为 `序号｜对象/功能点｜问题分类｜证据对照` 与 `用例名称｜功能模块｜前提约束｜执行步骤｜预期结果｜对应需求内容`。表内多项仅用 `<br>` 分隔。Java 拒绝 JSON、代码围栏、标题/列改名、缺表、多表、少表、额外业务表或额外列。每次生成调用恰好接收一个冻结功能及其已授权源上下文。
 

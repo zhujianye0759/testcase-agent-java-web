@@ -53,26 +53,36 @@ public final class FeatureAuditService {
         boolean inventoryComplete = repository.hasCompleteMaterialInventory(taskId, request.requirementScope());
         if (!inventoryComplete) return result(taskId, false);
 
-        Map<String, MaterialInventoryUnit> units = unitsByCoordinate(repository.materialInventory(taskId));
-        AuditWorkClaim claim;
-        while (true) {
-            throwIfCancellationRequested(taskId);
-            claim = repository.claimNextAuditWork(taskId, "feature-audit-" + taskId, AUDIT_LEASE).orElse(null);
-            if (claim == null) break;
-            try {
-                processClaim(claim, request, requiredUnit(units, claim));
-            } catch (RuntimeException exception) {
-                repository.failAuditWork(claim, exception.getMessage());
+        knowledgeAgentPort.prepareReconciliationSession(stageInvocation(request));
+        try {
+            Map<String, MaterialInventoryUnit> units = unitsByCoordinate(repository.materialInventory(taskId));
+            AuditWorkClaim claim;
+            while (true) {
+                throwIfCancellationRequested(taskId);
+                claim = repository.claimNextAuditWork(taskId, "feature-audit-" + taskId, AUDIT_LEASE).orElse(null);
+                if (claim == null) break;
+                try {
+                    processClaim(claim, request, requiredUnit(units, claim));
+                } catch (RuntimeException exception) {
+                    repository.failAuditWork(claim, exception.getMessage());
+                }
             }
-        }
 
-        throwIfCancellationRequested(taskId);
-        GenerationTaskRepository.FeatureAuditCounts counts = repository.featureAuditCounts(taskId);
-        if (counts.totalWork() == counts.completedWork() && counts.permanentlyFailedWork() == 0
-                && counts.candidateCount() > 0 && counts.coveredCandidateCount() != counts.candidateCount()) {
-            reconcile(taskId, request);
+            throwIfCancellationRequested(taskId);
+            GenerationTaskRepository.FeatureAuditCounts counts = repository.featureAuditCounts(taskId);
+            if (counts.totalWork() == counts.completedWork() && counts.permanentlyFailedWork() == 0
+                    && counts.candidateCount() > 0 && counts.coveredCandidateCount() != counts.candidateCount()) {
+                reconcile(taskId, request);
+            }
+            return result(taskId, true);
+        } finally {
+            knowledgeAgentPort.closePreparedSession();
         }
-        return result(taskId, true);
+    }
+
+    private static FeatureReconciliationInvocation stageInvocation(CreateGenerationTaskRequest request) {
+        return new FeatureReconciliationInvocation(request.agentId(), request.requirementScope(),
+                request.requirementAdmissionTypeKeys(), "会话准备");
     }
 
     private void throwIfCancellationRequested(String taskId) {

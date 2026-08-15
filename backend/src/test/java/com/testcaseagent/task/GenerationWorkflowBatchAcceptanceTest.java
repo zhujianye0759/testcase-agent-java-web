@@ -59,6 +59,8 @@ class GenerationWorkflowBatchAcceptanceTest {
 
         ArgumentCaptor<KnowledgeAgentInvocation> invocation = ArgumentCaptor.forClass(KnowledgeAgentInvocation.class);
         verify(agent).invoke(invocation.capture());
+        verify(agent).prepareGenerationSession(any());
+        verify(agent).closePreparedSession();
         assertThat(invocation.getValue().prompt())
                 .contains("仅生成当前功能路径：订单管理/订单查询")
                 .contains("candidateIds=candidate-a,candidate-b")

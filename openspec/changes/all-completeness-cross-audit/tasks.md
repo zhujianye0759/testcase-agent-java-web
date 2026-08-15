@@ -26,6 +26,8 @@
 
 - [x] 3.3 新建 `FeatureAuditService`、审查结论 repository 方法及 `FeatureAuditServiceTest`，在调用 KEE 审查前发送且仅发送 `feature-scope-reconciliation`，仅在 SSE 观察到同名 `read_skill` 成功时接收双向结论。直接调用方为 `GenerationWorkflow.freezeAllFeatures`；前置：1.4、2.2、3.1、3.2。验证：`./backend/mvnw.cmd -f backend/pom.xml -Dtest=WebClientKnowledgeAgentAdapterTest,FeatureAuditServiceTest test`。 `[Req-ID]: REQ-KSI-001~003, REQ-BFA-003, REQ-BFA-004`
 
+- [x] 3.3a 联合验收发现每个材料单元均依赖模型自行 `read_skill` 会造成全量审查失败后，改为审查阶段的隔离准备会话：准备流必须有精确 `feature-scope-reconciliation` 的成功 `read_skill` SSE 证据，随后同一冻结范围的有界审查请求复用该会话；准备失败不得发送业务请求。更新 WireMock/FeatureAuditService RED→GREEN 回归。验证：`./backend/mvnw.cmd -f backend/pom.xml -Dtest=WebClientKnowledgeAgentAdapterTest,FeatureAuditServiceTest test`。 `[Req-ID]: REQ-KSI-001~003`
+
 - [x] 3.4 在 `FeatureAuditService` 与 `GenerationTaskRepository` 实现每个候选项恰好一个可追溯结论：匹配、`功能清单遗漏`、`需求未覆盖该功能点`、冲突、拆分、合并、重复或证据不足；正式事实只用 document/chunk 证据。直接调用方为冻结服务；前置：3.3。验证：`./backend/mvnw.cmd -f backend/pom.xml -Dtest=FeatureAuditServiceTest test`。 `[Req-ID]: REQ-BFA-003, REQ-BFA-004`
 
 - [x] 3.5 新建 `backend/src/main/java/com/testcaseagent/featureaudit/FrozenFeatureService.java` 与 `FrozenFeatureServiceTest`，仅在所有单元/候选/关系已终态时原子冻结稳定 ID、顺序、来源和可生成性，且重试复用冻结结果。直接调用方为 `GenerationWorkflow.freezeAllFeatures`；前置：3.4。验证：`./backend/mvnw.cmd -f backend/pom.xml -Dtest=FrozenFeatureServiceTest,MaterialInventoryPersistenceIntegrationTest test`。 `[Req-ID]: REQ-BFA-005`
@@ -35,6 +37,8 @@
 - [x] 4.1 重构 `GenerationWorkflow.freezeAllFeatures` 和 `GenerationTaskRepository.planDiscoveredBatches`，以 `FrozenFeatureService` 的结果规划批次，替换一次性 Markdown 功能列表路径且保持指定功能模式。直接调用方为 `GenerationWorkflow.executeClaimed`；前置：2.3、3.5。验证：`./backend/mvnw.cmd -f backend/pom.xml -Dtest=GenerationTaskStateMachineTest,FrozenFeatureServiceTest test`。 `[Req-ID]: REQ-CAG-001, REQ-BFA-005`
 
 - [x] 4.2 扩展 `WebClientKnowledgeAgentAdapter.invoke`、`KnowledgeAgentInvocation` 和 `GenerationWorkflow.executeBatches`，使单功能生成仅请求 `functional-testcase-design`，并以对应 `read_skill` 成功事件为接收门禁。直接调用方为 `GenerationWorkflow.executeBatches`；前置：1.4、4.1。验证：`./backend/mvnw.cmd -f backend/pom.xml -Dtest=WebClientKnowledgeAgentAdapterTest,GenerationTaskStateMachineTest test`。 `[Req-ID]: REQ-KSI-001~003, REQ-CAG-001`
+
+- [x] 4.2a 将单功能生成改为生成阶段隔离准备会话：准备流必须有精确 `functional-testcase-design` 的成功 `read_skill` SSE 证据，随后同一冻结范围的多个单功能请求复用该会话，并保留每次业务 SSE 的明确完成终态门禁。验证：`./backend/mvnw.cmd -f backend/pom.xml -Dtest=WebClientKnowledgeAgentAdapterTest,GenerationWorkflowBatchAcceptanceTest test`。 `[Req-ID]: REQ-KSI-001~003, REQ-CAG-001`
 
 - [x] 4.3 扩展 `MarkdownGenerationResultParser.parse` 和 `GenerationWorkflow.executeBatches`，仅接收精确两 H2/两表/表头，验证当前冻结功能恰有 `_正向`、`_反向` 两行、步骤与预期一一对应、正式证据范围及 `依据通用经验，待确认`。直接调用方为 `GenerationWorkflow.executeBatches`；前置：1.5、4.2。验证：`./mvnw.cmd -pl backend -Dtest=MarkdownParsersTest,GenerationTaskStateMachineTest test`。 `[Req-ID]: REQ-CAG-002, REQ-CAG-003, REQ-CAG-006`
 

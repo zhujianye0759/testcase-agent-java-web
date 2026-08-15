@@ -88,6 +88,8 @@ class FeatureAuditServiceTest {
                         "documentId=requirement-doc; unitId=requirement-unit", 2, 1)), true);
         ArgumentCaptor<FeatureReconciliationInvocation> invocation = ArgumentCaptor.forClass(FeatureReconciliationInvocation.class);
         verify(knowledgeAgentPort, times(4)).reconcileFeatures(invocation.capture());
+        verify(knowledgeAgentPort).prepareReconciliationSession(any());
+        verify(knowledgeAgentPort).closePreparedSession();
         FeatureReconciliationInvocation finalInvocation = invocation.getAllValues().get(3);
         assertThat(finalInvocation.prompt()).contains(functionId, requirementId, "documentId=function-doc", "unitId=requirement-unit")
                 .doesNotContain("example-kb", "example-doc");
@@ -112,6 +114,8 @@ class FeatureAuditServiceTest {
         FeatureAuditResult result = service.audit("task-1", request);
 
         verify(repository).failAuditWork(eq(claim), eq("remote terminal failure"));
+        verify(knowledgeAgentPort).prepareReconciliationSession(any());
+        verify(knowledgeAgentPort).closePreparedSession();
         assertThat(result.complete()).isFalse();
         assertThat(result.permanentlyFailedAuditWork()).isOne();
     }
@@ -140,6 +144,7 @@ class FeatureAuditServiceTest {
         verify(repository).persistScanAndCompleteAuditWork(eq(firstClaim), any(), any(), eq(true));
         verify(repository, never()).featureAuditCounts("task-1");
         verify(knowledgeAgentPort, times(1)).reconcileFeatures(any());
+        verify(knowledgeAgentPort).closePreparedSession();
     }
 
     @Test

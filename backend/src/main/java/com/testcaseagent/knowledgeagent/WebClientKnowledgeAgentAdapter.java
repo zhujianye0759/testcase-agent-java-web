@@ -51,11 +51,18 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
             "unit_too_large");
     private static final String GENERATION_SKILL = "functional-testcase-design";
     private static final String RECONCILIATION_SKILL = "feature-scope-reconciliation";
+    /** A failed setup is isolated and retried before any business material is sent. */
+    private static final int SKILL_PREPARATION_ATTEMPTS = 3;
     private final WebClient webClient;
     private final String apiKey;
     private final Duration timeout;
     private final int maxAgentDiscoveryAttempts;
     private final int maxEventCharacters;
+    /**
+     * A prepared conversation is deliberately thread-bound: task execution is serial per claimed
+     * task, while sharing one KEE session across unrelated worker threads would leak context.
+     */
+    private final ThreadLocal<PreparedSkillSession> preparedSession = new ThreadLocal<>();
     private final ObjectMapper objectMapper = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
@@ -74,12 +81,19 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
 
     @Override
     public KnowledgeAgentInvocationResult invoke(KnowledgeAgentInvocation invocation) {
-        requireConfiguredAgent(invocation.agentId());
+        if (preparedSession.get() == null) requireConfiguredAgent(invocation.agentId());
         List<SelectedExample> examples = loadEnabledExamples(invocation.exampleScope(), invocation.fewShotPolicy());
-        String sessionId = createSession();
-        String markdown = invokeChat(sessionId,
-                AgentChatRequest.forGeneration(invocation, MarkdownPrompt.generation(invocation.prompt(), examples)), GENERATION_SKILL);
-        return new KnowledgeAgentInvocationResult(sessionId, List.of(), markdown);
+        SessionSelection session = sessionFor(invocation.agentId(), invocation.requirementScope(),
+                invocation.requirementAdmissionTypeKeys(), GENERATION_SKILL);
+        String markdown = invokeChat(session.sessionId(),
+                AgentChatRequest.forGeneration(invocation, MarkdownPrompt.generation(invocation.prompt(), examples)), GENERATION_SKILL,
+                session.requiresReadSkillEvidence());
+        return new KnowledgeAgentInvocationResult(session.sessionId(), List.of(), markdown);
+    }
+
+    @Override
+    public void prepareGenerationSession(KnowledgeAgentInvocation invocation) {
+        prepareSession(invocation.agentId(), invocation.requirementScope(), invocation.requirementAdmissionTypeKeys(), GENERATION_SKILL);
     }
 
     /**
@@ -90,10 +104,22 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
      */
     @Override
     public KnowledgeAgentInvocationResult reconcileFeatures(FeatureReconciliationInvocation invocation) {
-        requireConfiguredAgent(invocation.agentId());
-        String sessionId = createSession();
-        String markdown = invokeChat(sessionId, AgentChatRequest.forReconciliation(invocation), RECONCILIATION_SKILL);
-        return new KnowledgeAgentInvocationResult(sessionId, List.of(), markdown);
+        if (preparedSession.get() == null) requireConfiguredAgent(invocation.agentId());
+        SessionSelection session = sessionFor(invocation.agentId(), invocation.requirementScope(),
+                invocation.requirementAdmissionTypeKeys(), RECONCILIATION_SKILL);
+        String markdown = invokeChat(session.sessionId(), AgentChatRequest.forReconciliation(invocation), RECONCILIATION_SKILL,
+                session.requiresReadSkillEvidence());
+        return new KnowledgeAgentInvocationResult(session.sessionId(), List.of(), markdown);
+    }
+
+    @Override
+    public void prepareReconciliationSession(FeatureReconciliationInvocation invocation) {
+        prepareSession(invocation.agentId(), invocation.requirementScope(), invocation.requirementAdmissionTypeKeys(), RECONCILIATION_SKILL);
+    }
+
+    @Override
+    public void closePreparedSession() {
+        preparedSession.remove();
     }
 
     /**
@@ -298,7 +324,38 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
      *
      * [Req-ID]: REQ-KSI-001, REQ-KSI-002, REQ-KSI-003
      */
-    private String invokeChat(String sessionId, AgentChatRequest request, String expectedSkillName) {
+    private void prepareSession(String agentId, RequirementScope scope, List<String> requirementAdmissionTypeKeys, String skillName) {
+        if (preparedSession.get() != null) {
+            throw new KnowledgeAgentInvocationException("Knowledge agent Skill session is already prepared on this worker thread");
+        }
+        requireConfiguredAgent(agentId);
+        KnowledgeAgentInvocationException failure = null;
+        for (int attempt = 1; attempt <= SKILL_PREPARATION_ATTEMPTS; attempt++) {
+            try {
+                String sessionId = createSession();
+                invokeChat(sessionId, AgentChatRequest.forSkillPreparation(agentId, scope, requirementAdmissionTypeKeys, skillName),
+                        skillName, true);
+                preparedSession.set(new PreparedSkillSession(sessionId, agentId, scope, requirementAdmissionTypeKeys, skillName));
+                return;
+            } catch (KnowledgeAgentInvocationException exception) {
+                failure = exception;
+            }
+        }
+        throw new KnowledgeAgentInvocationException("Knowledge agent Skill preparation failed after " + SKILL_PREPARATION_ATTEMPTS
+                + " attempts: " + (failure == null ? "unknown failure" : failure.getMessage()), failure);
+    }
+
+    private SessionSelection sessionFor(String agentId, RequirementScope scope, List<String> requirementAdmissionTypeKeys,
+            String skillName) {
+        PreparedSkillSession prepared = preparedSession.get();
+        if (prepared == null) return new SessionSelection(createSession(), true);
+        if (!prepared.matches(agentId, scope, requirementAdmissionTypeKeys, skillName)) {
+            throw new KnowledgeAgentInvocationException("Prepared Knowledge agent Skill session does not match the current frozen stage scope");
+        }
+        return new SessionSelection(prepared.sessionId(), false);
+    }
+
+    private String invokeChat(String sessionId, AgentChatRequest request, String expectedSkillName, boolean requireReadSkillEvidence) {
         try {
             AnswerAccumulator answer = webClient.post().uri("/agent-chat/{sessionId}", sessionId)
                     .header(API_KEY_HEADER, apiKey).contentType(MediaType.APPLICATION_JSON).accept(MediaType.TEXT_EVENT_STREAM)
@@ -308,7 +365,7 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
                     .timeout(timeout).map(event -> parseRawEvent(event, expectedSkillName)).takeUntil(ParsedStreamEvent::complete)
                     .reduce(new AnswerAccumulator(), AnswerAccumulator::append).block(timeout.plusMillis(100));
             if (answer == null || !answer.complete()) throw new KnowledgeAgentInvocationException("Knowledge agent SSE ended without an explicit complete event");
-            if (!answer.hasSuccessfulReadSkill()) {
+            if (requireReadSkillEvidence && !answer.hasSuccessfulReadSkill()) {
                 throw new KnowledgeAgentInvocationException("Knowledge agent SSE completed without required read_skill evidence");
             }
             return answer.content();
@@ -407,6 +464,18 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
             @JsonProperty("start_at") long startAt, @JsonProperty("end_at") long endAt) { }
     private record AgentStreamData(@JsonProperty("response_type") String responseType, boolean done, String content, String message,
             JsonNode data) { }
+    private record SessionSelection(String sessionId, boolean requiresReadSkillEvidence) { }
+    private record PreparedSkillSession(String sessionId, String agentId, RequirementScope requirementScope,
+            List<String> requirementAdmissionTypeKeys, String skillName) {
+        private PreparedSkillSession {
+            requirementAdmissionTypeKeys = List.copyOf(requirementAdmissionTypeKeys);
+        }
+        private boolean matches(String agentId, RequirementScope scope, List<String> requirementAdmissionTypeKeys, String skillName) {
+            return this.agentId.equals(agentId) && requirementScope.equals(scope)
+                    && this.requirementAdmissionTypeKeys.equals(requirementAdmissionTypeKeys)
+                    && this.skillName.equals(skillName);
+        }
+    }
     private record ParsedStreamEvent(String content, boolean complete, boolean readSkillCall, boolean readSkillResult,
             String readSkillCallId, String readSkillResultId, boolean readSkillResultSuccess) {
         private static ParsedStreamEvent readSkillCall(String toolCallId) {
@@ -472,6 +541,10 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
         private static AgentChatRequest forReconciliation(FeatureReconciliationInvocation invocation) {
             return from(invocation.agentId(), invocation.requirementScope(), invocation.requirementAdmissionTypeKeys(),
                     invocation.prompt(), RECONCILIATION_SKILL);
+        }
+        private static AgentChatRequest forSkillPreparation(String agentId, RequirementScope scope, List<String> types, String skillName) {
+            return from(agentId, scope, types, "会话准备：必须先调用 read_skill 读取 `" + skillName
+                    + "`。仅在该工具成功后回复 SKILL_READY；不得检索材料、不得审查、不得生成测试用例。", skillName);
         }
         private static AgentChatRequest from(String agentId, RequirementScope scope, List<String> types, String query, String skillName) {
             List<String> documents = scope.documents().stream().map(document -> document.documentId()).toList();
