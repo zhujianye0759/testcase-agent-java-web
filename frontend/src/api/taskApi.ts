@@ -6,13 +6,36 @@ export interface CreateTaskPayload {
   fewShotPolicy: FewShotPolicy
   schemaVersion: '1.0'
   promptVersion: '1.0'
-  scopeOptionId: string
+  scopeSelectionIds: string[]
   prompt: string
 }
 
-export interface TaskScopeOption {
+export interface MaterialTypeOption {
   id: string
   label: string
+  documentCount: number
+}
+
+export interface ScopeVersionOption {
+  id: string
+  label: string
+  materialTypes: MaterialTypeOption[]
+}
+
+export interface ScopeSystemOption {
+  id: string
+  label: string
+  versions: ScopeVersionOption[]
+}
+
+export interface ScopeKnowledgeBaseOption {
+  id: string
+  label: string
+  systems: ScopeSystemOption[]
+}
+
+export interface ScopeCatalog {
+  knowledgeBases: ScopeKnowledgeBaseOption[]
 }
 
 export interface TaskCreated {
@@ -75,7 +98,7 @@ export interface TaskListQuery {
 }
 
 export interface TaskApi {
-  getTaskOptions(): Promise<TaskScopeOption[]>
+  getTaskOptions(refresh?: boolean): Promise<ScopeCatalog>
   createTask(payload: CreateTaskPayload): Promise<TaskCreated>
   listTasks(pagination: TaskListQuery): Promise<GenerationTaskPage>
   getTask(taskId: string): Promise<GenerationTaskDetail>
@@ -86,9 +109,10 @@ export interface TaskApi {
 
 export function createTaskApi(fetcher: typeof fetch = fetch): TaskApi {
   return {
-    async getTaskOptions() {
-      const response = await request<{ scopeOptions: TaskScopeOption[] }>(fetcher, '/api/task-options')
-      return response.scopeOptions
+    async getTaskOptions(refresh = false) {
+      const url = refresh ? '/api/task-options?refresh=true' : '/api/task-options'
+      const response = await request<{ scopeCatalog: ScopeCatalog }>(fetcher, url)
+      return response.scopeCatalog
     },
     async createTask(payload) {
       return request<TaskCreated>(fetcher, '/api/tasks', {

@@ -69,7 +69,15 @@ def main() -> None:
                 route.fulfill(
                     status=200,
                     content_type="application/json",
-                    body=json.dumps({"scopeOptions": [{"id": "scope-1", "label": "战略运管 V1.0 准入材料"}]}),
+                    body=json.dumps({"scopeCatalog": {"knowledgeBases": [{
+                        "id": "kb-safe", "label": "战略运管知识库", "systems": [{
+                            "id": "system-safe", "label": "战略运管系统", "versions": [{
+                                "id": "version-safe", "label": "V1.0", "materialTypes": [{
+                                    "id": "scope-1", "label": "功能清单", "documentCount": 2,
+                                }],
+                            }],
+                        }],
+                    }]}}),
                 )
             elif request.method == "POST" and request.url.endswith("/api/tasks"):
                 submitted_task = json.loads(request.post_data)
@@ -99,8 +107,10 @@ def main() -> None:
         page.route("**/api/**", fulfill_api)
         page.goto("http://127.0.0.1:5174/", wait_until="networkidle")
         assert page.locator('input[name="taskMode"][value="ALL"]').is_checked()
-        assert page.locator('[data-testid="scope-summary"]').inner_text() == "战略运管 V1.0 准入材料"
-        assert not page.locator('select[name="scopeOptionId"]').count()
+        scope_summary = page.locator('[data-testid="scope-summary"]').inner_text()
+        assert "战略运管知识库 / 战略运管系统 / V1.0" in scope_summary
+        assert "功能清单" in scope_summary
+        assert not page.locator('select[name="knowledgeBaseId"]').count()
         assert not page.locator('input[name="featureId"]').count()
         assert page.get_by_text("自动参考优质示例（推荐）").is_visible()
 
@@ -118,7 +128,7 @@ def main() -> None:
             "fewShotPolicy": "AUTO",
             "schemaVersion": "1.0",
             "promptVersion": "1.0",
-            "scopeOptionId": "scope-1",
+            "scopeSelectionIds": ["scope-1"],
             "prompt": "",
         }
         page.locator("dl.task-detail__summary").wait_for(state="visible")

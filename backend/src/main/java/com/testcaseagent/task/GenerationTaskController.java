@@ -1,5 +1,6 @@
 package com.testcaseagent.task;
 
+import com.testcaseagent.scope.ScopeCatalogUnavailableException;
 import java.net.URI;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -16,27 +17,30 @@ import static org.springframework.http.HttpStatus.NOT_FOUND;
  * Shared HTTP seam for the initial durable generation task.
  *
  * [Req-ID]: REQ-TSK-001, REQ-TSK-002, REQ-TSK-004, REQ-TSK-005, REQ-TSK-007, REQ-WEB-002,
- * REQ-WEB-004
+ * REQ-WEB-004, REQ-CAT-004
  */
 @RestController
 @RequestMapping("/api/tasks")
 public final class GenerationTaskController {
 
     private final GenerationWorkflow workflow;
-    private final AuthorizedTaskScopeResolver authorizedTaskScopeResolver;
-    public GenerationTaskController(GenerationWorkflow workflow, AuthorizedTaskScopeResolver authorizedTaskScopeResolver) {
+    private final DynamicTaskScopeResolver taskScopeResolver;
+    public GenerationTaskController(GenerationWorkflow workflow, DynamicTaskScopeResolver taskScopeResolver) {
         this.workflow = workflow;
-        this.authorizedTaskScopeResolver = authorizedTaskScopeResolver;
+        this.taskScopeResolver = taskScopeResolver;
     }
 
     @PostMapping
     public ResponseEntity<TaskCreatedResponse> create(@RequestBody CreateGenerationTaskCommand command) {
         try {
-            CreateGenerationTaskRequest request = authorizedTaskScopeResolver.resolve(command);
+            CreateGenerationTaskRequest request = taskScopeResolver.resolve(command);
             String taskId = workflow.create(request);
             return ResponseEntity.created(URI.create("/api/tasks/" + taskId)).body(new TaskCreatedResponse(taskId));
         } catch (IllegalArgumentException exception) {
             throw new ResponseStatusException(org.springframework.http.HttpStatus.BAD_REQUEST, exception.getMessage());
+        } catch (ScopeCatalogUnavailableException exception) {
+            throw new ResponseStatusException(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
+                    "知识范围暂时无法读取，请稍后刷新重试");
         }
     }
 

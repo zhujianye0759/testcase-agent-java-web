@@ -8,7 +8,7 @@ const payload: CreateTaskPayload = {
   fewShotPolicy: 'NONE',
   schemaVersion: '1.0',
   promptVersion: '1.0',
-  scopeOptionId: 'scope-1',
+  scopeSelectionIds: ['scope-1', 'scope-2'],
   prompt: '生成测试用例',
 }
 
@@ -26,14 +26,29 @@ describe('task API client', () => {
     expect(api.artifactDownloadUrl('artifact/456')).toBe('/api/artifacts/artifact%2F456/download')
   })
 
-  it('loads browser-safe task scope options without requesting credentials', async () => {
+  it('loads a browser-safe hierarchical scope catalog without requesting credentials', async () => {
+    const scopeCatalog = {
+      knowledgeBases: [{
+        id: 'kb-safe', label: '战略运管知识库', systems: [{
+          id: 'system-safe', label: '战略运管系统', versions: [{
+            id: 'version-safe', label: 'V1.0', materialTypes: [
+              { id: 'scope-1', label: '功能清单', documentCount: 1 },
+            ],
+          }],
+        }],
+      }],
+    }
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      scopeOptions: [{ id: 'scope-1', label: '战略运管 V1.0 准入材料' }],
+      scopeCatalog,
     }), { status: 200 }))
     const api = createTaskApi(fetcher)
 
-    await expect(api.getTaskOptions()).resolves.toEqual([{ id: 'scope-1', label: '战略运管 V1.0 准入材料' }])
+    await expect(api.getTaskOptions()).resolves.toEqual(scopeCatalog)
     expect(fetcher).toHaveBeenCalledWith('/api/task-options', undefined)
+
+    fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ scopeCatalog }), { status: 200 }))
+    await api.getTaskOptions(true)
+    expect(fetcher).toHaveBeenLastCalledWith('/api/task-options?refresh=true', undefined)
   })
 
   it('requests the paginated shared task list without an unsupported internal-ID query', async () => {

@@ -6,6 +6,9 @@ import com.testcaseagent.export.WorkbookExporter;
 import com.testcaseagent.knowledgeagent.KnowledgeAgentProperties;
 import com.testcaseagent.knowledgeagent.KnowledgeAgentPort;
 import com.testcaseagent.knowledgeagent.WebClientKnowledgeAgentAdapter;
+import com.testcaseagent.knowledgeagent.WebClientKnowledgeScopeCatalogAdapter;
+import com.testcaseagent.scope.DynamicScopeCatalogService;
+import com.testcaseagent.scope.KnowledgeScopeCatalogPort;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.ApplicationRunner;
@@ -19,21 +22,36 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import java.nio.file.Path;
+import java.time.Clock;
 
 /**
  * Wires the task endpoint only when server-side integration dependencies exist.
  *
- * [Req-ID]: REQ-TSK-001, REQ-KAG-002, REQ-EXP-001
+ * [Req-ID]: REQ-TSK-001, REQ-KAG-002, REQ-KAG-009, REQ-CAT-003, REQ-CAT-005, REQ-EXP-001
  */
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnProperty(prefix = "app.knowledge-agent", name = "enabled", havingValue = "true")
-@EnableConfigurationProperties({AuthorizedTaskOptionsProperties.class, KnowledgeAgentProperties.class})
+@EnableConfigurationProperties({TaskGenerationProfileProperties.class, KnowledgeAgentProperties.class})
 public class GenerationTaskConfiguration {
 
     @Bean
-    @ConditionalOnMissingBean(AuthorizedTaskScopeResolver.class)
-    AuthorizedTaskScopeResolver authorizedTaskScopeResolver(AuthorizedTaskOptionsProperties properties) {
-        return new AuthorizedTaskScopeResolver(properties.toTaskScopeOptions());
+    @ConditionalOnMissingBean(KnowledgeScopeCatalogPort.class)
+    KnowledgeScopeCatalogPort knowledgeScopeCatalogPort(
+            KnowledgeAgentProperties properties, TaskGenerationProfileProperties profile) {
+        return new WebClientKnowledgeScopeCatalogAdapter(properties.getApiBaseUrl(), properties.getApiKey(),
+                properties.getTimeout(), profile.getKnowledgeBasePageSize(), profile.getDocumentPageSize());
+    }
+
+    @Bean
+    DynamicScopeCatalogService dynamicScopeCatalogService(
+            KnowledgeScopeCatalogPort port, TaskGenerationProfileProperties profile) {
+        return new DynamicScopeCatalogService(port, profile.getCatalogCacheTtl(), Clock.systemUTC());
+    }
+
+    @Bean
+    DynamicTaskScopeResolver dynamicTaskScopeResolver(
+            DynamicScopeCatalogService catalogService, TaskGenerationProfileProperties profile) {
+        return new DynamicTaskScopeResolver(catalogService, profile);
     }
 
     @Bean
@@ -93,13 +111,13 @@ public class GenerationTaskConfiguration {
 
     @Bean
     GenerationTaskController generationTaskController(
-            GenerationWorkflow workflow, AuthorizedTaskScopeResolver authorizedTaskScopeResolver) {
-        return new GenerationTaskController(workflow, authorizedTaskScopeResolver);
+            GenerationWorkflow workflow, DynamicTaskScopeResolver taskScopeResolver) {
+        return new GenerationTaskController(workflow, taskScopeResolver);
     }
 
     @Bean
-    TaskConfigurationController taskConfigurationController(AuthorizedTaskScopeResolver authorizedTaskScopeResolver) {
-        return new TaskConfigurationController(authorizedTaskScopeResolver);
+    TaskConfigurationController taskConfigurationController(DynamicScopeCatalogService catalogService) {
+        return new TaskConfigurationController(catalogService);
     }
 
     @Bean

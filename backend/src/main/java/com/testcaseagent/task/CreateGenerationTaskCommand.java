@@ -2,12 +2,13 @@ package com.testcaseagent.task;
 
 import com.testcaseagent.testcase.FewShotPolicy;
 import com.testcaseagent.testcase.GenerationTaskMode;
+import java.util.List;
 import java.util.Objects;
 
 /**
- * Browser-safe task creation command that identifies one server-authorized scope option.
+ * Browser-safe task creation command containing opaque server-authorized material selections.
  *
- * [Req-ID]: REQ-KAG-006, REQ-SCP-004
+ * [Req-ID]: REQ-KAG-006, REQ-SCP-004, REQ-CAT-004
  */
 public record CreateGenerationTaskCommand(
         GenerationTaskMode taskMode,
@@ -15,7 +16,7 @@ public record CreateGenerationTaskCommand(
         FewShotPolicy fewShotPolicy,
         String schemaVersion,
         String promptVersion,
-        String scopeOptionId,
+        List<String> scopeSelectionIds,
         String prompt) {
 
     public CreateGenerationTaskCommand {
@@ -27,7 +28,13 @@ public record CreateGenerationTaskCommand(
         fewShotPolicy = Objects.requireNonNull(fewShotPolicy, "fewShotPolicy must not be null");
         schemaVersion = requireText(schemaVersion, "schemaVersion");
         promptVersion = requireText(promptVersion, "promptVersion");
-        scopeOptionId = requireText(scopeOptionId, "scopeOptionId");
+        if (scopeSelectionIds == null || scopeSelectionIds.isEmpty()) {
+            throw new IllegalArgumentException("请选择至少一种可用材料范围");
+        }
+        scopeSelectionIds = scopeSelectionIds.stream().map(value -> requireText(value, "scopeSelectionId")).toList();
+        if (scopeSelectionIds.stream().distinct().count() != scopeSelectionIds.size()) {
+            throw new IllegalArgumentException("材料范围不能重复选择");
+        }
         prompt = prompt == null ? "" : prompt.trim();
     }
 

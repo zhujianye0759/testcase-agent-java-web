@@ -386,6 +386,7 @@ p {
 .task-form__mode .task-form__help,
 .task-form__mode > label:not(.task-form__choice),
 .task-form fieldset > label:not(.task-form__choice),
+.task-form__scope-cascade,
 .task-form__scope-summary,
 .task-form__loading,
 .task-form__strategy-note,
@@ -425,6 +426,92 @@ p {
   padding: var(--space-16);
   border-left: var(--space-4) solid var(--color-tech-cyan);
   background: var(--color-surface-inset);
+}
+
+.task-form__scope-cascade {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-16);
+}
+
+.task-form__scope-cascade > label,
+.task-form__scope-value {
+  min-width: 0;
+}
+
+.task-form__scope-value {
+  display: grid;
+  gap: var(--space-8);
+  padding: var(--space-8) var(--space-16);
+  border: 1px solid var(--color-divider-input);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-muted);
+}
+
+.task-form__scope-value span,
+.task-form__materials > p,
+.task-form__material-choice small,
+.task-form__material-single span {
+  color: var(--color-text-secondary);
+  font: var(--type-caption);
+}
+
+.task-form__scope-summary,
+.task-form__materials {
+  grid-column: 1 / -1;
+}
+
+.task-form__scope-summary {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.task-form__materials {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-8);
+}
+
+.task-form__materials > p {
+  grid-column: 1 / -1;
+  margin: var(--space-0);
+}
+
+.task-form .task-form__material-choice,
+.task-form__material-single {
+  display: flex;
+  gap: var(--space-8);
+  align-items: center;
+  min-height: 56px;
+  margin: var(--space-0);
+  padding: var(--space-8) var(--space-16);
+  border: 1px solid var(--color-divider-input);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-muted);
+}
+
+.task-form__material-choice:has(input:checked) {
+  border-color: var(--color-primary);
+  background: var(--color-primary-bg);
+}
+
+.task-form .task-form__material-choice input[type='checkbox'] {
+  flex: 0 0 auto;
+  width: var(--icon-size-16);
+  min-height: var(--icon-size-16);
+  height: var(--icon-size-16);
+  padding: var(--space-0);
+  margin: var(--space-0);
+}
+
+.task-form__material-choice span,
+.task-form__material-single {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.task-form__selection-hint {
+  color: var(--color-warning-active) !important;
 }
 
 .task-form__loading {
@@ -882,6 +969,8 @@ button:disabled {
   }
 
   .task-form__mode .task-form__choice,
+  .task-form__scope-cascade,
+  .task-form__materials,
   .task-detail__summary,
   .task-detail__description-list,
   .task-detail__cards {
