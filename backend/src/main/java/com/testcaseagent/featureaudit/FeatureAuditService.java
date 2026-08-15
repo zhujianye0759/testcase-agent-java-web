@@ -62,8 +62,11 @@ public final class FeatureAuditService {
             if (claim == null) break;
             try {
                 processClaim(claim, request, requiredUnit(units, claim));
+            } catch (KnowledgeAgentSkillPreparationException exception) {
+                repository.failAuditWork(claim, exception.getMessage(), false);
+                throw exception;
             } catch (RuntimeException exception) {
-                repository.failAuditWork(claim, exception.getMessage(), !(exception instanceof KnowledgeAgentSkillPreparationException));
+                repository.failAuditWork(claim, exception.getMessage(), true);
             }
         }
 

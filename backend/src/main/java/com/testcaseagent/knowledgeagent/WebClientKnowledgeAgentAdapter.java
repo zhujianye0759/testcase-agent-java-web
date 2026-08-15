@@ -279,9 +279,6 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
             try {
                 AgentEnvelope response = webClient.get().uri("/agents/{agentId}", agentId).header(API_KEY_HEADER, apiKey)
                         .exchangeToMono(clientResponse -> {
-                            if (isTransientStatus(clientResponse.statusCode().value())) {
-                                return clientResponse.createException().flatMap(error -> Mono.error(new TransientAgentDiscoveryFailure(error)));
-                            }
                             if (clientResponse.statusCode().isError()) {
                                 return clientResponse.createException().flatMap(error -> Mono.error(new KnowledgeAgentInvocationException("Knowledge agent discovery failed", error)));
                             }
@@ -291,15 +288,15 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
                     throw new KnowledgeAgentInvocationException("Configured agent was not found");
                 }
                 return;
-            } catch (TransientAgentDiscoveryFailure failure) {
-                if (attempt == maxAgentDiscoveryAttempts) {
-                    throw new KnowledgeAgentInvocationException("Knowledge agent discovery transient failure after " + maxAgentDiscoveryAttempts + " attempts", failure);
-                }
             } catch (RuntimeException exception) {
-                if (hasCause(exception, TimeoutException.class) || String.valueOf(exception.getMessage()).contains("Timeout on blocking read")) {
-                    throw new KnowledgeAgentInvocationException("Knowledge agent discovery timed out", exception);
+                KnowledgeAgentInvocationException failure = invocationFailure("Knowledge agent discovery failed", exception);
+                if (!isSafePreparationTransportFailure(failure)) {
+                    throw failure;
                 }
-                throw exception;
+                if (attempt == maxAgentDiscoveryAttempts) {
+                    throw new KnowledgeAgentInvocationException("Knowledge agent discovery transient failure after "
+                            + maxAgentDiscoveryAttempts + " attempts", failure);
+                }
             }
         }
     }
@@ -329,9 +326,14 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
      */
     private void prepareSession(String agentId, RequirementScope scope, List<String> requirementAdmissionTypeKeys, String skillName) {
         if (preparedSession.get() != null) {
-            throw new KnowledgeAgentInvocationException("Knowledge agent Skill session is already prepared on this worker thread");
+            throw new KnowledgeAgentSkillPreparationException("Knowledge agent Skill session is already prepared on this worker thread",
+                    false, null);
         }
-        requireConfiguredAgent(agentId);
+        try {
+            requireConfiguredAgent(agentId);
+        } catch (RuntimeException exception) {
+            throw preparationFailure(exception);
+        }
         KnowledgeAgentInvocationException failure = null;
         for (int attempt = 1; attempt <= SKILL_PREPARATION_ATTEMPTS; attempt++) {
             try {
@@ -350,6 +352,11 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
         throw new KnowledgeAgentSkillPreparationException("Knowledge agent Skill preparation failed after "
                 + SKILL_PREPARATION_ATTEMPTS + " attempts: " + (failure == null ? "unknown failure" : failure.getMessage()),
                 true, failure);
+    }
+
+    private KnowledgeAgentSkillPreparationException preparationFailure(RuntimeException exception) {
+        KnowledgeAgentInvocationException failure = invocationFailure("Knowledge agent Skill preparation failed", exception);
+        return new KnowledgeAgentSkillPreparationException(failure.getMessage(), isSafePreparationTransportFailure(failure), failure);
     }
 
     private SessionSelection sessionFor(String agentId, RequirementScope scope, List<String> requirementAdmissionTypeKeys,
@@ -387,12 +394,24 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
         String data = rawEvent.data();
         if (data == null || data.length() > maxEventCharacters) throw new KnowledgeAgentInvocationException("Knowledge agent SSE event exceeds maximum size");
         AgentStreamData streamData = parseStreamData(data);
-        if ("error".equals(streamData.responseType()) && streamData.done()) throw new KnowledgeAgentInvocationException("Knowledge agent terminal error: " + streamData.message());
-        if (preparationOnly && "tool_call".equals(streamData.responseType()) && !isReadSkillTool(streamData.data())) {
-            throw new KnowledgeAgentInvocationException("Knowledge agent Skill preparation may only call read_skill");
+        if ("error".equals(streamData.responseType()) && (streamData.done() || preparationOnly)) {
+            throw new KnowledgeAgentInvocationException(preparationOnly
+                    ? "Knowledge agent Skill preparation error: " + streamData.message()
+                    : "Knowledge agent terminal error: " + streamData.message());
+        }
+        if (preparationOnly && "tool_call".equals(streamData.responseType()) && !isExpectedReadSkill(streamData.data(), expectedSkillName)) {
+            throw new KnowledgeAgentInvocationException("Knowledge agent Skill preparation may only call the exact read_skill");
         }
         if (preparationOnly && "tool_result".equals(streamData.responseType()) && hasNamedNonReadSkillTool(streamData.data())) {
             throw new KnowledgeAgentInvocationException("Knowledge agent Skill preparation may only call read_skill");
+        }
+        if (preparationOnly && "tool_result".equals(streamData.responseType()) && skillName(streamData.data()) != null
+                && !expectedSkillName.equals(skillName(streamData.data()))) {
+            throw new KnowledgeAgentInvocationException("Knowledge agent Skill preparation may only return the exact read_skill");
+        }
+        if (preparationOnly && "tool_result".equals(streamData.responseType())
+                && streamData.data().path("success").isBoolean() && !successfulToolResult(streamData.data())) {
+            throw new KnowledgeAgentInvocationException("Knowledge agent Skill preparation read_skill failed");
         }
         if ("tool_call".equals(streamData.responseType()) && isExpectedReadSkill(streamData.data(), expectedSkillName)) {
             return ParsedStreamEvent.readSkillCall(toolCallId(streamData.data()));
@@ -632,7 +651,4 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
         }
     }
 
-    private static final class TransientAgentDiscoveryFailure extends RuntimeException {
-        private TransientAgentDiscoveryFailure(Throwable cause) { super(cause); }
-    }
 }

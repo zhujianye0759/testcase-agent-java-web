@@ -253,11 +253,83 @@ class WebClientKnowledgeAgentAdapterTest {
         KnowledgeAgentPort port = adapter();
         assertThatThrownBy(() -> port.prepareReconciliationSession(reconciliationInvocation("核对提示")))
                 .isInstanceOf(KnowledgeAgentSkillPreparationException.class)
-                .hasMessageContaining("may only call read_skill");
+                .hasMessageContaining("may only call the exact read_skill");
 
         knowledgeEngine.verify(1, postRequestedFor(urlEqualTo("/api/v1/sessions")));
         knowledgeEngine.verify(0, postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-1"))
                 .withRequestBody(containing("核对提示")));
+    }
+
+    @Test
+    void rejectsWrongReadSkillBeforeALaterCorrectSkillDuringPreparation() {
+        stubAgentAndSession();
+        knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
+                .withRequestBody(containing("会话准备"))
+                .willReturn(aResponse().withHeader("Content-Type", "text/event-stream")
+                        .withBody(readSkillEvents(RECONCILIATION_SKILL, true)
+                                .replace(RECONCILIATION_SKILL, GENERATION_SKILL)
+                                + readSkillEvents(RECONCILIATION_SKILL, true)
+                                + completeEvent())));
+
+        KnowledgeAgentPort port = adapter();
+        assertThatThrownBy(() -> port.prepareReconciliationSession(reconciliationInvocation("核对提示")))
+                .isInstanceOf(KnowledgeAgentSkillPreparationException.class)
+                .hasMessageContaining("exact read_skill");
+
+        knowledgeEngine.verify(1, postRequestedFor(urlEqualTo("/api/v1/sessions")));
+        knowledgeEngine.verify(0, postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-1"))
+                .withRequestBody(containing("核对提示")));
+    }
+
+    @Test
+    void rejectsAnyNonTerminalErrorAfterSuccessfulSkillReadDuringPreparation() {
+        stubAgentAndSession();
+        knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
+                .withRequestBody(containing("会话准备"))
+                .willReturn(aResponse().withHeader("Content-Type", "text/event-stream")
+                        .withBody(readSkillEvents(RECONCILIATION_SKILL, true)
+                                + "event: message\ndata: {\"response_type\":\"error\",\"done\":false,\"message\":\"工具失败\"}\n\n"
+                                + completeEvent())));
+
+        KnowledgeAgentPort port = adapter();
+        assertThatThrownBy(() -> port.prepareReconciliationSession(reconciliationInvocation("核对提示")))
+                .isInstanceOf(KnowledgeAgentSkillPreparationException.class)
+                .hasMessageContaining("preparation error");
+
+        knowledgeEngine.verify(0, postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-1"))
+                .withRequestBody(containing("核对提示")));
+    }
+
+    @Test
+    void wrapsConfiguredAgentDiscoveryTimeoutAsBoundedPreparationFailure() {
+        knowledgeEngine.stubFor(get(urlEqualTo("/api/v1/agents/" + AGENT_ID))
+                .willReturn(okJson("{\"success\":true,\"data\":{\"id\":\"" + AGENT_ID + "\"}}")
+                        .withFixedDelay(200)));
+        KnowledgeAgentPort port = new WebClientKnowledgeAgentAdapter(knowledgeEngine.baseUrl() + "/api/v1",
+                "test-key", Duration.ofMillis(50), 2, 20_000);
+
+        assertThatThrownBy(() -> port.prepareGenerationSession(invocation(FewShotPolicy.NONE)))
+                .isInstanceOf(KnowledgeAgentSkillPreparationException.class)
+                .satisfies(exception -> assertThat(((KnowledgeAgentSkillPreparationException) exception)
+                        .transportRetriesExhausted()).isTrue());
+
+        knowledgeEngine.verify(2, getRequestedFor(urlEqualTo("/api/v1/agents/" + AGENT_ID)));
+        knowledgeEngine.verify(0, postRequestedFor(urlEqualTo("/api/v1/sessions")));
+    }
+
+    @Test
+    void wrapsMissingConfiguredAgentAsNonRetryableGenerationPreparationFailure() {
+        knowledgeEngine.stubFor(get(urlEqualTo("/api/v1/agents/" + AGENT_ID))
+                .willReturn(aResponse().withStatus(404).withHeader("Content-Type", "application/json")
+                        .withBody("{\"success\":false,\"error\":{\"message\":\"Agent not found\"}}")));
+
+        assertThatThrownBy(() -> adapter().prepareGenerationSession(invocation(FewShotPolicy.NONE)))
+                .isInstanceOf(KnowledgeAgentSkillPreparationException.class)
+                .satisfies(exception -> assertThat(((KnowledgeAgentSkillPreparationException) exception)
+                        .transportRetriesExhausted()).isFalse());
+
+        knowledgeEngine.verify(1, getRequestedFor(urlEqualTo("/api/v1/agents/" + AGENT_ID)));
+        knowledgeEngine.verify(0, postRequestedFor(urlEqualTo("/api/v1/sessions")));
     }
 
     @Test
@@ -473,6 +545,10 @@ class WebClientKnowledgeAgentAdapterTest {
         return "event: message\ndata: {\"response_type\":\"answer\",\"done\":false,\"content\":"
                 + quote(answer) + "}\n\n"
                 + "event: message\ndata: {\"response_type\":\"complete\",\"done\":true,\"content\":\"\"}\n\n";
+    }
+
+    private static String completeEvent() {
+        return "event: message\ndata: {\"response_type\":\"complete\",\"done\":true,\"content\":\"\"}\n\n";
     }
 
     private static void stubAgentAndSession() {

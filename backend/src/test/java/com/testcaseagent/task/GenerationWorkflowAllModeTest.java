@@ -22,6 +22,7 @@ import com.testcaseagent.featureaudit.FeatureReviewConclusionType;
 import com.testcaseagent.featureaudit.RequirementMaterialTraversalService;
 import com.testcaseagent.fewshot.ExampleScope;
 import com.testcaseagent.knowledgeagent.KnowledgeAgentPort;
+import com.testcaseagent.knowledgeagent.KnowledgeAgentSkillPreparationException;
 import com.testcaseagent.scope.RequirementDocumentCoordinate;
 import com.testcaseagent.scope.RequirementScope;
 import com.testcaseagent.testcase.FewShotPolicy;
@@ -149,6 +150,21 @@ class GenerationWorkflowAllModeTest {
         verify(repository, never()).planFrozenBatches(any(), any(), any(), any());
         verify(repository, never()).requireQueuedWork(TASK_ID);
         verify(repository, never()).transitionTask(TASK_ID, GenerationTaskStatus.GENERATING);
+    }
+
+    @Test
+    void failsTheAuditingTaskWhenFeatureAuditStopsForAgentDiscoveryPreparationFailure() {
+        CreateGenerationTaskRequest pending = pendingAllRequest();
+        when(repository.request(TASK_ID)).thenReturn(pending);
+        when(featureAuditService.audit(TASK_ID, pending))
+                .thenThrow(new KnowledgeAgentSkillPreparationException("Knowledge agent discovery timed out", true, null));
+        when(repository.taskStatus(TASK_ID)).thenReturn(GenerationTaskStatus.AUDITING);
+
+        workflow.executeClaimed(new TaskExecutionClaim(TASK_ID, 1));
+
+        verify(repository).failAuditingTask(TASK_ID);
+        verify(frozenFeatureService, never()).freeze(any(), any());
+        verify(repository, never()).planFrozenBatches(any(), any(), any(), any());
     }
 
     @Test

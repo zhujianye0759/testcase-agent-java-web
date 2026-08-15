@@ -184,23 +184,25 @@ class FeatureAuditServiceTest {
     }
 
     @Test
-    void recordsSkillPreparationFailureAsImmediatelyPermanentAuditWork() {
+    void failsFastAfterSkillPreparationFailureWithoutClaimingTheNextAuditWork() {
         GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
         KnowledgeAgentPort knowledgeAgentPort = mock(KnowledgeAgentPort.class);
         FeatureAuditService service = new FeatureAuditService(repository, knowledgeAgentPort);
         CreateGenerationTaskRequest request = request();
         MaterialInventoryUnit unit = new MaterialInventoryUnit("function-doc", "FUNCTION_LIST", "function-unit", 0, 1, "功能", 0, 2);
         AuditWorkClaim claim = claim("function-work", "function-doc", "function-unit", 1, "FEATURE_LIST_SCAN");
+        AuditWorkClaim laterClaim = claim("function-work-later", "function-doc", "function-unit", 1, "FEATURE_LIST_SCAN");
 
         when(repository.hasCompleteMaterialInventory("task-1", request.requirementScope())).thenReturn(true);
         when(repository.materialInventory("task-1")).thenReturn(List.of(unit));
-        when(repository.claimNextAuditWork(eq("task-1"), any(), any())).thenReturn(Optional.of(claim), Optional.empty());
+        when(repository.claimNextAuditWork(eq("task-1"), any(), any())).thenReturn(Optional.of(claim), Optional.of(laterClaim), Optional.empty());
         doThrow(new KnowledgeAgentSkillPreparationException("Skill unavailable", false, null))
                 .when(knowledgeAgentPort).prepareReconciliationSession(any());
-        when(repository.featureAuditCounts("task-1")).thenReturn(new GenerationTaskRepository.FeatureAuditCounts(1, 0, 1, 0, 0, 0));
-
-        assertThat(service.audit("task-1", request).permanentlyFailedAuditWork()).isOne();
+        assertThatThrownBy(() -> service.audit("task-1", request))
+                .isInstanceOf(KnowledgeAgentSkillPreparationException.class)
+                .hasMessageContaining("Skill unavailable");
         verify(repository).failAuditWork(eq(claim), eq("Skill unavailable"), eq(false));
+        verify(repository, times(1)).claimNextAuditWork(eq("task-1"), any(), any());
         verify(knowledgeAgentPort, never()).reconcileFeatures(any());
     }
 
