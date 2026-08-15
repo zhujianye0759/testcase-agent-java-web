@@ -399,8 +399,25 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
                     ? "Knowledge agent Skill preparation error: " + streamData.message()
                     : "Knowledge agent terminal error: " + streamData.message());
         }
-        if (preparationOnly && "tool_call".equals(streamData.responseType()) && !isExpectedReadSkill(streamData.data(), expectedSkillName)) {
-            throw new KnowledgeAgentInvocationException("Knowledge agent Skill preparation may only call the exact read_skill");
+        if (preparationOnly && "tool_call".equals(streamData.responseType())) {
+            if (!isReadSkillTool(streamData.data())) {
+                throw new KnowledgeAgentInvocationException("Knowledge agent Skill preparation may only call the exact read_skill");
+            }
+            String callId = toolCallId(streamData.data());
+            String actualSkillName = skillName(streamData.data());
+            if (actualSkillName == null) {
+                if (callId == null) {
+                    throw new KnowledgeAgentInvocationException("Knowledge agent Skill preparation read_skill declaration requires a stable tool_call_id");
+                }
+                return ParsedStreamEvent.readSkillDeclaration(callId);
+            }
+            if (!expectedSkillName.equals(actualSkillName)) {
+                throw new KnowledgeAgentInvocationException("Knowledge agent Skill preparation may only call the exact read_skill");
+            }
+            if (callId == null) {
+                throw new KnowledgeAgentInvocationException("Knowledge agent Skill preparation read_skill call requires a stable tool_call_id");
+            }
+            return ParsedStreamEvent.exactReadSkillCall(callId);
         }
         if (preparationOnly && "tool_result".equals(streamData.responseType()) && hasNamedNonReadSkillTool(streamData.data())) {
             throw new KnowledgeAgentInvocationException("Knowledge agent Skill preparation may only call read_skill");
@@ -414,14 +431,14 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
             throw new KnowledgeAgentInvocationException("Knowledge agent Skill preparation read_skill failed");
         }
         if ("tool_call".equals(streamData.responseType()) && isExpectedReadSkill(streamData.data(), expectedSkillName)) {
-            return ParsedStreamEvent.readSkillCall(toolCallId(streamData.data()));
+            return ParsedStreamEvent.exactReadSkillCall(toolCallId(streamData.data()));
         }
         if ("tool_result".equals(streamData.responseType()) && toolCallId(streamData.data()) != null
                 && (skillName(streamData.data()) == null || expectedSkillName.equals(skillName(streamData.data())))) {
             return ParsedStreamEvent.readSkillResult(toolCallId(streamData.data()), successfulToolResult(streamData.data()));
         }
         return new ParsedStreamEvent("answer".equals(streamData.responseType()) ? streamData.content() : "",
-                "complete".equals(streamData.responseType()) && streamData.done(), false, false, null, null, false);
+                "complete".equals(streamData.responseType()) && streamData.done(), false, false, false, null, null, false);
     }
 
     private static boolean isExpectedReadSkill(JsonNode data, String expectedSkillName) {
@@ -528,28 +545,34 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
                     && this.skillName.equals(skillName);
         }
     }
-    private record ParsedStreamEvent(String content, boolean complete, boolean readSkillCall, boolean readSkillResult,
-            String readSkillCallId, String readSkillResultId, boolean readSkillResultSuccess) {
-        private static ParsedStreamEvent readSkillCall(String toolCallId) {
-            return new ParsedStreamEvent("", false, true, false, toolCallId, null, false);
+    private record ParsedStreamEvent(String content, boolean complete, boolean readSkillDeclaration, boolean exactReadSkillCall,
+            boolean readSkillResult, String readSkillCallId, String readSkillResultId, boolean readSkillResultSuccess) {
+        private static ParsedStreamEvent readSkillDeclaration(String toolCallId) {
+            return new ParsedStreamEvent("", false, true, false, false, toolCallId, null, false);
+        }
+        private static ParsedStreamEvent exactReadSkillCall(String toolCallId) {
+            return new ParsedStreamEvent("", false, false, true, false, toolCallId, null, false);
         }
         private static ParsedStreamEvent readSkillResult(String toolCallId, boolean success) {
-            return new ParsedStreamEvent("", false, false, true, null, toolCallId, success);
+            return new ParsedStreamEvent("", false, false, false, true, null, toolCallId, success);
         }
     }
     private final class AnswerAccumulator {
         private final String content;
         private final boolean complete;
-        private final Set<String> pendingReadSkillCallIds;
+        private final Set<String> pendingReadSkillDeclarationIds;
+        private final Set<String> pendingExactReadSkillCallIds;
         private final int pendingUnnamedReadSkillCalls;
         private final boolean successfulReadSkill;
         private final boolean failedReadSkill;
-        private AnswerAccumulator() { this("", false, Set.of(), 0, false, false); }
-        private AnswerAccumulator(String content, boolean complete, Set<String> pendingReadSkillCallIds,
+        private AnswerAccumulator() { this("", false, Set.of(), Set.of(), 0, false, false); }
+        private AnswerAccumulator(String content, boolean complete, Set<String> pendingReadSkillDeclarationIds,
+                Set<String> pendingExactReadSkillCallIds,
                 int pendingUnnamedReadSkillCalls, boolean successfulReadSkill, boolean failedReadSkill) {
             this.content = content;
             this.complete = complete;
-            this.pendingReadSkillCallIds = pendingReadSkillCallIds;
+            this.pendingReadSkillDeclarationIds = pendingReadSkillDeclarationIds;
+            this.pendingExactReadSkillCallIds = pendingExactReadSkillCallIds;
             this.pendingUnnamedReadSkillCalls = pendingUnnamedReadSkillCalls;
             this.successfulReadSkill = successfulReadSkill;
             this.failedReadSkill = failedReadSkill;
@@ -557,12 +580,19 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
         private AnswerAccumulator append(ParsedStreamEvent event) {
             String next = content + (event.content() == null ? "" : event.content());
             if (next.length() > maxEventCharacters) throw new KnowledgeAgentInvocationException("Knowledge agent SSE answer exceeds maximum size");
-            Set<String> pending = new HashSet<>(pendingReadSkillCallIds);
+            Set<String> declarations = new HashSet<>(pendingReadSkillDeclarationIds);
+            Set<String> pending = new HashSet<>(pendingExactReadSkillCallIds);
             int unnamed = pendingUnnamedReadSkillCalls;
             boolean success = successfulReadSkill;
             boolean failure = failedReadSkill;
-            if (event.readSkillCall()) {
-                if (event.readSkillCallId() != null) pending.add(event.readSkillCallId());
+            if (event.readSkillDeclaration()) {
+                declarations.add(event.readSkillCallId());
+            }
+            if (event.exactReadSkillCall()) {
+                if (event.readSkillCallId() != null) {
+                    declarations.remove(event.readSkillCallId());
+                    pending.add(event.readSkillCallId());
+                }
                 else unnamed++;
             }
             if (event.readSkillResult()) {
@@ -575,11 +605,14 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
                     else failure = true;
                 }
             }
-            return new AnswerAccumulator(next, event.complete(), Set.copyOf(pending), unnamed, success, failure);
+            return new AnswerAccumulator(next, event.complete(), Set.copyOf(declarations), Set.copyOf(pending), unnamed, success, failure);
         }
         private String content() { return content; }
         private boolean complete() { return complete; }
-        private boolean hasSuccessfulReadSkill() { return successfulReadSkill && !failedReadSkill; }
+        private boolean hasSuccessfulReadSkill() {
+            return successfulReadSkill && !failedReadSkill && pendingReadSkillDeclarationIds.isEmpty()
+                    && pendingExactReadSkillCallIds.isEmpty() && pendingUnnamedReadSkillCalls == 0;
+        }
     }
 
     private record AgentChatRequest(@JsonProperty("agent_id") String agentId, String query,
@@ -595,8 +628,9 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
                     invocation.prompt(), RECONCILIATION_SKILL);
         }
         private static AgentChatRequest forSkillPreparation(String agentId, RequirementScope scope, List<String> types, String skillName) {
-            return from(agentId, scope, types, "会话准备：必须先调用 read_skill 读取 `" + skillName
-                    + "`。仅在该工具成功后回复 SKILL_READY；不得检索材料、不得审查、不得生成测试用例。", skillName);
+            // KEE treats non-casual preparation instructions as a retrieval query before its agent loop.
+            // The fixed token avoids that pre-execution; exact skill_names plus SSE evidence remain the gate.
+            return from(agentId, scope, types, "你好", skillName);
         }
         private static AgentChatRequest from(String agentId, RequirementScope scope, List<String> types, String query, String skillName) {
             List<String> documents = scope.documents().stream().map(document -> document.documentId()).toList();

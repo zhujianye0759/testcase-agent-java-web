@@ -14,9 +14,11 @@
 - **THEN** 该功能不得计入已接收测试用例
 
 ### Requirement: [REQ-KSI-002] 以已验证的独立业务会话加载指定 Skill
-系统 SHALL 为每个材料审查单元、最终双向核对和单功能生成批次，以该业务项唯一的 `skill_names` 创建一个隔离 KEE 会话，并在该准备请求的既有 SSE `tool_call` 和 `tool_result` 事件中观察与本阶段精确名称相符的 `read_skill` 成功及显式完成。仅在准备成功后，Java 才可在同一会话、相同冻结范围和相同阶段 Skill 下发送该唯一有界业务请求，并在该项结束时关闭会话。Java SHALL NOT 跨业务项复用准备会话。
+系统 SHALL 为每个材料审查单元、最终双向核对和单功能生成批次，以该业务项唯一的 `skill_names` 创建一个隔离 KEE 会话。准备请求 SHALL 保持该业务项的冻结范围，但其 `query` SHALL 是固定非检索 token `你好`，以避免 KEE 将准备说明预执行为 RAG；精确 `skill_names` 是服务端可用范围约束，固定 token 不是 Skill 已加载证据。Java SHALL 在该准备请求的既有 SSE `tool_call` 和 `tool_result` 事件中观察与本阶段精确名称相符的 `read_skill` 成功及显式完成。仅在准备成功后，Java 才可在同一会话、相同冻结范围和相同阶段 Skill 下发送该唯一有界业务请求，并在该项结束时关闭会话。Java SHALL NOT 跨业务项复用准备会话。
 
 准备阶段仅可出现名称精确匹配本阶段要求的 `read_skill` 工具链。缺少该事件、名称不符、`read_skill` 失败、工具结果失败、任意其他工具调用、任意 `error`（无论 `done` 值）、流截断或未收到显式完成事件时，Java SHALL 拒绝该业务项，且不得发送其业务审查或生成请求。连接、超时或 408/429/502/503/504 暂态传输错误最多重试三条新会话；范围、HTTP 永久错误、智能体发现失败和合同错误不得重试。已准备会话中的业务请求仍 SHALL 具有显式 SSE 完成终态；会话不匹配、业务流终态错误或流截断时，Java SHALL 拒绝当前结果。Java SHALL NOT 将提示词文本、历史会话名称或普通回答当作 Skill 已加载证据。任一材料审查单元或最终双向核对的准备失败 SHALL 记录当前项失败并终止整个当前审查阶段；生成准备失败 SHALL 终止当前任务，二者均不得继续准备、领取或发送后续业务项。
+
+KEE 可先发送带非空稳定 `tool_call_id`、但 `arguments` 尚缺失的 `read_skill` 声明；Java SHALL 允许该声明但不得将其计为成功，且同一 ID 的后续参数补齐不得被视作第二个未完成调用。只有同一 ID 的精确 `skill_name`、成功 `tool_result` 和显式完成三者齐备才可通过。Java SHALL NOT 将固定 token、提示词文本、历史会话名称或普通回答当作 Skill 已加载证据。
 
 #### Scenario: 准备会话未读取要求的 Skill
 - **WHEN** Skill 准备 SSE 到达正常完成，但未观察到精确 Skill 名称的成功 `read_skill`

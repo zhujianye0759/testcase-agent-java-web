@@ -117,9 +117,9 @@ class WebClientKnowledgeAgentAdapterTest {
         knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
                 .inScenario("prepared reconciliation session")
                 .whenScenarioStateIs(Scenario.STARTED)
-                .withRequestBody(containing("会话准备"))
+                .withRequestBody(matchingJsonPath("$.query", equalTo("你好")))
                 .willSetStateTo("skill-loaded")
-                .willReturn(sseWithReadSkill("SKILL_READY", RECONCILIATION_SKILL)));
+                .willReturn(sseWithDeclaredReadSkill("SKILL_READY", RECONCILIATION_SKILL)));
         knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
                 .inScenario("prepared reconciliation session")
                 .whenScenarioStateIs("skill-loaded")
@@ -142,7 +142,7 @@ class WebClientKnowledgeAgentAdapterTest {
     void refusesBusinessReconciliationWhenPreparedSessionCannotProveExactSkillLoading() {
         stubAgentAndSession();
         knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
-                .withRequestBody(containing("会话准备"))
+                .withRequestBody(matchingJsonPath("$.query", equalTo("你好")))
                 .willReturn(sse("SKILL_READY")));
 
         KnowledgeAgentPort port = adapter();
@@ -159,9 +159,9 @@ class WebClientKnowledgeAgentAdapterTest {
         knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
                 .inScenario("prepared generation session")
                 .whenScenarioStateIs(Scenario.STARTED)
-                .withRequestBody(containing("会话准备"))
+                .withRequestBody(matchingJsonPath("$.query", equalTo("你好")))
                 .willSetStateTo("skill-loaded")
-                .willReturn(sseWithReadSkill("SKILL_READY", GENERATION_SKILL)));
+                .willReturn(sseWithDeclaredReadSkill("SKILL_READY", GENERATION_SKILL)));
         knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
                 .inScenario("prepared generation session")
                 .whenScenarioStateIs("skill-loaded")
@@ -181,6 +181,64 @@ class WebClientKnowledgeAgentAdapterTest {
     }
 
     @Test
+    void acceptsKeeReadSkillDeclarationThenArgumentsUpdateOnTheSameCallId() {
+        stubAgentAndSession();
+        knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
+                .withRequestBody(matchingJsonPath("$.query", equalTo("你好")))
+                .willReturn(sseWithDeclaredReadSkill("SKILL_READY", RECONCILIATION_SKILL)));
+
+        KnowledgeAgentPort port = adapter();
+        port.prepareReconciliationSession(reconciliationInvocation("核对提示"));
+        port.closePreparedSession();
+
+        knowledgeEngine.verify(postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-1"))
+                .withRequestBody(matchingJsonPath("$.query", equalTo("你好")))
+                .withRequestBody(matchingJsonPath("$.skill_names", equalToJson("[\"feature-scope-reconciliation\"]"))));
+    }
+
+    @Test
+    void rejectsReadSkillDeclarationWithoutArgumentsUpdateBeforeComplete() {
+        stubAgentAndSession();
+        knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
+                .withRequestBody(matchingJsonPath("$.query", equalTo("你好")))
+                .willReturn(aResponse().withHeader("Content-Type", "text/event-stream")
+                        .withBody(readSkillDeclaration("read-skill-1") + completeEvent())));
+
+        assertThatThrownBy(() -> adapter().prepareReconciliationSession(reconciliationInvocation("核对提示")))
+                .isInstanceOf(KnowledgeAgentSkillPreparationException.class)
+                .hasMessageContaining("required read_skill evidence");
+    }
+
+    @Test
+    void rejectsReadSkillDeclarationWhenAnotherCallIdSuppliesTheExactSkill() {
+        stubAgentAndSession();
+        knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
+                .withRequestBody(matchingJsonPath("$.query", equalTo("你好")))
+                .willReturn(aResponse().withHeader("Content-Type", "text/event-stream")
+                        .withBody(readSkillDeclaration("declared-call")
+                                + readSkillEvents(RECONCILIATION_SKILL, true, "other-call") + completeEvent())));
+
+        assertThatThrownBy(() -> adapter().prepareReconciliationSession(reconciliationInvocation("核对提示")))
+                .isInstanceOf(KnowledgeAgentSkillPreparationException.class)
+                .hasMessageContaining("required read_skill evidence");
+    }
+
+    @Test
+    void rejectsReadSkillDeclarationResultWithoutExactSkillArgumentsOnTheSameCallId() {
+        stubAgentAndSession();
+        knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
+                .withRequestBody(matchingJsonPath("$.query", equalTo("你好")))
+                .willReturn(aResponse().withHeader("Content-Type", "text/event-stream")
+                        .withBody(readSkillDeclaration("read-skill-1")
+                                + "event: message\ndata: {\"response_type\":\"tool_result\",\"done\":false,\"data\":{\"tool_call_id\":\"read-skill-1\",\"success\":true}}\n\n"
+                                + completeEvent())));
+
+        assertThatThrownBy(() -> adapter().prepareReconciliationSession(reconciliationInvocation("核对提示")))
+                .isInstanceOf(KnowledgeAgentSkillPreparationException.class)
+                .hasMessageContaining("required read_skill evidence");
+    }
+
+    @Test
     void doesNotRetryACompletedPreparationThatLacksReadSkillEvidence() {
         stubAgent();
         knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/sessions"))
@@ -193,7 +251,7 @@ class WebClientKnowledgeAgentAdapterTest {
                 .whenScenarioStateIs("second session")
                 .willReturn(okJson("{\"success\":true,\"data\":{\"id\":\"session-2\"}}")));
         knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
-                .withRequestBody(containing("会话准备"))
+                .withRequestBody(matchingJsonPath("$.query", equalTo("你好")))
                 .willReturn(sse("SKILL_READY")));
         KnowledgeAgentPort port = new WebClientKnowledgeAgentAdapter(knowledgeEngine.baseUrl() + "/api/v1",
                 "test-key", FIXTURE_TIMEOUT, 2, 20_000);
@@ -204,7 +262,7 @@ class WebClientKnowledgeAgentAdapterTest {
 
         knowledgeEngine.verify(1, postRequestedFor(urlEqualTo("/api/v1/sessions")));
         knowledgeEngine.verify(1, postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-1"))
-                .withRequestBody(containing("会话准备")));
+                .withRequestBody(matchingJsonPath("$.query", equalTo("你好"))));
         knowledgeEngine.verify(0, postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-1"))
                 .withRequestBody(containing("核对提示")));
     }
@@ -245,7 +303,7 @@ class WebClientKnowledgeAgentAdapterTest {
     void rejectsAnyRetrievalToolDuringPreparationWithoutSendingTheBusinessPrompt() {
         stubAgentAndSession();
         knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
-                .withRequestBody(containing("会话准备"))
+                .withRequestBody(matchingJsonPath("$.query", equalTo("你好")))
                 .willReturn(aResponse().withHeader("Content-Type", "text/event-stream")
                         .withBody("event: message\ndata: {\"response_type\":\"tool_call\",\"done\":false,\"data\":{\"tool_name\":\"knowledge_search\",\"tool_call_id\":\"search-1\"}}\n\n"
                                 + "event: message\ndata: {\"response_type\":\"complete\",\"done\":true,\"content\":\"\"}\n\n")));
@@ -264,7 +322,7 @@ class WebClientKnowledgeAgentAdapterTest {
     void rejectsWrongReadSkillBeforeALaterCorrectSkillDuringPreparation() {
         stubAgentAndSession();
         knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
-                .withRequestBody(containing("会话准备"))
+                .withRequestBody(matchingJsonPath("$.query", equalTo("你好")))
                 .willReturn(aResponse().withHeader("Content-Type", "text/event-stream")
                         .withBody(readSkillEvents(RECONCILIATION_SKILL, true)
                                 .replace(RECONCILIATION_SKILL, GENERATION_SKILL)
@@ -285,7 +343,7 @@ class WebClientKnowledgeAgentAdapterTest {
     void rejectsAnyNonTerminalErrorAfterSuccessfulSkillReadDuringPreparation() {
         stubAgentAndSession();
         knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
-                .withRequestBody(containing("会话准备"))
+                .withRequestBody(matchingJsonPath("$.query", equalTo("你好")))
                 .willReturn(aResponse().withHeader("Content-Type", "text/event-stream")
                         .withBody(readSkillEvents(RECONCILIATION_SKILL, true)
                                 + "event: message\ndata: {\"response_type\":\"error\",\"done\":false,\"message\":\"工具失败\"}\n\n"
@@ -516,6 +574,11 @@ class WebClientKnowledgeAgentAdapterTest {
         return sseWithReadSkillResult(answer, skillName, true);
     }
 
+    private static com.github.tomakehurst.wiremock.client.ResponseDefinitionBuilder sseWithDeclaredReadSkill(String answer, String skillName) {
+        return aResponse().withHeader("Content-Type", "text/event-stream")
+                .withBody(readSkillDeclaration("read-skill-1") + readSkillEvents(skillName, true) + answerAndComplete(answer));
+    }
+
     private static com.github.tomakehurst.wiremock.client.ResponseDefinitionBuilder sseWithReadSkillResult(
             String answer, String skillName, boolean success) {
         return aResponse().withHeader("Content-Type", "text/event-stream")
@@ -523,12 +586,21 @@ class WebClientKnowledgeAgentAdapterTest {
     }
 
     private static String readSkillEvents(String skillName, boolean success) {
+        return readSkillEvents(skillName, success, "read-skill-1");
+    }
+
+    private static String readSkillEvents(String skillName, boolean success, String toolCallId) {
         // KEE handler contract: tool-call arguments hold the Skill name and the tool result is
         // correlated only through tool_call_id. Keep this fixture wire-compatible with KEE.
-        return "event: message\ndata: {\"response_type\":\"tool_call\",\"done\":false,\"data\":{\"tool_name\":\"read_skill\",\"tool_call_id\":\"read-skill-1\",\"arguments\":{\"skill_name\":"
+        return "event: message\ndata: {\"response_type\":\"tool_call\",\"done\":false,\"data\":{\"tool_name\":\"read_skill\",\"tool_call_id\":" + quote(toolCallId) + ",\"arguments\":{\"skill_name\":"
                 + quote(skillName) + "}}}\n\n"
-                + "event: message\ndata: {\"response_type\":\"tool_result\",\"done\":false,\"data\":{\"tool_call_id\":\"read-skill-1\",\"success\":"
+                + "event: message\ndata: {\"response_type\":\"tool_result\",\"done\":false,\"data\":{\"tool_call_id\":" + quote(toolCallId) + ",\"success\":"
                 + success + "}}\n\n";
+    }
+
+    private static String readSkillDeclaration(String toolCallId) {
+        return "event: message\ndata: {\"response_type\":\"tool_call\",\"done\":false,\"data\":{\"tool_name\":\"read_skill\",\"tool_call_id\":"
+                + quote(toolCallId) + ",\"arguments\":null}}\n\n";
     }
 
     private static com.github.tomakehurst.wiremock.client.ResponseDefinitionBuilder sseWithCallIdReadSkillResult(
