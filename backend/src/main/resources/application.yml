@@ -1,0 +1,32 @@
+spring:
+  application:
+    name: testcase-agent-backend
+  datasource:
+    url: ${TESTCASE_DB_URL}
+    username: ${TESTCASE_DB_USERNAME}
+    password: ${TESTCASE_DB_PASSWORD}
+  flyway:
+    locations: classpath:db/migration
+
+app:
+  artifacts:
+    root: ${TESTCASE_ARTIFACT_ROOT:./var/artifacts}
+  knowledge-agent:
+    enabled: ${TESTCASE_KNOWLEDGE_AGENT_ENABLED:false}
+    api-base-url: ${TESTCASE_KNOWLEDGE_AGENT_API_BASE_URL:}
+    api-key: ${TESTCASE_KNOWLEDGE_AGENT_API_KEY:}
+    timeout: ${TESTCASE_KNOWLEDGE_AGENT_TIMEOUT:5m}
+  authorized-task-options:
+    options:
+      - id: ${TESTCASE_TASK_SCOPE_OPTION_ID:strategic-v1-admission}
+        label: ${TESTCASE_TASK_SCOPE_LABEL:战略运管 V1.0 准入材料}
+        agent-id: ${TESTCASE_TASK_AGENT_ID:005876e2-a62f-41f3-8807-29bfd3f1e257}
+        requirement-knowledge-base-id: ${TESTCASE_REQUIREMENT_KNOWLEDGE_BASE_ID:abd55572-af4b-44e9-820b-3a8a5e645664}
+        system-id: ${TESTCASE_REQUIREMENT_SYSTEM_ID:zlyg}
+        version-id: ${TESTCASE_REQUIREMENT_VERSION_ID:bc894091-fa19-4ee7-8ed6-2558c0d5434f}
+        project-id: ${TESTCASE_REQUIREMENT_PROJECT_ID:}
+        requirement-document-ids: ${TESTCASE_REQUIREMENT_DOCUMENT_IDS:c32e32ab-a8c3-4a0b-9440-c941145c3cde,b9a90ef9-5abf-4865-ba7f-d81a1fedf7f7}
+        example-knowledge-base-id: ${TESTCASE_EXAMPLE_KNOWLEDGE_BASE_ID:1a2f0a98-546e-4cd0-a437-b17e866a21ac}
+        example-good-document-ids: ${TESTCASE_EXAMPLE_GOOD_DOCUMENT_IDS:61c082f6-aed4-4b40-88d7-1cb885885d87}
+        example-bad-document-ids: ${TESTCASE_EXAMPLE_BAD_DOCUMENT_IDS:260c0591-5eb2-4e04-8a31-dffa8d36beb6}
+        requirement-admission-type-keys: ${TESTCASE_REQUIREMENT_ADMISSION_TYPE_KEYS:function_list,work_order_plan}

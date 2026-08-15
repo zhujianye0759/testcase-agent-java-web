@@ -1,0 +1,93 @@
+:root {
+  /* PC UI v1.0.0 source-confirmed color foundations. */
+  --color-primary: #155BD4;
+  --color-primary-hover: #3A7DE0;
+  --color-primary-active: #0940AD;
+  --color-primary-disabled: #91C2FA;
+  --color-primary-bg: #E6F3FF;
+  --color-bg-white: #FFFFFF;
+  --color-bg-single: #F2F4F6;
+  --color-bg-double: #EDEFF1;
+  --color-border: #EBEDEF;
+  --color-divider-input: #E2E5E8;
+  --color-text-primary: #1F1F1F;
+  --color-text-secondary: #666666;
+  --color-text-tertiary: #999999;
+  --color-text-placeholder: #B9BBBF;
+
+  --color-success: #2AB55E;
+  --color-success-hover: #4CC273;
+  --color-success-active: #1A8F49;
+  --color-success-disabled: #D4F0DF;
+  --color-success-bg: #E9F7EE;
+  --color-warning: #F28F15;
+  --color-warning-hover: #FFAF40;
+  --color-warning-active: #CC6D08;
+  --color-warning-disabled: #FFE9BA;
+  --color-warning-bg: #FFF8E6;
+  --color-error: #F02525;
+  --color-error-hover: #FC544E;
+  --color-error-active: #C9141A;
+  --color-error-disabled: #FFD1C9;
+  --color-error-bg: #FFF2F0;
+
+  /* PC UI v1.0.0 source-confirmed typography foundations. */
+  --font-family-sans: "Microsoft YaHei", "PingFang SC", sans-serif;
+  --type-display-64: 600 64px/72px var(--font-family-sans);
+  --type-display-48: 600 48px/56px var(--font-family-sans);
+  --type-display-36: 600 36px/44px var(--font-family-sans);
+  --type-display-28: 600 28px/36px var(--font-family-sans);
+  --type-h1: 600 24px/32px var(--font-family-sans);
+  --type-h2: 600 20px/28px var(--font-family-sans);
+  --type-h3: 600 16px/24px var(--font-family-sans);
+  --type-paragraph-large: 400 16px/32px var(--font-family-sans);
+  --type-body-strong: 600 14px/22px var(--font-family-sans);
+  --type-body: 400 14px/22px var(--font-family-sans);
+  --type-caption: 400 12px/20px var(--font-family-sans);
+
+  /* PC UI v1.0.0 source-confirmed spacing and radii. */
+  --space-0: 0px;
+  --space-4: 4px;
+  --space-8: 8px;
+  --space-16: 16px;
+  --space-24: 24px;
+  --space-32: 32px;
+  --space-40: 40px;
+  --space-48: 48px;
+  --space-56: 56px;
+  --space-64: 64px;
+  --space-72: 72px;
+  --space-80: 80px;
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 8px;
+
+  /* PC UI v1.0.0 source-confirmed icon sizes. */
+  --icon-size-12: 12px;
+  --icon-size-16: 16px;
+  --icon-size-20: 20px;
+  --icon-size-24: 24px;
+  --icon-size-28: 28px;
+  --icon-size-32: 32px;
+  --icon-size-36: 36px;
+  --icon-size-40: 40px;
+  --icon-size-44: 44px;
+
+  /* PC UI v1.0.0 source-confirmed grid and page-shell dimensions. */
+  --grid-columns-simple: 12;
+  --grid-columns-complex: 24;
+  --shell-top-height: 56px;
+  --shell-context-height: 106px;
+  --shell-bottom-actions-height: 64px;
+  --shell-sidebar-expanded-width: 240px;
+  --shell-sidebar-collapsed-width: 48px;
+  --shell-sidebar-content-gap: 24px;
+  --shell-vertical-boundary: 16px;
+
+  /* Project-configurable accessibility choice; see docs/ui-decisions.md. */
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+
+  /* Project-configurable overlay layer; see docs/ui-decisions.md. */
+  --layer-dialog: 1000;
+}

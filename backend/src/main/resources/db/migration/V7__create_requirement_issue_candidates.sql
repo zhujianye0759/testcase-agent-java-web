@@ -1,0 +1,23 @@
+CREATE TABLE requirement_issue_candidate (
+    id CHAR(36) NOT NULL,
+    task_id CHAR(36) NOT NULL,
+    normalization_hash CHAR(64) NOT NULL,
+    document_id VARCHAR(255) NOT NULL,
+    location VARCHAR(1024) NOT NULL,
+    feature_id VARCHAR(255) NOT NULL,
+    problem_type VARCHAR(255) NOT NULL,
+    severity VARCHAR(16) NOT NULL,
+    original_text_summary TEXT NOT NULL,
+    explanation TEXT NOT NULL,
+    testing_impact TEXT NOT NULL,
+    proposed_improvement TEXT NOT NULL,
+    confidence_state VARCHAR(16) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    evidence_ids JSON NOT NULL,
+    candidate_ids JSON NOT NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    CONSTRAINT uq_requirement_issue_candidate_task_key UNIQUE (task_id, normalization_hash),
+    CONSTRAINT chk_requirement_issue_candidate_status CHECK (status = 'PENDING_REVIEW')
+) ENGINE = InnoDB DEFAULT CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;

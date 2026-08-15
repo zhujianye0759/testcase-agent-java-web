@@ -1,0 +1,7 @@
+spring:
+  config:
+    activate:
+      on-profile: local
+  datasource:
+    url: ${TESTCASE_DB_URL:jdbc:mysql://localhost:3307/testcase_agent?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
+    username: ${TESTCASE_DB_USERNAME:testcase_agent}

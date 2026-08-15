@@ -1,0 +1,63 @@
+import { describe, expect, it, vi } from 'vitest'
+
+import { createTaskApi, type CreateTaskPayload } from './taskApi'
+
+const payload: CreateTaskPayload = {
+  taskMode: 'FEATURE',
+  featureDescription: '用户登录',
+  fewShotPolicy: 'NONE',
+  schemaVersion: '1.0',
+  promptVersion: '1.0',
+  scopeOptionId: 'scope-1',
+  prompt: '生成测试用例',
+}
+
+describe('task API client', () => {
+  it('sends the frozen creation payload and derives download URLs from opaque artifact IDs only', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 'task-123' }), { status: 201 }))
+    const api = createTaskApi(fetcher)
+
+    await expect(api.createTask(payload)).resolves.toEqual({ id: 'task-123' })
+
+    expect(fetcher).toHaveBeenCalledWith('/api/tasks', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }))
+    expect(api.artifactDownloadUrl('artifact/456')).toBe('/api/artifacts/artifact%2F456/download')
+  })
+
+  it('loads browser-safe task scope options without requesting credentials', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      scopeOptions: [{ id: 'scope-1', label: '战略运管 V1.0 准入材料' }],
+    }), { status: 200 }))
+    const api = createTaskApi(fetcher)
+
+    await expect(api.getTaskOptions()).resolves.toEqual([{ id: 'scope-1', label: '战略运管 V1.0 准入材料' }])
+    expect(fetcher).toHaveBeenCalledWith('/api/task-options', undefined)
+  })
+
+  it('requests the paginated shared task list without an unsupported internal-ID query', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      items: [], page: 0, size: 20, totalItems: 0,
+    }), { status: 200 }))
+    const api = createTaskApi(fetcher)
+
+    await expect(api.listTasks({ page: 0, size: 20 })).resolves.toMatchObject({
+      page: 0,
+      totalItems: 0,
+    })
+
+    expect(fetcher).toHaveBeenCalledWith('/api/tasks?page=0&size=20', undefined)
+  })
+
+  it('posts shared cancellation and retry actions exactly once per explicit call', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+    const api = createTaskApi(fetcher)
+
+    await api.cancelTask('task/123')
+    await api.retryTask('task/123')
+
+    expect(fetcher).toHaveBeenNthCalledWith(1, '/api/tasks/task%2F123/cancel', { method: 'POST' })
+    expect(fetcher).toHaveBeenNthCalledWith(2, '/api/tasks/task%2F123/retry', { method: 'POST' })
+  })
+})
