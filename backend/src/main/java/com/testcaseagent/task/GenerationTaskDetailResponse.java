@@ -4,7 +4,7 @@ import com.testcaseagent.markdown.MarkdownAuditRow;
 import com.testcaseagent.markdown.MarkdownTestCaseRow;
 import java.util.List;
 
-/** Browser-safe accumulated Markdown task projection. [Req-ID]: REQ-WEB-003, REQ-KAG-006, REQ-SCP-004 */
+/** Browser-safe accumulated Markdown task projection. [Req-ID]: REQ-WEB-003, REQ-KAG-006, REQ-SCP-004, REQ-CWR-001 */
 public record GenerationTaskDetailResponse(
         String id,
         String taskMode,
@@ -17,14 +17,15 @@ public record GenerationTaskDetailResponse(
         FrozenScope frozenScope,
         List<Batch> batches,
         List<AuditRow> auditRows,
-        List<TestCaseRow> testCaseRows) {
+        List<TestCaseRow> testCaseRows,
+        GenerationTaskBusinessProgress businessProgress) {
 
     public static GenerationTaskDetailResponse from(GenerationTaskDetail detail) {
         return new GenerationTaskDetailResponse(detail.id(), detail.taskMode().name(), detail.status().name(),
                 detail.totalBatches(), detail.completedBatches(), detail.artifactReady(), detail.artifactId(), detail.failureSummary(),
                 FrozenScope.from(detail.request()), detail.batches().stream().map(Batch::from).toList(),
                 detail.acceptedRows().auditRows().stream().map(AuditRow::from).toList(),
-                detail.acceptedRows().testCaseRows().stream().map(TestCaseRow::from).toList());
+                detail.acceptedRows().testCaseRows().stream().map(TestCaseRow::from).toList(), detail.businessProgress());
     }
 
     public record FrozenScope(String state, String materialCategory, String admissionType, int documentCount) {

@@ -144,10 +144,37 @@ class TaskExecutionQueueIntegrationTest {
                         WHERE id = ?
                         """, batchId);
 
-        queue.recoverExpiredClaims();
+        queue.recoverAtStartup();
 
         assertThat(jdbcTemplate.queryForObject("SELECT status FROM generation_task WHERE id = ?", String.class, taskId))
                 .isEqualTo("QUEUED");
+        assertThat(jdbcTemplate.queryForObject("SELECT status FROM generation_batch WHERE id = ?", String.class, batchId))
+                .isEqualTo("QUEUED");
+        assertThat(jdbcTemplate.queryForObject("SELECT status FROM generation_attempt WHERE id = ?", String.class, attemptId))
+                .isEqualTo("QUEUED");
+        assertThat(jdbcTemplate.queryForObject("SELECT task_id FROM task_execution_slot WHERE slot_number = ?", String.class,
+                crashedClaim.slotNumber())).isNull();
+        assertThat(queue.claimNext()).hasValueSatisfying(replacement -> assertThat(replacement.taskId()).isEqualTo(taskId));
+    }
+
+    @Test
+    void startupRecoveryRequeuesAnAuditingAllTaskWithPlannedButNeverRunningBatches() {
+        String taskId = UUID.randomUUID().toString();
+        String batchId = UUID.randomUUID().toString();
+        String attemptId = UUID.randomUUID().toString();
+        CreateGenerationTaskRequest frozenAll = new CreateGenerationTaskRequest(GenerationTaskMode.ALL, "ff-1", List.of("ff-1"),
+                java.util.Map.of("ff-1", "订单查询"), FewShotPolicy.NONE, "1.0", "1.0", "queue-agent",
+                new RequirementScope("requirement-kb", "system-1", "version-1", "admission_material", null,
+                        List.of(new RequirementDocumentCoordinate("function-doc", "function_list"))),
+                new ExampleScope("example-kb", List.of("example-1")), List.of("function_list"), "恢复冻结功能");
+        repository.createTask(taskId, frozenAll);
+        repository.createBatch(batchId, taskId, "ff-1", 1);
+        repository.createAttempt(attemptId, batchId);
+        TaskExecutionClaim crashedClaim = queue.claimNext().orElseThrow();
+
+        queue.recoverAtStartup();
+
+        assertThat(repository.taskStatus(taskId)).isEqualTo(GenerationTaskStatus.QUEUED);
         assertThat(jdbcTemplate.queryForObject("SELECT status FROM generation_batch WHERE id = ?", String.class, batchId))
                 .isEqualTo("QUEUED");
         assertThat(jdbcTemplate.queryForObject("SELECT status FROM generation_attempt WHERE id = ?", String.class, attemptId))

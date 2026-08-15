@@ -44,6 +44,8 @@ class MarkdownWorkbookExporterTest {
                     .containsExactly("需求与功能清单审查发现", "测试用例");
             assertThat(headers(workbook, 0)).containsExactly("序号", "对象/功能点", "问题分类", "证据对照");
             assertThat(headers(workbook, 1)).containsExactly("用例名称", "功能模块", "前提约束", "执行步骤", "预期结果", "对应需求内容");
+            assertThat(workbook.getSheetAt(0).getRow(1).getLastCellNum()).isEqualTo((short) 4);
+            assertThat(workbook.getSheetAt(1).getRow(1).getLastCellNum()).isEqualTo((short) 6);
             assertThat(workbook.getSheetAt(0).getRow(1).getCell(1).getStringCellValue()).isEqualTo("第二功能");
             assertThat(workbook.getSheetAt(0).getRow(2).getCell(0).getStringCellValue()).isEqualTo("1");
             assertThat(workbook.getSheetAt(1).getRow(1).getCell(0).getStringCellValue()).isEqualTo("'=首个用例");

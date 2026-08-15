@@ -6,7 +6,7 @@ import java.util.List;
 /**
  * Browser-safe shared state for one generation task.
  *
- * [Req-ID]: REQ-TSK-002, REQ-TSK-007, REQ-EXP-001
+ * [Req-ID]: REQ-TSK-002, REQ-TSK-007, REQ-EXP-001, REQ-CWR-001
  */
 public record GenerationTaskDetail(
         String id,
@@ -21,5 +21,6 @@ public record GenerationTaskDetail(
         String failureSummary,
         List<GenerationBatchDetail> batches,
         MarkdownTaskRows acceptedRows,
-        CreateGenerationTaskRequest request) {
+        CreateGenerationTaskRequest request,
+        GenerationTaskBusinessProgress businessProgress) {
 }

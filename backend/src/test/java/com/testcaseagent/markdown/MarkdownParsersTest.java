@@ -6,50 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
-/** [Req-ID]: REQ-KAG-004, REQ-KAG-007, REQ-ANA-001, REQ-ANA-002, REQ-ANA-003, REQ-ANA-005, REQ-EXP-007 */
+/** [Req-ID]: REQ-KAG-004, REQ-KAG-007, REQ-ANA-001, REQ-ANA-002, REQ-ANA-003, REQ-ANA-005, REQ-EXP-007, REQ-CAG-006 */
 class MarkdownParsersTest {
-
-    @Test
-    void parsesTheFeatureListContractWithEscapedPipes() {
-        List<MarkdownFeatureRow> rows = new MarkdownFeatureListParser().parse("""
-                ## 功能点清单
-                | 序号 | 功能点 |
-                | --- | --- |
-                | 1 | 用户\\|登录 |
-                | 2 | 重置密码 |
-                """);
-
-        assertEquals(List.of(new MarkdownFeatureRow(1, "用户|登录"), new MarkdownFeatureRow(2, "重置密码")), rows);
-        assertThrows(UnsupportedOperationException.class, () -> rows.add(new MarkdownFeatureRow(3, "退出")));
-    }
-
-    @Test
-    void rejectsMalformedFeatureDiscoveryPayloads() {
-        MarkdownFeatureListParser parser = new MarkdownFeatureListParser();
-
-        assertThrows(MarkdownContractException.class, () -> parser.parse("""
-                ## 功能点列表
-                | 序号 | 功能点 |
-                | --- | --- |
-                | 1 | 登录 |
-                """));
-        assertThrows(MarkdownContractException.class, () -> parser.parse("""
-                ## 功能点清单
-                | 序号 | 功能点 |
-                | --- | --- |
-                | 1 | 登录 |
-                | 1 | 退出 |
-                """));
-        assertThrows(MarkdownContractException.class, () -> parser.parse("""
-                ## 功能点清单
-                | 序号 | 功能点 |
-                | --- | --- |
-                | 0 | 登录 |
-                """));
-        assertThrows(MarkdownContractException.class, () -> parser.parse("""
-                {"mode":"FEATURE_AUDIT"}
-                """));
-    }
 
     @Test
     void parsesTheApprovedGenerationTables() {
@@ -57,7 +15,7 @@ class MarkdownParsersTest {
                 ## 需求与功能清单审查发现
                 | 序号 | 对象/功能点 | 问题分类 | 证据对照 |
                 | --- | --- | --- | --- |
-                | 1 | 登录 | 边界遗漏 | 未说明锁定策略 |
+                | 1 | 登录 | 边界遗漏 | 《需求规格说明书》3.1：未说明锁定策略。 |
 
                 ## 测试用例
                 | 用例名称 | 功能模块 | 前提约束 | 执行步骤 | 预期结果 | 对应需求内容 |
@@ -68,15 +26,18 @@ class MarkdownParsersTest {
         MarkdownGenerationResult result = new MarkdownGenerationResultParser().parse(markdown);
 
         assertEquals(markdown, result.rawMarkdown());
-        assertEquals(List.of(new MarkdownAuditRow(1, "登录", "边界遗漏", "未说明锁定策略")), result.auditRows());
+        assertEquals(List.of(new MarkdownAuditRow(1, "登录", "边界遗漏", "《需求规格说明书》3.1：未说明锁定策略。")), result.auditRows());
         assertEquals(List.of(new MarkdownTestCaseRow("正确凭据登录", "用户|登录", "已注册用户", "输入账号\n输入密码",
                 "进入首页\n显示姓名", "需求 3.1")), result.testCaseRows());
         assertThrows(UnsupportedOperationException.class, () -> result.testCaseRows().clear());
     }
 
     @Test
-    void ignoresBlankSeparatedNonStructuralNotesAfterTheFinalGenerationTable() {
-        MarkdownGenerationResult result = new MarkdownGenerationResultParser().parse("""
+    /** [Req-ID]: REQ-CAG-006 */
+    void rejectsTrailingProseAfterTheFinalGenerationTable() {
+        MarkdownGenerationResultParser parser = new MarkdownGenerationResultParser();
+
+        assertThrows(MarkdownContractException.class, () -> parser.parse("""
                 ## 需求与功能清单审查发现
 
                 | 序号 | 对象/功能点 | 问题分类 | 证据对照 |
@@ -90,24 +51,43 @@ class MarkdownParsersTest {
                 | 月度例会功能优化-查看_正向 | 信息中心 | 已登录系统 | 进入月度例会页面 | 展示月度例会内容 | 需求原文 4.2 |
 
                 > 说明：未明确的内容已记录在审查发现中。
-                """);
-
-        assertEquals(1, result.auditRows().size());
-        assertEquals(1, result.testCaseRows().size());
+                """));
     }
 
+    /** [Req-ID]: REQ-CAG-006 */
     @Test
-    void ignoresBlankSeparatedNonStructuralNotesAfterTheFeatureList() {
-        List<MarkdownFeatureRow> rows = new MarkdownFeatureListParser().parse("""
-                ## 功能点清单
-                | 序号 | 功能点 |
-                | --- | --- |
-                | 1 | 登录 |
+    void rejectsEmbeddedJsonRawHtmlAndAThirdGenerationTable() {
+        MarkdownGenerationResultParser parser = new MarkdownGenerationResultParser();
 
-                > 说明：仅列出具备材料依据的功能点。
-                """);
-
-        assertEquals(List.of(new MarkdownFeatureRow(1, "登录")), rows);
+        assertThrows(MarkdownContractException.class, () -> parser.parse("""
+                ## 需求与功能清单审查发现
+                | 序号 | 对象/功能点 | 问题分类 | 证据对照 |
+                | --- | --- | --- | --- |
+                ## 测试用例
+                | 用例名称 | 功能模块 | 前提约束 | 执行步骤 | 预期结果 | 对应需求内容 |
+                | --- | --- | --- | --- | --- | --- |
+                | 登录 | 用户 | 无 | 输入账号 | 登录成功 | 需求 1 {"source":"model"} |
+                """));
+        assertThrows(MarkdownContractException.class, () -> parser.parse("""
+                ## 需求与功能清单审查发现
+                | 序号 | 对象/功能点 | 问题分类 | 证据对照 |
+                | --- | --- | --- | --- |
+                ## 测试用例
+                | 用例名称 | 功能模块 | 前提约束 | 执行步骤 | 预期结果 | 对应需求内容 |
+                | --- | --- | --- | --- | --- | --- |
+                | 登录 | 用户 | 无 | <span>输入账号</span> | 登录成功 | 需求 1 |
+                """));
+        assertThrows(MarkdownContractException.class, () -> parser.parse("""
+                ## 需求与功能清单审查发现
+                | 序号 | 对象/功能点 | 问题分类 | 证据对照 |
+                | --- | --- | --- | --- |
+                ## 测试用例
+                | 用例名称 | 功能模块 | 前提约束 | 执行步骤 | 预期结果 | 对应需求内容 |
+                | --- | --- | --- | --- | --- | --- |
+                | 登录 | 用户 | 无 | 输入账号 | 登录成功 | 需求 1 |
+                | 补充用例 | 补充模块 | 补充前提 | 补充步骤 | 补充结果 | 补充需求 |
+                | --- | --- | --- | --- | --- |
+                """));
     }
 
     @Test

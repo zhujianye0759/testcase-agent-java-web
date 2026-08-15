@@ -3,10 +3,10 @@ package com.testcaseagent.task;
 import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import com.testcaseagent.fewshot.ExampleScope;
+import com.testcaseagent.featureaudit.FrozenFeatureTarget;
 import com.testcaseagent.scope.RequirementScope;
 import com.testcaseagent.testcase.FewShotPolicy;
 import com.testcaseagent.testcase.GenerationTaskMode;
-import com.testcaseagent.markdown.MarkdownFeatureRow;
 import java.util.Objects;
 import java.util.List;
 import java.util.Map;
@@ -47,8 +47,9 @@ public record CreateGenerationTaskRequest(
         if (!suppliedPaths.keySet().equals(java.util.Set.copyOf(featureIds))) {
             throw new IllegalArgumentException("featurePaths must match the frozen feature IDs");
         }
-        featurePaths = featureIds.stream().collect(java.util.stream.Collectors.toUnmodifiableMap(
-                id -> id, id -> requireText(suppliedPaths.get(id), "featurePath")));
+        java.util.LinkedHashMap<String, String> orderedPaths = new java.util.LinkedHashMap<>();
+        for (String id : featureIds) orderedPaths.put(id, requireText(suppliedPaths.get(id), "featurePath"));
+        featurePaths = java.util.Collections.unmodifiableMap(orderedPaths);
         fewShotPolicy = Objects.requireNonNull(fewShotPolicy, "fewShotPolicy must not be null");
         schemaVersion = requireText(schemaVersion, "schemaVersion");
         promptVersion = requireText(promptVersion, "promptVersion");
@@ -83,25 +84,37 @@ public record CreateGenerationTaskRequest(
                 requirementScope, exampleScope, List.of(requirementAdmissionTypeKey), prompt);
     }
 
-    /** Freezes server-discovered ALL-mode feature names in their Markdown table order. */
-    public CreateGenerationTaskRequest withDiscoveredFeatures(List<MarkdownFeatureRow> discoveredRows) {
-        if (taskMode != GenerationTaskMode.ALL || discoveredRows == null || discoveredRows.isEmpty()) {
-            throw new IllegalArgumentException("ALL mode requires discovered features");
+    /**
+     * Replaces an unplanned ALL request with the server-owned, durably frozen generation subset.
+     *
+     * <p>Only eligible targets appear in the generation snapshot. When every frozen target is ineligible the
+     * empty snapshot deliberately remains unplanned so the workflow can record the explicit partial outcome
+     * without inventing a batch.</p>
+     *
+     * [Req-ID]: REQ-CAG-001, REQ-BFA-005
+     */
+    public CreateGenerationTaskRequest withFrozenFeatures(List<FrozenFeatureTarget> frozenTargets) {
+        if (taskMode != GenerationTaskMode.ALL || frozenTargets == null) {
+            throw new IllegalArgumentException("ALL mode requires frozen features");
         }
-        List<String> ids = discoveredRows.stream().map(row -> stableFeatureId(row.sequence(), row.featureName())).toList();
+        List<FrozenFeatureTarget> ordered = frozenTargets.stream()
+                .sorted(java.util.Comparator.comparingInt(FrozenFeatureTarget::stableSequence))
+                .toList();
+        if (ordered.stream().map(FrozenFeatureTarget::stableSequence).distinct().count() != ordered.size()
+                || ordered.stream().map(FrozenFeatureTarget::stableFeatureId).distinct().count() != ordered.size()) {
+            throw new IllegalArgumentException("Frozen feature sequence and IDs must be unique");
+        }
+        for (int index = 0; index < ordered.size(); index++) {
+            if (ordered.get(index).stableSequence() != index + 1) {
+                throw new IllegalArgumentException("Frozen feature sequence must be continuous from one");
+            }
+        }
+        List<FrozenFeatureTarget> eligible = ordered.stream().filter(FrozenFeatureTarget::generationEligible).toList();
+        List<String> ids = eligible.stream().map(FrozenFeatureTarget::stableFeatureId).toList();
         Map<String, String> paths = new java.util.LinkedHashMap<>();
-        for (int index = 0; index < ids.size(); index++) paths.put(ids.get(index), discoveredRows.get(index).featureName());
-        return new CreateGenerationTaskRequest(taskMode, ids.get(0), ids, paths, fewShotPolicy, schemaVersion, promptVersion,
+        for (FrozenFeatureTarget target : eligible) paths.put(target.stableFeatureId(), target.featureName());
+        String nextFeatureId = ids.isEmpty() ? featureId : ids.get(0);
+        return new CreateGenerationTaskRequest(taskMode, nextFeatureId, ids, paths, fewShotPolicy, schemaVersion, promptVersion,
                 agentId, requirementScope, exampleScope, requirementAdmissionTypeKeys, prompt);
-    }
-
-    private static String stableFeatureId(int sequence, String name) {
-        try {
-            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
-                    .digest((sequence + "\\n" + name).getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            return "feature-" + java.util.HexFormat.of().formatHex(digest, 0, 12);
-        } catch (java.security.NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("SHA-256 is required", exception);
-        }
     }
 }

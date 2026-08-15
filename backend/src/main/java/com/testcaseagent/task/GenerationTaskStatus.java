@@ -20,7 +20,9 @@ public enum GenerationTaskStatus {
     public boolean canTransitionTo(GenerationTaskStatus target) {
         return switch (this) {
             case QUEUED -> EnumSet.of(AUDITING, CANCELLED).contains(target);
-            case AUDITING -> EnumSet.of(GENERATING, FAILED, CANCELLED).contains(target);
+            // A fully traversed and reconciled ALL task can truthfully end as PARTIAL when every frozen target is
+            // explicitly ineligible. It must not fabricate a generation batch just to reach a later lifecycle state.
+            case AUDITING -> EnumSet.of(GENERATING, PARTIAL, FAILED, CANCELLED).contains(target);
             case GENERATING -> EnumSet.of(VALIDATING, FAILED, CANCELLED).contains(target);
             case VALIDATING -> EnumSet.of(COMPLETED, PARTIAL, FAILED, CANCELLED).contains(target);
             case PARTIAL, FAILED -> target == QUEUED;

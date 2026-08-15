@@ -2,9 +2,10 @@ package com.testcaseagent.markdown;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 
 /**
- * [Req-ID]: REQ-KAG-004, REQ-ANA-002, REQ-ANA-003, REQ-ANA-005, REQ-EXP-007
+ * [Req-ID]: REQ-KAG-004, REQ-ANA-002, REQ-ANA-003, REQ-ANA-005, REQ-EXP-007, REQ-CAG-006
  *
  * <p>Accepts only the approved ordered audit and test-case tables. It fails closed so later persistence
  * and workbook export never need to infer table ownership or handle model-provided images.</p>
@@ -14,9 +15,13 @@ public final class MarkdownGenerationResultParser {
     private static final List<String> AUDIT_HEADER = List.of("序号", "对象/功能点", "问题分类", "证据对照");
     private static final String TEST_CASE_HEADING = "## 测试用例";
     private static final List<String> TEST_CASE_HEADER = List.of("用例名称", "功能模块", "前提约束", "执行步骤", "预期结果", "对应需求内容");
+    private static final Pattern JSON_OBJECT = Pattern.compile("\\{\\s*(?:}|\"(?:\\\\.|[^\"\\\\])*\"\\s*:)");
+    private static final Pattern JSON_ARRAY = Pattern.compile("\\[\\s*(?:]|\\{|\"(?:\\\\.|[^\"\\\\])*\"\\s*(?:,|])|(?:true|false|null|-?\\d+)\\s*(?:,|]))");
+    private static final Pattern RAW_HTML_TAG = Pattern.compile("(?i)<(?!br\\s*/?>)[a-z/][^>]*>");
 
     /** Parses one completed response into immutable audit and test-case rows. */
     public MarkdownGenerationResult parse(String markdown) {
+        requirePlainMarkdownPayload(markdown);
         List<String> lines = MarkdownTableSupport.contractLines(markdown);
         int index = 0;
         MarkdownTableSupport.requireHeading(lines, index, AUDIT_HEADING);
@@ -59,8 +64,19 @@ public final class MarkdownGenerationResultParser {
         if (testCaseRows.isEmpty()) {
             throw MarkdownTableSupport.invalid("at least one test-case row");
         }
-        MarkdownTableSupport.requireNonStructuralTrailingNotes(lines, index);
+        if (MarkdownTableSupport.skipBlankLines(lines, index) != lines.size()) {
+            throw MarkdownTableSupport.invalid("no content after the final test-case table");
+        }
         return new MarkdownGenerationResult(markdown, auditRows, testCaseRows);
+    }
+
+    private void requirePlainMarkdownPayload(String markdown) {
+        if (markdown != null && (JSON_OBJECT.matcher(markdown).find() || JSON_ARRAY.matcher(markdown).find())) {
+            throw MarkdownTableSupport.invalid("Markdown tables instead of JSON content");
+        }
+        if (markdown != null && RAW_HTML_TAG.matcher(markdown).find()) {
+            throw MarkdownTableSupport.invalid("text-only table cells with only <br> line separators");
+        }
     }
 
     private int parsePositiveSequence(String value, String rowKind) {

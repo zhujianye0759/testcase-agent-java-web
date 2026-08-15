@@ -31,6 +31,8 @@ class DynamicTaskScopeResolverTest {
         assertThat(request.requirementScope().projectId()).isNull();
         assertThat(request.requirementScope().documents()).extracting(document -> document.documentId())
                 .containsExactly("function-doc", "work-order-doc");
+        assertThat(request.requirementScope().documents()).extracting(document -> document.materialTypeKey())
+                .containsExactly("function_list", "work_order_plan");
         assertThat(request.requirementAdmissionTypeKeys()).containsExactlyInAnyOrder("function_list", "work_order_plan");
         assertThat(request.exampleScope().knowledgeBaseId()).isEqualTo("example-kb");
         assertThat(request.exampleScope().expectedQualityKinds()).containsExactlyInAnyOrderEntriesOf(java.util.Map.of(

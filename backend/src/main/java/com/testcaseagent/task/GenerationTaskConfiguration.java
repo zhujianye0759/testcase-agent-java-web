@@ -3,16 +3,21 @@ package com.testcaseagent.task;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.testcaseagent.export.ApachePoiWorkbookExporter;
 import com.testcaseagent.export.WorkbookExporter;
+import com.testcaseagent.featureaudit.FeatureAuditService;
+import com.testcaseagent.featureaudit.FrozenFeatureService;
+import com.testcaseagent.featureaudit.RequirementMaterialTraversalService;
 import com.testcaseagent.knowledgeagent.KnowledgeAgentProperties;
 import com.testcaseagent.knowledgeagent.KnowledgeAgentPort;
 import com.testcaseagent.knowledgeagent.WebClientKnowledgeAgentAdapter;
 import com.testcaseagent.knowledgeagent.WebClientKnowledgeScopeCatalogAdapter;
 import com.testcaseagent.scope.DynamicScopeCatalogService;
 import com.testcaseagent.scope.KnowledgeScopeCatalogPort;
+import com.testcaseagent.scope.RequirementMaterialReaderPort;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.beans.factory.annotation.Value;
@@ -63,6 +68,19 @@ public class GenerationTaskConfiguration {
                 properties.getMaxAgentDiscoveryAttempts(), properties.getMaxEventCharacters());
     }
 
+    /**
+     * Exposes the KEE adapter's separate parsed-material capability without coupling core workflow code to HTTP.
+     * Test configurations may provide an independent port implementation.
+     *
+     * [Req-ID]: REQ-SMR-001, REQ-SMR-002
+     */
+    @Bean
+    @ConditionalOnMissingBean(RequirementMaterialReaderPort.class)
+    RequirementMaterialReaderPort requirementMaterialReaderPort(KnowledgeAgentPort knowledgeAgentPort) {
+        if (knowledgeAgentPort instanceof RequirementMaterialReaderPort reader) return reader;
+        throw new IllegalStateException("Configured KnowledgeAgentPort does not provide parsed material reading");
+    }
+
     @Bean
     GenerationTaskRepository generationTaskRepository(
             JdbcTemplate jdbcTemplate, ObjectMapper objectMapper, PlatformTransactionManager transactionManager) {
@@ -85,6 +103,23 @@ public class GenerationTaskConfiguration {
         return new TaskExecutionQueue(jdbcTemplate, transactionManager);
     }
 
+    @Bean
+    RequirementMaterialTraversalService requirementMaterialTraversalService(
+            @Qualifier("requirementMaterialReaderPort") RequirementMaterialReaderPort materialReader,
+            GenerationTaskRepository repository) {
+        return new RequirementMaterialTraversalService(materialReader, repository);
+    }
+
+    @Bean
+    FeatureAuditService featureAuditService(GenerationTaskRepository repository, KnowledgeAgentPort knowledgeAgentPort) {
+        return new FeatureAuditService(repository, knowledgeAgentPort);
+    }
+
+    @Bean
+    FrozenFeatureService frozenFeatureService(GenerationTaskRepository repository) {
+        return new FrozenFeatureService(repository);
+    }
+
     /**
      * Creates artifacts only under the application-owned configured root; task execution must not
      * construct a workbook writer ad hoc because export safety is a shared workflow boundary.
@@ -104,9 +139,12 @@ public class GenerationTaskConfiguration {
             WorkbookExporter workbookExporter,
             ObjectMapper objectMapper,
             TaskExecutionQueue taskExecutionQueue,
-            TaskExecutor generationTaskExecutor) {
+            TaskExecutor generationTaskExecutor,
+            RequirementMaterialTraversalService materialTraversalService,
+            FeatureAuditService featureAuditService,
+            FrozenFeatureService frozenFeatureService) {
         return new GenerationWorkflow(repository, knowledgeAgentPort, workbookExporter, objectMapper,
-                taskExecutionQueue, generationTaskExecutor);
+                taskExecutionQueue, generationTaskExecutor, materialTraversalService, featureAuditService, frozenFeatureService);
     }
 
     @Bean
@@ -122,7 +160,7 @@ public class GenerationTaskConfiguration {
 
     @Bean
     ApplicationRunner generationTaskRecoveryRunner(GenerationWorkflow workflow) {
-        return ignored -> workflow.recoverExpiredClaims();
+        return ignored -> workflow.recoverAtStartup();
     }
 
     @Bean

@@ -2,6 +2,7 @@ package com.testcaseagent.web;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.testcaseagent.featureaudit.RequirementMaterialTraversalService;
 import java.sql.SQLException;
 
 import javax.sql.DataSource;
@@ -45,7 +46,8 @@ class ApplicationDatabaseMigrationTest {
     void appliesTheBaselineToAnIndependentMySql8Database(
             @Autowired DataSource dataSource,
             @Autowired JdbcTemplate jdbcTemplate,
-            @Autowired Environment environment) throws SQLException {
+            @Autowired Environment environment,
+            @Autowired RequirementMaterialTraversalService materialTraversalService) throws SQLException {
         var datasourceUrl = environment.getRequiredProperty("spring.datasource.url");
 
         try (var connection = dataSource.getConnection()) {
@@ -60,5 +62,6 @@ class ApplicationDatabaseMigrationTest {
                 String.class)).isEqualTo("testcase-agent-java-web");
         assertThat(environment.getRequiredProperty("app.artifacts.root"))
                 .isEqualTo("./var/test-artifacts");
+        assertThat(materialTraversalService).isNotNull();
     }
 }

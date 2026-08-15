@@ -4,8 +4,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.testcaseagent.export.ApachePoiWorkbookExporter;
+import com.testcaseagent.export.MarkdownWorkbookExportRequest;
 import com.testcaseagent.export.WorkbookArtifact;
 import com.testcaseagent.fewshot.ExampleScope;
+import com.testcaseagent.featureaudit.FeatureCandidateKind;
+import com.testcaseagent.featureaudit.FeatureReviewConclusion;
+import com.testcaseagent.featureaudit.FeatureReviewConclusionType;
+import com.testcaseagent.featureaudit.FeatureSourceCandidate;
+import com.testcaseagent.featureaudit.FrozenFeatureSource;
+import com.testcaseagent.featureaudit.FrozenFeatureTarget;
+import com.testcaseagent.featureaudit.MaterialInventoryDocument;
+import com.testcaseagent.featureaudit.MaterialInventoryUnit;
 import com.testcaseagent.markdown.MarkdownAuditRow;
 import com.testcaseagent.markdown.MarkdownGenerationResult;
 import com.testcaseagent.markdown.MarkdownTestCaseRow;
@@ -15,10 +25,13 @@ import com.testcaseagent.testcase.FewShotPolicy;
 import com.testcaseagent.testcase.GenerationTaskMode;
 import com.testcaseagent.web.TestCaseAgentApplication;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -62,13 +75,69 @@ class MarkdownBatchPersistenceIntegrationTest {
     @Autowired
     JdbcTemplate jdbcTemplate;
 
+    @TempDir
+    Path artifactRoot;
+
     @BeforeEach
     void cleanDatabase() {
+        jdbcTemplate.update("DELETE FROM material_audit_duplicate_occurrence");
+        jdbcTemplate.update("DELETE FROM material_audit_scan_outcome");
+        jdbcTemplate.update("DELETE FROM material_audit_attempt");
+        jdbcTemplate.update("DELETE FROM material_audit_work");
+        jdbcTemplate.update("DELETE FROM feature_review_conclusion_candidate");
+        jdbcTemplate.update("DELETE FROM feature_review_conclusion");
+        jdbcTemplate.update("DELETE FROM frozen_feature_target");
+        jdbcTemplate.update("DELETE FROM feature_source_candidate");
+        jdbcTemplate.update("DELETE FROM material_inventory_unit");
+        jdbcTemplate.update("DELETE FROM material_inventory_document");
         jdbcTemplate.update("DELETE FROM generation_audit_row");
         jdbcTemplate.update("DELETE FROM generation_test_case_row");
         jdbcTemplate.update("DELETE FROM generation_attempt");
         jdbcTemplate.update("DELETE FROM generation_batch");
         jdbcTemplate.update("DELETE FROM generation_task");
+    }
+
+    @Test
+    void exportsTaskOwnedReviewConclusionsAndAllAcceptedBatchCasesWithoutTechnicalCandidateTokens() throws Exception {
+        String taskId = taskId();
+        repository.createTask(taskId, allRequest());
+        accept(taskId, "batch-second", "attempt-second", "feature-second", 2,
+                twoCaseMarkdownResultWithEvidence("second", "需求摘要第二<br>candidateIds=second-a"));
+        accept(taskId, "batch-first", "attempt-first", "feature-first", 1,
+                twoCaseMarkdownResultWithEvidence("first", "需求摘要第一\ncandidateIds=first-a"));
+        persistConclusion(taskId, "conclusion-second", 2, "FUNCTION_LIST_MISSING", "功能清单遗漏：订单导出",
+                "功能清单片段B<br>candidateIds=second-a");
+        persistConclusion(taskId, "conclusion-first", 1, "MATCHED", "订单查询",
+                "需求片段A<br>candidateIds=first-a; documentId=document-a; unitId=unit-a");
+
+        MarkdownTaskRows rows = repository.exportMarkdownRows(taskId);
+
+        assertThat(rows.auditRows()).extracting(MarkdownAuditRow::sequence, MarkdownAuditRow::subjectOrFeature,
+                        MarkdownAuditRow::issueCategory, MarkdownAuditRow::evidenceComparison)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple(1, "订单查询", "未发现问题",
+                                "需求片段A<br>documentId=document-a; unitId=unit-a"),
+                        org.assertj.core.groups.Tuple.tuple(2, "功能清单遗漏：订单导出", "功能清单遗漏", "功能清单片段B"));
+        assertThat(rows.testCaseRows()).extracting(MarkdownTestCaseRow::caseName)
+                .containsExactly("case-first_正向", "case-first_反向", "case-second_正向", "case-second_反向");
+        assertThat(rows.testCaseRows()).extracting(MarkdownTestCaseRow::requirementContent)
+                .containsExactly("需求摘要第一", "依据通用经验，待确认", "需求摘要第二", "依据通用经验，待确认");
+        assertThat(rows.auditRows()).allSatisfy(row -> assertThat(row.evidenceComparison()).doesNotContain("candidateIds="));
+        assertThat(rows.testCaseRows()).allSatisfy(row -> assertThat(row.requirementContent()).doesNotContain("candidateIds="));
+
+        WorkbookArtifact artifact = new ApachePoiWorkbookExporter(artifactRoot).exportMarkdown(
+                new MarkdownWorkbookExportRequest(taskId, rows.auditRows(), rows.testCaseRows(), true, false));
+        try (XSSFWorkbook workbook = new XSSFWorkbook(artifact.path().toFile())) {
+            assertThat(workbook.getNumberOfSheets()).isEqualTo(2);
+            assertThat(workbook.getSheetName(0)).isEqualTo("需求与功能清单审查发现");
+            assertThat(workbook.getSheetName(1)).isEqualTo("测试用例");
+            assertThat(workbook.getSheetAt(0).getRow(0).getLastCellNum()).isEqualTo((short) 4);
+            assertThat(workbook.getSheetAt(1).getRow(0).getLastCellNum()).isEqualTo((short) 6);
+            assertThat(workbook.getSheetAt(0).getRow(1).getCell(3).getStringCellValue())
+                    .isEqualTo("需求片段A<br>documentId=document-a; unitId=unit-a");
+            assertThat(workbook.getSheetAt(1).getRow(1).getCell(5).getStringCellValue()).isEqualTo("需求摘要第一");
+            assertThat(workbook.getSheetAt(1).getRow(4).getCell(0).getStringCellValue()).isEqualTo("case-second_反向");
+        }
     }
 
     @Test
@@ -114,18 +183,34 @@ class MarkdownBatchPersistenceIntegrationTest {
     }
 
     @Test
+    void transitionsAnAuditingTaskToCancelledAtTheAuditCheckpoint() {
+        String taskId = taskId();
+        repository.createTask(taskId, request());
+        repository.transitionTask(taskId, GenerationTaskStatus.AUDITING);
+
+        assertThat(repository.requestCancellation(taskId)).isTrue();
+        assertThat(repository.cancelAuditingAtCheckpoint(taskId)).isTrue();
+
+        assertThat(repository.taskStatus(taskId)).isEqualTo(GenerationTaskStatus.CANCELLED);
+    }
+
+    @Test
     void rejectsAnAcceptedBatchReplayWithoutReplacingItsRows() {
         String taskId = taskId();
         repository.createTask(taskId, request());
-        accept(taskId, "batch-one", "attempt-one", "feature-one", 1, markdownResult("one"));
+        accept(taskId, "batch-one", "attempt-one", "feature-one", 1, twoCaseMarkdownResult("one"));
 
-        assertThatThrownBy(() -> repository.acceptMarkdownBatch("batch-one", "attempt-one", markdownResult("replacement")))
+        assertThatThrownBy(() -> repository.acceptMarkdownBatch("batch-one", "attempt-one", twoCaseMarkdownResult("replacement")))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("already accepted");
 
         MarkdownTaskRows rows = repository.acceptedMarkdownRows(taskId);
         assertThat(rows.auditRows()).extracting(MarkdownAuditRow::subjectOrFeature).containsExactly("feature-one");
-        assertThat(rows.testCaseRows()).extracting(MarkdownTestCaseRow::caseName).containsExactly("case-one");
+        assertThat(rows.testCaseRows()).extracting(MarkdownTestCaseRow::caseName)
+                .containsExactly("case-one_正向", "case-one_反向");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM generation_test_case_row WHERE batch_id = ?", Integer.class, "batch-one"))
+                .isEqualTo(2);
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT status FROM generation_batch WHERE id = ?", String.class, "batch-one")).isEqualTo("ACCEPTED");
         assertThat(jdbcTemplate.queryForObject(
@@ -204,6 +289,51 @@ class MarkdownBatchPersistenceIntegrationTest {
     }
 
     @Test
+    void atomicallyReplacesOnlyTheRetriedBatchWithItsTwoCaseRowsAndPreservesAttemptHistory() {
+        String taskId = taskId();
+        repository.createTask(taskId, allRequest());
+        accept(taskId, "batch-stable", "attempt-stable", "feature-stable", 1, twoCaseMarkdownResult("stable"));
+
+        repository.createBatch("batch-retry", taskId, "feature-retry", 2);
+        repository.createAttempt("attempt-retry-one", "batch-retry");
+        repository.startBatch("batch-retry", "attempt-retry-one");
+        MarkdownGenerationResult invalidResult = new MarkdownGenerationResult("invalid", List.of(), List.of(
+                new MarkdownTestCaseRow("case-invalid", "feature-retry", "precondition", "step", null, "requirement")));
+
+        assertThatThrownBy(() -> repository.acceptMarkdownBatch("batch-retry", "attempt-retry-one", invalidResult))
+                .isInstanceOf(RuntimeException.class);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM generation_test_case_row WHERE batch_id = ?", Integer.class, "batch-retry"))
+                .isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT status FROM generation_batch WHERE id = ?", String.class, "batch-retry")).isEqualTo("RUNNING");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT status FROM generation_attempt WHERE id = ?", String.class, "attempt-retry-one")).isEqualTo("RUNNING");
+
+        repository.failBatch("batch-retry", "attempt-retry-one", "temporary persistence failure", true);
+        assertThat(repository.retryFailedBatches(taskId)).isEqualTo(1);
+        String retryAttempt = jdbcTemplate.queryForObject(
+                "SELECT id FROM generation_attempt WHERE batch_id = ? AND attempt_number = 2", String.class, "batch-retry");
+        repository.startBatch("batch-retry", retryAttempt);
+        repository.acceptMarkdownBatch("batch-retry", retryAttempt, twoCaseMarkdownResult("retry"));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM generation_test_case_row WHERE batch_id = ?", Integer.class, "batch-retry"))
+                .isEqualTo(2);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM generation_test_case_row WHERE batch_id = ?", Integer.class, "batch-stable"))
+                .isEqualTo(2);
+        assertThat(repository.acceptedMarkdownRows(taskId).testCaseRows()).extracting(MarkdownTestCaseRow::caseName)
+                .containsExactly("case-stable_正向", "case-stable_反向", "case-retry_正向", "case-retry_反向");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT status FROM generation_attempt WHERE id = ?", String.class, "attempt-retry-one")).isEqualTo("FAILED");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT status FROM generation_attempt WHERE id = ?", String.class, retryAttempt)).isEqualTo("COMPLETED");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT status FROM generation_batch WHERE id = ?", String.class, "batch-retry")).isEqualTo("ACCEPTED");
+    }
+
+    @Test
     void keepsTheLatestFailureVisibleForAPartialTask() {
         String taskId = taskId();
         repository.createTask(taskId, request());
@@ -215,7 +345,8 @@ class MarkdownBatchPersistenceIntegrationTest {
         repository.transitionTask(taskId, GenerationTaskStatus.AUDITING);
         repository.transitionTask(taskId, GenerationTaskStatus.GENERATING);
         repository.transitionTask(taskId, GenerationTaskStatus.VALIDATING);
-        repository.finishTaskFromBatches(taskId);
+        repository.completeMarkdownTask(taskId, GenerationTaskStatus.PARTIAL,
+                new WorkbookArtifact("artifact-partial-detail", "sha256-partial-detail", Path.of("artifacts", "partial-detail.xlsx")));
 
         GenerationTaskDetail detail = repository.findDetail(taskId).orElseThrow();
 
@@ -242,6 +373,76 @@ class MarkdownBatchPersistenceIntegrationTest {
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM generation_batch WHERE task_id = ?", Integer.class, taskId)).isZero();
     }
 
+    @Test
+    void rejectsAllCompletionWhenAnAcceptedFrozenBatchDoesNotContainExactlyTwoCases() {
+        String taskId = taskId();
+        prepareAuditedAllTask(taskId, List.of(target("feature-one", 1, true)));
+        accept(taskId, "batch-one", "attempt-one", "feature-one", 1, markdownResult("one"));
+        transitionToValidating(taskId);
+
+        assertThatThrownBy(() -> repository.completeMarkdownTask(taskId, GenerationTaskStatus.COMPLETED,
+                new WorkbookArtifact("artifact-one", "sha256-one", Path.of("artifacts", "one.xlsx"))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("ALL completion");
+
+        assertThat(repository.taskStatus(taskId)).isEqualTo(GenerationTaskStatus.VALIDATING);
+        assertThat(repository.findReadyArtifact("artifact-one")).isEmpty();
+    }
+
+    @Test
+    void publishesAnAuditedPartialArtifactAndMakesItDownloadable() {
+        String taskId = taskId();
+        prepareAuditedAllTask(taskId, List.of(target("feature-one", 1, true), target("feature-ineligible", 2, false)));
+        accept(taskId, "batch-one", "attempt-one", "feature-one", 1, twoCaseMarkdownResult("one"));
+        transitionToValidating(taskId);
+        WorkbookArtifact artifact = new WorkbookArtifact("artifact-partial", "sha256-partial", Path.of("artifacts", "partial.xlsx"));
+
+        repository.completeMarkdownTask(taskId, GenerationTaskStatus.PARTIAL, artifact);
+
+        assertThat(repository.taskStatus(taskId)).isEqualTo(GenerationTaskStatus.PARTIAL);
+        assertThat(repository.findReadyArtifact(artifact.artifactId())).contains(new GenerationTaskRepository.StoredArtifact(
+                artifact.artifactId(), artifact.sha256(), artifact.path()));
+    }
+
+    @Test
+    void refusesPartialWhileAnEligibleFrozenTargetStillHasQueuedGenerationWork() {
+        String taskId = taskId();
+        prepareAuditedAllTask(taskId, List.of(target("feature-one", 1, true), target("feature-two", 2, true),
+                target("feature-ineligible", 3, false)));
+        accept(taskId, "batch-one", "attempt-one", "feature-one", 1, twoCaseMarkdownResult("one"));
+        repository.createBatch("batch-two", taskId, "feature-two", 2);
+        repository.createAttempt("attempt-two", "batch-two");
+        transitionToValidating(taskId);
+
+        assertThatThrownBy(() -> repository.completeMarkdownTask(taskId, GenerationTaskStatus.PARTIAL,
+                new WorkbookArtifact("artifact-queued", "sha256-queued", Path.of("artifacts", "queued.xlsx"))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("partial artifact gate");
+    }
+
+    @Test
+    void clearsThePreviousPartialArtifactBeforeRetryingOnlyTheFailedBatch() {
+        String taskId = taskId();
+        repository.createTask(taskId, request());
+        accept(taskId, "batch-accepted", "attempt-accepted", "feature-accepted", 1, markdownResult("accepted"));
+        repository.createBatch("batch-retry", taskId, "feature-retry", 2);
+        repository.createAttempt("attempt-retry", "batch-retry");
+        repository.startBatch("batch-retry", "attempt-retry");
+        repository.failBatch("batch-retry", "attempt-retry", "temporary failure", true);
+        transitionToValidating(taskId);
+        repository.completeMarkdownTask(taskId, GenerationTaskStatus.PARTIAL,
+                new WorkbookArtifact("artifact-before-retry", "sha256-before-retry", Path.of("artifacts", "before-retry.xlsx")));
+
+        assertThat(repository.retryFailedBatches(taskId)).isEqualTo(1);
+
+        assertThat(repository.taskStatus(taskId)).isEqualTo(GenerationTaskStatus.QUEUED);
+        assertThat(repository.findReadyArtifact("artifact-before-retry")).isEmpty();
+        assertThat(repository.acceptedMarkdownRows(taskId).testCaseRows()).extracting(MarkdownTestCaseRow::caseName)
+                .containsExactly("case-accepted");
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM generation_test_case_row WHERE batch_id = ?", Integer.class,
+                "batch-accepted")).isEqualTo(1);
+    }
+
     private void accept(
             String taskId, String batchId, String attemptId, String featureId, int batchSequence, MarkdownGenerationResult result) {
         repository.createBatch(batchId, taskId, featureId, batchSequence);
@@ -259,6 +460,38 @@ class MarkdownBatchPersistenceIntegrationTest {
                         "step-" + suffix, "expected-" + suffix, "requirement-" + suffix)));
     }
 
+    /**
+     * A valid ALL-mode batch carries the current frozen feature's positive and negative rows only.
+     * The repository seam deliberately proves persistence/replace semantics, not the upstream 4.3 content validator.
+     *
+     * [Req-ID]: REQ-CAG-001, REQ-CAG-002
+     */
+    private static MarkdownGenerationResult twoCaseMarkdownResult(String suffix) {
+        return twoCaseMarkdownResultWithEvidence(suffix, "requirement-" + suffix);
+    }
+
+    private static MarkdownGenerationResult twoCaseMarkdownResultWithEvidence(String suffix, String positiveRequirement) {
+        return new MarkdownGenerationResult(
+                "raw markdown " + suffix,
+                List.of(new MarkdownAuditRow(1, "feature-" + suffix, "AMBIGUOUS", "evidence-" + suffix)),
+                List.of(
+                        new MarkdownTestCaseRow(
+                                "case-" + suffix + "_正向", "feature-" + suffix, "precondition-" + suffix,
+                                "1. normal step", "1. normal result", positiveRequirement),
+                        new MarkdownTestCaseRow(
+                                "case-" + suffix + "_反向", "feature-" + suffix, "precondition-" + suffix,
+                                "1. invalid step", "1. error result", "依据通用经验，待确认")));
+    }
+
+    private void persistConclusion(
+            String taskId, String id, int sequence, String type, String explanation, String evidenceText) {
+        jdbcTemplate.update("""
+                        INSERT INTO feature_review_conclusion
+                            (id, task_id, conclusion_sequence, conclusion_type, explanation, evidence_text)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """, id, taskId, sequence, type, explanation, evidenceText);
+    }
+
     private static String taskId() {
         return UUID.randomUUID().toString();
     }
@@ -269,6 +502,47 @@ class MarkdownBatchPersistenceIntegrationTest {
                 new RequirementScope("requirement-kb", "system-1", "version-1", "admission_material", "project-1",
                         List.of(new RequirementDocumentCoordinate("document-1"))),
                 new ExampleScope("example-kb", List.of("example-1")), "requirements_spec", "markdown persistence test");
+    }
+
+    private static CreateGenerationTaskRequest allRequest() {
+        return new CreateGenerationTaskRequest(GenerationTaskMode.ALL, "all", List.of(), java.util.Map.of(),
+                FewShotPolicy.AUTO, "markdown-1.0", "1.0", "markdown-agent",
+                new RequirementScope("requirement-kb", "system-1", "version-1", "admission_material", null,
+                        List.of(new RequirementDocumentCoordinate("document-1"))),
+                new ExampleScope("example-kb", List.of("example-1")), List.of("function_list"),
+                "markdown persistence retry test");
+    }
+
+    private void prepareAuditedAllTask(String taskId, List<FrozenFeatureTarget> targets) {
+        repository.createTask(taskId, allRequest());
+        MaterialInventoryUnit unit = new MaterialInventoryUnit("document-1", "FUNCTION_LIST", "unit-1", 0, 1,
+                "功能材料", 0, 4);
+        repository.replaceMaterialInventory(taskId, List.of(new MaterialInventoryDocument("document-1", "knowledge-1",
+                "FUNCTION_LIST", 1, true, List.of(unit))), false);
+        List<FeatureSourceCandidate> candidates = targets.stream().map(target -> new FeatureSourceCandidate(
+                "candidate-" + target.stableFeatureId(), FeatureCandidateKind.FUNCTION_LIST, "document-1", "unit-1",
+                1, target.stableSequence(), target.featureName(), "功能", "document-1/unit-1", 1,
+                target.stableSequence())).toList();
+        repository.persistScanAndCompleteAuditWork(repository.claimNextAuditWork(taskId, "test-worker", Duration.ofMinutes(1))
+                .orElseThrow(), candidates, List.of(), true);
+        repository.persistFeatureReviewConclusions(taskId, targets.stream().map(target -> new FeatureReviewConclusion(
+                "conclusion-" + target.stableFeatureId(), target.stableSequence(), target.source().conclusionType(),
+                target.featureName(), "document-1/unit-1", List.of("candidate-" + target.stableFeatureId()))).toList());
+        repository.persistFrozenFeatureTargets(taskId, targets);
+    }
+
+    private static FrozenFeatureTarget target(String featureId, int sequence, boolean generationEligible) {
+        FeatureReviewConclusionType conclusionType = generationEligible
+                ? FeatureReviewConclusionType.MATCHED : FeatureReviewConclusionType.INSUFFICIENT_EVIDENCE;
+        return new FrozenFeatureTarget(featureId, sequence, featureId, generationEligible,
+                new FrozenFeatureSource("conclusion-" + featureId, conclusionType,
+                        List.of("candidate-" + featureId), featureId));
+    }
+
+    private void transitionToValidating(String taskId) {
+        repository.transitionTask(taskId, GenerationTaskStatus.AUDITING);
+        repository.transitionTask(taskId, GenerationTaskStatus.GENERATING);
+        repository.transitionTask(taskId, GenerationTaskStatus.VALIDATING);
     }
 
     @TestConfiguration(proxyBeanMethods = false)

@@ -25,6 +25,31 @@ const completedDetail = {
     caseName: '用户正常登录', featureModule: '用户登录', preconditions: '已创建有效账号',
     executionSteps: '1. 输入有效账号和密码', expectedResult: '成功进入首页', requirementContent: '登录功能说明',
   }],
+  businessProgress: {
+    currentBusinessStage: '已完成',
+    materialDocumentTotal: 2,
+    completeMaterialDocumentCount: 2,
+    materialUnitTotal: 4,
+    processedMaterialUnitCount: 4,
+    totalAuditWork: 8,
+    completedAuditWork: 8,
+    failedAuditWork: 0,
+    featureCandidateTotal: 6,
+    functionListMissingCount: 0,
+    requirementMissingCount: 0,
+    conflictCount: 0,
+    splitCount: 0,
+    mergeCount: 0,
+    insufficientEvidenceCount: 0,
+    frozenComplete: true,
+    frozenFeatureTotal: 5,
+    generationEligibleFrozenFeatureCount: 4,
+    generationIneligibleFrozenFeatureCount: 1,
+    expectedTestCaseTotal: 8,
+    acceptedTestCaseCount: 8,
+    coverageStatus: '完整',
+    businessReason: '材料审查、功能冻结和测试用例均已完成',
+  },
 }
 
 // [Req-ID]: REQ-WEB-003, REQ-WEB-004, REQ-WEB-005, REQ-WEB-006, REQ-WEB-007, REQ-WEB-008
@@ -91,6 +116,110 @@ describe('generation task detail', () => {
       expect(wrapper.find('a[download]').exists()).toBe(false)
       wrapper.unmount()
     }
+  })
+
+  it('[Req-ID]: REQ-CWR-001 presents the business stage without treating candidates as frozen features', async () => {
+    const wrapper = mount(TaskDetailView, {
+      props: {
+        taskId: 'task-auditing',
+        getTask: vi.fn().mockResolvedValue({
+          ...completedDetail,
+          status: 'AUDITING',
+          artifactReady: false,
+          artifactId: undefined,
+          businessProgress: {
+            ...completedDetail.businessProgress,
+            currentBusinessStage: '需求扫描（第一遍）',
+            materialDocumentTotal: 3,
+            completeMaterialDocumentCount: 2,
+            materialUnitTotal: 5,
+            processedMaterialUnitCount: 3,
+            totalAuditWork: 8,
+            completedAuditWork: 4,
+            featureCandidateTotal: 7,
+            frozenComplete: false,
+            frozenFeatureTotal: null,
+            generationEligibleFrozenFeatureCount: null,
+            generationIneligibleFrozenFeatureCount: null,
+            expectedTestCaseTotal: null,
+            acceptedTestCaseCount: 0,
+            coverageStatus: '进行中',
+            businessReason: '正在处理材料、审查或测试用例',
+          },
+        }),
+      } as never,
+    })
+    await flushPromises()
+
+    const progress = wrapper.get('[data-testid="business-progress"]')
+    expect(progress.text()).toContain('当前阶段：需求扫描（第一遍）')
+    expect(progress.text()).toContain('2 / 3 份')
+    expect(progress.text()).toContain('3 / 5 个材料单元')
+    expect(progress.text()).toContain('4 / 8 项审查工作')
+    expect(progress.text()).toContain('审查候选 7 项（尚非最终功能数）')
+    expect(progress.text()).toContain('尚未冻结')
+    expect(progress.text()).not.toContain('已冻结 7 个功能')
+    expect(progress.text()).not.toContain('预计 8 条测试用例')
+  })
+
+  it('[Req-ID]: REQ-CWR-002 distinguishes complete delivery, partial delivery, audit failure, and cancellation', async () => {
+    const expectations = [
+      ['COMPLETED', true, '完整交付'],
+      ['PARTIAL', true, '审查已完成，测试用例不完整'],
+      ['FAILED', false, '材料或审查失败'],
+      ['CANCELLED', false, '任务已取消'],
+    ] as const
+
+    for (const [status, frozenComplete, message] of expectations) {
+      const wrapper = mount(TaskDetailView, {
+        props: {
+          taskId: `task-${status}`,
+          getTask: vi.fn().mockResolvedValue({
+            ...completedDetail,
+            status,
+            businessProgress: {
+              ...completedDetail.businessProgress,
+              frozenComplete,
+              coverageStatus: status === 'FAILED' ? '材料或审查失败' : completedDetail.businessProgress.coverageStatus,
+            },
+          }),
+        } as never,
+      })
+      await flushPromises()
+
+      expect(wrapper.get('[data-testid="delivery-status"]').text()).toContain(message)
+      wrapper.unmount()
+    }
+  })
+
+  it('[Req-ID]: REQ-CWR-001 ignores stale detail responses after task changes and repeated loads', async () => {
+    let resolveFirst: (value: typeof completedDetail) => void = () => undefined
+    let resolveMiddle: (value: typeof completedDetail) => void = () => undefined
+    let resolveLatest: (value: typeof completedDetail) => void = () => undefined
+    const first = new Promise<typeof completedDetail>((resolve) => { resolveFirst = resolve })
+    const middle = new Promise<typeof completedDetail>((resolve) => { resolveMiddle = resolve })
+    const latest = new Promise<typeof completedDetail>((resolve) => { resolveLatest = resolve })
+    const getTask = vi.fn()
+      .mockReturnValueOnce(first)
+      .mockReturnValueOnce(middle)
+      .mockReturnValueOnce(latest)
+    const wrapper = mount(TaskDetailView, {
+      props: { taskId: 'task-first', getTask } as never,
+    })
+
+    await wrapper.setProps({ taskId: 'task-middle' })
+    await wrapper.setProps({ taskId: 'task-first' })
+    expect(getTask).toHaveBeenCalledTimes(3)
+
+    resolveLatest({ ...completedDetail, testCaseRows: [{ ...completedDetail.testCaseRows[0], caseName: '最新任务结果' }] })
+    await flushPromises()
+    resolveMiddle({ ...completedDetail, testCaseRows: [{ ...completedDetail.testCaseRows[0], caseName: '过期的中间结果' }] })
+    resolveFirst({ ...completedDetail, testCaseRows: [{ ...completedDetail.testCaseRows[0], caseName: '过期的首个结果' }] })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('最新任务结果')
+    expect(wrapper.text()).not.toContain('过期的中间结果')
+    expect(wrapper.text()).not.toContain('过期的首个结果')
   })
 
   it('keeps context and offers a keyboard-operable retry when the local detail region fails', async () => {

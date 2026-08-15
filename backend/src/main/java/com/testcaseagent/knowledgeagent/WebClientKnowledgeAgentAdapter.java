@@ -4,18 +4,23 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.testcaseagent.fewshot.ExampleQualityKind;
 import com.testcaseagent.fewshot.ExampleScope;
-import com.testcaseagent.markdown.MarkdownFeatureListParser;
-import com.testcaseagent.markdown.MarkdownFeatureRow;
+import com.testcaseagent.scope.ParsedMaterial;
+import com.testcaseagent.scope.ParsedMaterialUnit;
+import com.testcaseagent.scope.RequirementMaterialReaderPort;
 import com.testcaseagent.scope.RequirementScope;
+import com.testcaseagent.scope.ScopeViolation;
 import com.testcaseagent.testcase.FewShotPolicy;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.TimeoutException;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.MediaType;
@@ -34,9 +39,18 @@ import reactor.core.publisher.Mono;
  * [Req-ID]: REQ-KAG-001, REQ-KAG-002, REQ-KAG-003, REQ-KAG-004, REQ-KAG-005, REQ-SCP-001,
  * REQ-SCP-003, REQ-FEW-002, REQ-FEW-003, REQ-ANA-004
  */
-public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort {
+public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort, RequirementMaterialReaderPort {
 
     private static final String API_KEY_HEADER = "X-API-Key";
+    private static final Set<String> PARSED_UNITS_BUSINESS_ERRORS = Set.of(
+            "document_not_ready",
+            "cursor_signing_unavailable",
+            "invalid_cursor",
+            "document_not_current",
+            "parsed_unit_integrity_error",
+            "unit_too_large");
+    private static final String GENERATION_SKILL = "functional-testcase-design";
+    private static final String RECONCILIATION_SKILL = "feature-scope-reconciliation";
     private final WebClient webClient;
     private final String apiKey;
     private final Duration timeout;
@@ -44,11 +58,11 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort 
     private final int maxEventCharacters;
     private final ObjectMapper objectMapper = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
-    private final MarkdownFeatureListParser featureListParser = new MarkdownFeatureListParser();
 
     public WebClientKnowledgeAgentAdapter(String apiBaseUrl, String apiKey, Duration timeout,
             int maxAgentDiscoveryAttempts, int maxEventCharacters) {
-        this.webClient = WebClient.builder().baseUrl(requireText(apiBaseUrl, "apiBaseUrl")).build();
+        this.webClient = WebClient.builder().baseUrl(requireText(apiBaseUrl, "apiBaseUrl"))
+                .codecs(codecs -> codecs.defaultCodecs().maxInMemorySize(4 * 1024 * 1024)).build();
         this.apiKey = requireText(apiKey, "apiKey");
         this.timeout = Objects.requireNonNull(timeout, "timeout must not be null");
         if (timeout.isZero() || timeout.isNegative()) throw new IllegalArgumentException("timeout must be positive");
@@ -64,17 +78,151 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort 
         List<SelectedExample> examples = loadEnabledExamples(invocation.exampleScope(), invocation.fewShotPolicy());
         String sessionId = createSession();
         String markdown = invokeChat(sessionId,
-                AgentChatRequest.forGeneration(invocation, MarkdownPrompt.generation(invocation.prompt(), examples)));
+                AgentChatRequest.forGeneration(invocation, MarkdownPrompt.generation(invocation.prompt(), examples)), GENERATION_SKILL);
         return new KnowledgeAgentInvocationResult(sessionId, List.of(), markdown);
     }
 
+    /**
+     * Invokes the reconciliation Skill with only the frozen requirement evidence scope. The prompt
+     * is forwarded unchanged so the caller owns its candidate and evidence instructions.
+     *
+     * [Req-ID]: REQ-KSI-001, REQ-KSI-002, REQ-KSI-003, REQ-BFA-003
+     */
     @Override
-    public List<MarkdownFeatureRow> discoverFeatures(FeatureDiscoveryInvocation invocation) {
+    public KnowledgeAgentInvocationResult reconcileFeatures(FeatureReconciliationInvocation invocation) {
         requireConfiguredAgent(invocation.agentId());
         String sessionId = createSession();
-        String markdown = invokeChat(sessionId,
-                AgentChatRequest.forDiscovery(invocation, MarkdownPrompt.discovery()));
-        return featureListParser.parse(markdown);
+        String markdown = invokeChat(sessionId, AgentChatRequest.forReconciliation(invocation), RECONCILIATION_SKILL);
+        return new KnowledgeAgentInvocationResult(sessionId, List.of(), markdown);
+    }
+
+    /**
+     * Reads the current persisted chunks page by page and accepts them only after the explicit
+     * terminal page proves a complete, contiguous enumeration. A bad page must fail the entire
+     * document read so callers never mistake partial material for formal evidence.
+     *
+     * [Req-ID]: REQ-SMR-001, REQ-SMR-002, REQ-SMR-003, REQ-SMR-004
+     */
+    @Override
+    public ParsedMaterial readAll(RequirementScope scope, String knowledgeId, int requestedLimit) {
+        Objects.requireNonNull(scope, "scope must not be null");
+        String requestedKnowledgeId = requireText(knowledgeId, "knowledgeId");
+        if (scope.documents().stream().noneMatch(document -> requestedKnowledgeId.equals(document.documentId()))) {
+            throw new ScopeViolation("Requested material document is outside frozen RequirementScope");
+        }
+        if (requestedLimit < 1) throw new IllegalArgumentException("requestedLimit must be positive");
+        int effectiveLimit = Math.min(requestedLimit, 100);
+        List<ParsedMaterialUnit> acceptedUnits = new ArrayList<>();
+        Set<String> unitIds = new HashSet<>();
+        Set<String> cursors = new HashSet<>();
+        String cursor = null;
+        Integer totalUnits = null;
+        int expectedOrdinal = 1;
+
+        while (true) {
+            ParsedUnitsPage page = fetchParsedUnitsPage(requestedKnowledgeId, effectiveLimit, cursor);
+            if (!requestedKnowledgeId.equals(page.knowledgeId())) {
+                throw parsedUnitsFailure("response knowledge_id does not match requested document");
+            }
+            if (page.totalUnits() < 0) throw parsedUnitsFailure("total_units must not be negative");
+            if (totalUnits == null) totalUnits = page.totalUnits();
+            else if (totalUnits.intValue() != page.totalUnits()) throw parsedUnitsFailure("total_units changed between pages");
+            if (page.units() == null) throw parsedUnitsFailure("units must be present");
+            if (page.nextCursor() != null && page.nextCursor().isBlank()) throw parsedUnitsFailure("next_cursor must be non-blank when present");
+            if (page.complete() && page.nextCursor() != null) throw parsedUnitsFailure("complete page must not include next_cursor");
+            if (!page.complete() && page.nextCursor() == null) throw parsedUnitsFailure("non-complete page is missing next_cursor");
+            if (page.units().isEmpty() && page.nextCursor() != null) throw parsedUnitsFailure("page with next_cursor made no progress");
+
+            for (ParsedUnitsPageUnit unit : page.units()) {
+                if (unit == null || unit.unitId() == null || unit.unitId().isBlank() || unit.content() == null) {
+                    throw parsedUnitsFailure("unit is incomplete");
+                }
+                if (!unitIds.add(unit.unitId())) throw parsedUnitsFailure("unit_id repeats across pages");
+                if (unit.ordinal() != expectedOrdinal) throw parsedUnitsFailure("ordinal is not strictly continuous");
+                acceptedUnits.add(new ParsedMaterialUnit(unit.unitId(), unit.chunkIndex(), unit.ordinal(), unit.content(),
+                        unit.startAt(), unit.endAt()));
+                expectedOrdinal++;
+            }
+
+            if (page.nextCursor() == null) {
+                if (!page.complete()) throw parsedUnitsFailure("final page is not complete");
+                if (acceptedUnits.size() != totalUnits) throw parsedUnitsFailure("received unit count does not equal total_units");
+                return new ParsedMaterial(requestedKnowledgeId, totalUnits, acceptedUnits);
+            }
+            if (page.complete()) throw parsedUnitsFailure("complete page must be final");
+            if (!cursors.add(page.nextCursor())) throw parsedUnitsFailure("next_cursor loop detected");
+            cursor = page.nextCursor();
+        }
+    }
+
+    private ParsedUnitsPage fetchParsedUnitsPage(String knowledgeId, int limit, String cursor) {
+        try {
+            ParsedUnitsEnvelope envelope = webClient.get().uri(builder -> {
+                        var query = builder.path("/knowledge/{knowledgeId}/parsed-units").queryParam("limit", limit);
+                        if (cursor != null) query.queryParam("cursor", cursor);
+                        return query.build(knowledgeId);
+                    }).header(API_KEY_HEADER, apiKey).exchangeToMono(response -> {
+                        if (response.statusCode().isError()) {
+                            String message = response.statusCode().value() == 403
+                                    ? "Parsed material request forbidden" : "Parsed material request failed";
+                            return Mono.error(new KnowledgeAgentInvocationException(message));
+                        }
+                        return response.bodyToMono(String.class).map(this::parseParsedUnitsEnvelope);
+                    }).block(timeout);
+            if (envelope == null) throw parsedUnitsFailure("response is missing");
+            if (!envelope.success()) {
+                String code = envelope.error() == null ? null : envelope.error().code();
+                if (code == null || !PARSED_UNITS_BUSINESS_ERRORS.contains(code)) {
+                    throw parsedUnitsFailure("business error response is invalid");
+                }
+                throw parsedUnitsFailure("business error: " + code);
+            }
+            if (envelope.data() == null) throw parsedUnitsFailure("success response has no data");
+            return envelope.data();
+        } catch (KnowledgeAgentInvocationException exception) {
+            throw exception;
+        } catch (RuntimeException exception) {
+            if (hasCause(exception, TimeoutException.class) || String.valueOf(exception.getMessage()).contains("Timeout on blocking read")) {
+                throw new KnowledgeAgentInvocationException("Parsed material request timed out", exception);
+            }
+            throw new KnowledgeAgentInvocationException("Parsed material response is invalid", exception);
+        }
+    }
+
+    private static KnowledgeAgentInvocationException parsedUnitsFailure(String reason) {
+        return new KnowledgeAgentInvocationException("Parsed material read rejected: " + reason);
+    }
+
+    private ParsedUnitsEnvelope parseParsedUnitsEnvelope(String body) {
+        try {
+            JsonNode envelope = objectMapper.readTree(body);
+            if (envelope == null || !envelope.isObject() || !envelope.path("success").isBoolean()) {
+                throw parsedUnitsFailure("response envelope is invalid");
+            }
+            if (envelope.path("success").booleanValue()) {
+                requireExactFields(envelope, Set.of("success", "data"), "response envelope");
+                JsonNode data = envelope.path("data");
+                if (!data.isObject()) throw parsedUnitsFailure("success response has invalid data");
+                requireExactFields(data, Set.of("knowledge_id", "total_units", "units", "next_cursor", "complete"), "data");
+                JsonNode units = data.path("units");
+                if (!units.isArray()) throw parsedUnitsFailure("data units must be an array");
+                for (JsonNode unit : units) {
+                    if (!unit.isObject()) throw parsedUnitsFailure("unit must be an object");
+                    requireExactFields(unit, Set.of("unit_id", "chunk_index", "ordinal", "content", "start_at", "end_at"), "unit");
+                }
+            }
+            return objectMapper.treeToValue(envelope, ParsedUnitsEnvelope.class);
+        } catch (KnowledgeAgentInvocationException exception) {
+            throw exception;
+        } catch (JsonProcessingException exception) {
+            throw parsedUnitsFailure("response is not valid JSON");
+        }
+    }
+
+    private static void requireExactFields(JsonNode object, Set<String> expected, String subject) {
+        Set<String> actual = new HashSet<>();
+        object.fieldNames().forEachRemaining(actual::add);
+        if (!actual.equals(expected)) throw parsedUnitsFailure(subject + " does not match the fixed parsed-units contract");
     }
 
     private List<SelectedExample> loadEnabledExamples(ExampleScope scope, FewShotPolicy policy) {
@@ -143,16 +291,26 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort 
         return response.data().id();
     }
 
-    private String invokeChat(String sessionId, AgentChatRequest request) {
+    /**
+     * Accepts agent output only when the requested Skill was actually loaded through the existing
+     * SSE tool protocol. A completed answer alone is insufficient because it does not prove which
+     * specialized instructions were available to the remote agent.
+     *
+     * [Req-ID]: REQ-KSI-001, REQ-KSI-002, REQ-KSI-003
+     */
+    private String invokeChat(String sessionId, AgentChatRequest request, String expectedSkillName) {
         try {
             AnswerAccumulator answer = webClient.post().uri("/agent-chat/{sessionId}", sessionId)
                     .header(API_KEY_HEADER, apiKey).contentType(MediaType.APPLICATION_JSON).accept(MediaType.TEXT_EVENT_STREAM)
                     .bodyValue(request).exchangeToFlux(clientResponse -> clientResponse.statusCode().isError()
                             ? clientResponse.createException().flatMapMany(error -> Flux.error(new KnowledgeAgentInvocationException("Knowledge agent chat request failed", error)))
                             : clientResponse.bodyToFlux(new ParameterizedTypeReference<ServerSentEvent<String>>() { }))
-                    .timeout(timeout).map(this::parseRawEvent).takeUntil(ParsedStreamEvent::complete)
+                    .timeout(timeout).map(event -> parseRawEvent(event, expectedSkillName)).takeUntil(ParsedStreamEvent::complete)
                     .reduce(new AnswerAccumulator(), AnswerAccumulator::append).block(timeout.plusMillis(100));
             if (answer == null || !answer.complete()) throw new KnowledgeAgentInvocationException("Knowledge agent SSE ended without an explicit complete event");
+            if (!answer.hasSuccessfulReadSkill()) {
+                throw new KnowledgeAgentInvocationException("Knowledge agent SSE completed without required read_skill evidence");
+            }
             return answer.content();
         } catch (RuntimeException exception) {
             if (hasCause(exception, TimeoutException.class)) throw new KnowledgeAgentInvocationException("Knowledge agent SSE request timed out", exception);
@@ -160,14 +318,59 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort 
         }
     }
 
-    private ParsedStreamEvent parseRawEvent(ServerSentEvent<String> rawEvent) {
+    private ParsedStreamEvent parseRawEvent(ServerSentEvent<String> rawEvent, String expectedSkillName) {
         if (!"message".equals(rawEvent.event())) throw new KnowledgeAgentInvocationException("Knowledge agent SSE event must be message");
         String data = rawEvent.data();
         if (data == null || data.length() > maxEventCharacters) throw new KnowledgeAgentInvocationException("Knowledge agent SSE event exceeds maximum size");
         AgentStreamData streamData = parseStreamData(data);
         if ("error".equals(streamData.responseType()) && streamData.done()) throw new KnowledgeAgentInvocationException("Knowledge agent terminal error: " + streamData.message());
+        if ("tool_call".equals(streamData.responseType()) && isExpectedReadSkill(streamData.data(), expectedSkillName)) {
+            return ParsedStreamEvent.readSkillCall(toolCallId(streamData.data()));
+        }
+        if ("tool_result".equals(streamData.responseType()) && isReadSkillTool(streamData.data())
+                && (skillName(streamData.data()) == null || expectedSkillName.equals(skillName(streamData.data())))) {
+            return ParsedStreamEvent.readSkillResult(toolCallId(streamData.data()), successfulToolResult(streamData.data()));
+        }
         return new ParsedStreamEvent("answer".equals(streamData.responseType()) ? streamData.content() : "",
-                "complete".equals(streamData.responseType()) && streamData.done());
+                "complete".equals(streamData.responseType()) && streamData.done(), false, false, null, null, false);
+    }
+
+    private static boolean isExpectedReadSkill(JsonNode data, String expectedSkillName) {
+        return isReadSkillTool(data) && expectedSkillName.equals(skillName(data));
+    }
+
+    private static boolean isReadSkillTool(JsonNode data) {
+        return data != null && data.isObject() && "read_skill".equals(textField(data, "tool_name"));
+    }
+
+    private static String skillName(JsonNode data) {
+        String direct = textField(data, "skill_name");
+        if (direct != null) return direct;
+        for (String field : List.of("args", "input")) {
+            JsonNode nested = data.get(field);
+            if (nested != null && nested.isObject()) {
+                String value = textField(nested, "skill_name");
+                if (value != null) return value;
+            }
+        }
+        return null;
+    }
+
+    private static String toolCallId(JsonNode data) {
+        for (String field : List.of("tool_call_id", "call_id", "id")) {
+            String value = textField(data, field);
+            if (value != null) return value;
+        }
+        return null;
+    }
+
+    private static String textField(JsonNode data, String field) {
+        JsonNode value = data.get(field);
+        return value != null && value.isTextual() && !value.asText().isBlank() ? value.asText() : null;
+    }
+
+    private static boolean successfulToolResult(JsonNode data) {
+        return data.path("success").isBoolean() && data.path("success").booleanValue();
     }
 
     private AgentStreamData parseStreamData(String data) {
@@ -194,36 +397,86 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort 
     private record KnowledgeEnvelope(boolean success, KnowledgeData data) { }
     private record KnowledgeData(@JsonProperty("knowledge_base_id") String knowledgeBaseId,
             @JsonProperty("parse_status") String parseStatus, @JsonProperty("enable_status") String enableStatus) { }
-    private record AgentStreamData(@JsonProperty("response_type") String responseType, boolean done, String content, String message) { }
-    private record ParsedStreamEvent(String content, boolean complete) { }
+    private record ParsedUnitsEnvelope(boolean success, ParsedUnitsPage data, ParsedUnitsError error) { }
+    private record ParsedUnitsError(String code) { }
+    private record ParsedUnitsPage(@JsonProperty("knowledge_id") String knowledgeId,
+            @JsonProperty("total_units") int totalUnits, List<ParsedUnitsPageUnit> units,
+            @JsonProperty("next_cursor") String nextCursor, boolean complete) { }
+    private record ParsedUnitsPageUnit(@JsonProperty("unit_id") String unitId,
+            @JsonProperty("chunk_index") int chunkIndex, int ordinal, String content,
+            @JsonProperty("start_at") long startAt, @JsonProperty("end_at") long endAt) { }
+    private record AgentStreamData(@JsonProperty("response_type") String responseType, boolean done, String content, String message,
+            JsonNode data) { }
+    private record ParsedStreamEvent(String content, boolean complete, boolean readSkillCall, boolean readSkillResult,
+            String readSkillCallId, String readSkillResultId, boolean readSkillResultSuccess) {
+        private static ParsedStreamEvent readSkillCall(String toolCallId) {
+            return new ParsedStreamEvent("", false, true, false, toolCallId, null, false);
+        }
+        private static ParsedStreamEvent readSkillResult(String toolCallId, boolean success) {
+            return new ParsedStreamEvent("", false, false, true, null, toolCallId, success);
+        }
+    }
     private final class AnswerAccumulator {
         private final String content;
         private final boolean complete;
-        private AnswerAccumulator() { this("", false); }
-        private AnswerAccumulator(String content, boolean complete) { this.content = content; this.complete = complete; }
+        private final Set<String> pendingReadSkillCallIds;
+        private final int pendingUnnamedReadSkillCalls;
+        private final boolean successfulReadSkill;
+        private final boolean failedReadSkill;
+        private AnswerAccumulator() { this("", false, Set.of(), 0, false, false); }
+        private AnswerAccumulator(String content, boolean complete, Set<String> pendingReadSkillCallIds,
+                int pendingUnnamedReadSkillCalls, boolean successfulReadSkill, boolean failedReadSkill) {
+            this.content = content;
+            this.complete = complete;
+            this.pendingReadSkillCallIds = pendingReadSkillCallIds;
+            this.pendingUnnamedReadSkillCalls = pendingUnnamedReadSkillCalls;
+            this.successfulReadSkill = successfulReadSkill;
+            this.failedReadSkill = failedReadSkill;
+        }
         private AnswerAccumulator append(ParsedStreamEvent event) {
             String next = content + (event.content() == null ? "" : event.content());
             if (next.length() > maxEventCharacters) throw new KnowledgeAgentInvocationException("Knowledge agent SSE answer exceeds maximum size");
-            return new AnswerAccumulator(next, event.complete());
+            Set<String> pending = new HashSet<>(pendingReadSkillCallIds);
+            int unnamed = pendingUnnamedReadSkillCalls;
+            boolean success = successfulReadSkill;
+            boolean failure = failedReadSkill;
+            if (event.readSkillCall()) {
+                if (event.readSkillCallId() != null) pending.add(event.readSkillCallId());
+                else unnamed++;
+            }
+            if (event.readSkillResult()) {
+                boolean matched = event.readSkillResultId() != null
+                        ? pending.remove(event.readSkillResultId())
+                        : pending.isEmpty() && unnamed == 1;
+                if (matched) {
+                    if (event.readSkillResultId() == null) unnamed--;
+                    if (event.readSkillResultSuccess()) success = true;
+                    else failure = true;
+                }
+            }
+            return new AnswerAccumulator(next, event.complete(), Set.copyOf(pending), unnamed, success, failure);
         }
         private String content() { return content; }
         private boolean complete() { return complete; }
+        private boolean hasSuccessfulReadSkill() { return successfulReadSkill && !failedReadSkill; }
     }
 
     private record AgentChatRequest(@JsonProperty("agent_id") String agentId, String query,
             @JsonProperty("agent_enabled") boolean agentEnabled, @JsonProperty("knowledge_base_ids") List<String> knowledgeBaseIds,
             @JsonProperty("knowledge_ids") List<String> knowledgeIds, @JsonProperty("system_scopes") List<SystemScopePayload> systemScopes,
-            @JsonProperty("web_search_enabled") boolean webSearchEnabled, @JsonProperty("disable_title") boolean disableTitle, String channel) {
+            @JsonProperty("web_search_enabled") boolean webSearchEnabled, @JsonProperty("disable_title") boolean disableTitle, String channel,
+            @JsonProperty("skill_names") List<String> skillNames) {
         private static AgentChatRequest forGeneration(KnowledgeAgentInvocation invocation, String query) {
-            return from(invocation.agentId(), invocation.requirementScope(), invocation.requirementAdmissionTypeKeys(), query);
+            return from(invocation.agentId(), invocation.requirementScope(), invocation.requirementAdmissionTypeKeys(), query, GENERATION_SKILL);
         }
-        private static AgentChatRequest forDiscovery(FeatureDiscoveryInvocation invocation, String query) {
-            return from(invocation.agentId(), invocation.requirementScope(), invocation.requirementAdmissionTypeKeys(), query);
+        private static AgentChatRequest forReconciliation(FeatureReconciliationInvocation invocation) {
+            return from(invocation.agentId(), invocation.requirementScope(), invocation.requirementAdmissionTypeKeys(),
+                    invocation.prompt(), RECONCILIATION_SKILL);
         }
-        private static AgentChatRequest from(String agentId, RequirementScope scope, List<String> types, String query) {
+        private static AgentChatRequest from(String agentId, RequirementScope scope, List<String> types, String query, String skillName) {
             List<String> documents = scope.documents().stream().map(document -> document.documentId()).toList();
             return new AgentChatRequest(agentId, query, true, List.of(scope.knowledgeBaseId()), documents,
-                    List.of(SystemScopePayload.from(scope, types)), false, true, "api");
+                    List.of(SystemScopePayload.from(scope, types)), false, true, "api", List.of(skillName));
         }
     }
 
@@ -260,10 +513,6 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort 
 
     private static final class MarkdownPrompt {
         private MarkdownPrompt() { }
-        private static String discovery() {
-            return "请仅基于本次已限定的正式材料列出可生成测试用例的全部功能点。不要解释、不要 JSON、不要代码块；严格只返回：\n"
-                    + "## 功能点清单\n| 序号 | 功能点 |\n|---|---|\n| 1 | 功能名称 |";
-        }
         private static String generation(String supplementalNote, List<SelectedExample> examples) {
             StringBuilder prompt = new StringBuilder("请仅基于本次已限定的正式需求材料，为一个功能点生成测试用例。正式事实和审查发现只能来自这些需求材料；示例只用于写法参考。不要 JSON、不要代码块、不要图片，严格按以下两张 Markdown 表返回：\n"
                     + "## 需求与功能清单审查发现\n| 序号 | 对象/功能点 | 问题分类 | 证据对照 |\n|---|---|---|---|\n"

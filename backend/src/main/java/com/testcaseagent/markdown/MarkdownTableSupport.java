@@ -81,6 +81,9 @@ final class MarkdownTableSupport {
         if (cells.size() != columnCount) {
             throw invalid("a " + columnCount + "-column table row");
         }
+        if (cells.stream().allMatch(MarkdownTableSupport::isSeparatorCell)) {
+            throw invalid("a data row rather than a Markdown separator row");
+        }
         return cells;
     }
 

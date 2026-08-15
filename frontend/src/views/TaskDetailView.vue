@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 
 import { taskApi, type GenerationTaskDetail } from '../api/taskApi'
 
@@ -20,6 +20,7 @@ const loadError = ref('')
 const pendingAction = ref<'cancel' | 'retry'>()
 const actionError = ref('')
 const mutating = ref(false)
+let loadSequence = 0
 const confirmationDialog = ref<{ showModal?: () => void, close?: () => void }>()
 const actionTrigger = ref<{ focus: () => void }>()
 const downloadUrl = computed(() => {
@@ -35,17 +36,44 @@ const batchFailureSummary = computed(() => detail.value?.batches
   ?.filter((batch) => batch.status === 'FAILED' && batch.failureSummary)
   .map((batch) => batch.failureSummary)
   .join('；') ?? '')
+const businessProgress = computed(() => detail.value?.businessProgress)
+const businessStages = computed(() => {
+  const progress = businessProgress.value
+  if (!detail.value || !progress) return []
+  const activeStage = activeBusinessStage(detail.value.status, progress.currentBusinessStage, progress.frozenComplete)
+  return [
+    { label: '材料清单', detail: `${progress.completeMaterialDocumentCount} / ${progress.materialDocumentTotal} 份材料`, index: 0 },
+    { label: '双向审查', detail: `${progress.completedAuditWork} / ${progress.totalAuditWork} 项审查工作`, index: 1 },
+    { label: '功能冻结', detail: progress.frozenComplete ? '已完成冻结' : '尚未冻结', index: 2 },
+    { label: '测试用例生成', detail: progress.frozenComplete
+      ? `${progress.acceptedTestCaseCount} / ${progress.expectedTestCaseTotal ?? 0} 条已接收`
+      : '等待功能冻结', index: 3 },
+    { label: '交付结果', detail: deliveryStatusText(detail.value.status), index: 4 },
+  ].map((stage) => ({
+    ...stage,
+    state: stage.index < activeStage ? 'complete' : stage.index === activeStage ? 'current' : 'pending',
+  }))
+})
 
 async function loadTask() {
+  const requestTaskId = props.taskId
+  const requestSequence = ++loadSequence
   loading.value = true
   loadError.value = ''
   try {
-    detail.value = await props.getTask(props.taskId)
+    const loadedDetail = await props.getTask(requestTaskId)
+    if (!isCurrentLoad(requestSequence, requestTaskId)) return
+    detail.value = loadedDetail
   } catch (error) {
+    if (!isCurrentLoad(requestSequence, requestTaskId)) return
     loadError.value = error instanceof Error ? error.message : '任务详情加载失败，请稍后重试。'
   } finally {
-    loading.value = false
+    if (isCurrentLoad(requestSequence, requestTaskId)) loading.value = false
   }
+}
+
+function isCurrentLoad(requestSequence: number, requestTaskId: string) {
+  return requestSequence === loadSequence && requestTaskId === props.taskId
 }
 
 function valueOrDash(value?: string | number) {
@@ -64,6 +92,23 @@ function statusText(status?: string) {
     COMPLETED: '已完成',
     PARTIAL: '部分完成',
   }[status ?? ''] ?? valueOrDash(status)
+}
+
+function activeBusinessStage(status: string, currentBusinessStage: string, frozenComplete: boolean) {
+  if (['COMPLETED', 'PARTIAL', 'FAILED', 'CANCELLED'].includes(status)) return 4
+  if (['GENERATING', 'VALIDATING'].includes(status)) return 3
+  if (frozenComplete || currentBusinessStage === '功能冻结') return 2
+  if (currentBusinessStage === '材料清单' || status === 'QUEUED') return 0
+  return 1
+}
+
+function deliveryStatusText(status: string) {
+  return {
+    COMPLETED: '完整交付',
+    PARTIAL: '审查已完成，测试用例不完整',
+    FAILED: '材料或审查失败',
+    CANCELLED: '任务已取消',
+  }[status] ?? '处理中'
 }
 
 function materialCategoryText(category?: string) {
@@ -126,10 +171,11 @@ async function confirmAction() {
 }
 
 onMounted(loadTask)
+watch(() => props.taskId, () => { void loadTask() })
 </script>
 
 <template>
-  <!-- [Req-ID]: REQ-WEB-003, REQ-WEB-004, REQ-WEB-005, REQ-WEB-006, REQ-WEB-007, REQ-WEB-008 -->
+  <!-- [Req-ID]: REQ-WEB-003, REQ-WEB-004, REQ-WEB-005, REQ-WEB-006, REQ-WEB-007, REQ-WEB-008, REQ-CWR-001, REQ-CWR-002 -->
   <!-- [Req-ID]: REQ-UIX-001, REQ-UIX-005, REQ-UIX-006, REQ-UIX-007 -->
   <section
     class="task-detail"
@@ -193,6 +239,70 @@ onMounted(loadTask)
           <dd>{{ detail.artifactReady ? (detail.status === 'PARTIAL' ? '可下载已完成部分' : '已生成，可下载') : '结果生成后可下载' }}</dd>
         </div>
       </dl>
+
+      <section
+        v-if="businessProgress"
+        class="task-detail__section task-detail__business-progress"
+        aria-labelledby="business-progress-title"
+        data-testid="business-progress"
+      >
+        <div class="task-detail__progress-heading">
+          <div>
+            <h2 id="business-progress-title">
+              业务进度
+            </h2>
+            <p>当前阶段：{{ businessProgress.currentBusinessStage }}</p>
+          </div>
+          <p
+            class="status-chip"
+            :aria-label="`交付状态：${deliveryStatusText(detail.status)}`"
+            data-testid="delivery-status"
+          >
+            {{ deliveryStatusText(detail.status) }}
+          </p>
+        </div>
+        <ol
+          class="task-detail__stage-flow"
+          aria-label="任务业务流程"
+        >
+          <li
+            v-for="stage in businessStages"
+            :key="stage.label"
+            :class="`task-detail__stage task-detail__stage--${stage.state}`"
+            :aria-current="stage.state === 'current' ? 'step' : undefined"
+          >
+            <strong>{{ stage.label }}</strong>
+            <span>{{ stage.detail }}</span>
+          </li>
+        </ol>
+        <dl class="task-detail__description-list task-detail__progress-counts">
+          <div><dt>材料处理</dt><dd>{{ businessProgress.completeMaterialDocumentCount }} / {{ businessProgress.materialDocumentTotal }} 份；{{ businessProgress.processedMaterialUnitCount }} / {{ businessProgress.materialUnitTotal }} 个材料单元</dd></div>
+          <div><dt>审查进度</dt><dd>{{ businessProgress.completedAuditWork }} / {{ businessProgress.totalAuditWork }} 项审查工作<span v-if="businessProgress.failedAuditWork">，{{ businessProgress.failedAuditWork }} 项未完成</span></dd></div>
+          <div><dt>审查候选</dt><dd>审查候选 {{ businessProgress.featureCandidateTotal }} 项（尚非最终功能数）</dd></div>
+          <div><dt>审查发现</dt><dd>功能清单缺失 {{ businessProgress.functionListMissingCount }} 项；需求缺失 {{ businessProgress.requirementMissingCount }} 项；冲突 {{ businessProgress.conflictCount }} 项；拆分 {{ businessProgress.splitCount }} 项；合并 {{ businessProgress.mergeCount }} 项；证据不足 {{ businessProgress.insufficientEvidenceCount }} 项</dd></div>
+          <div>
+            <dt>功能冻结</dt>
+            <dd v-if="businessProgress.frozenComplete">
+              已冻结 {{ businessProgress.frozenFeatureTotal }} 个功能，其中 {{ businessProgress.generationEligibleFrozenFeatureCount }} 个可生成，{{ businessProgress.generationIneligibleFrozenFeatureCount }} 个暂不生成
+            </dd>
+            <dd v-else>
+              尚未冻结
+            </dd>
+          </div>
+          <div>
+            <dt>测试用例</dt>
+            <dd v-if="businessProgress.frozenComplete">
+              {{ businessProgress.acceptedTestCaseCount }} / {{ businessProgress.expectedTestCaseTotal }} 条已接收
+            </dd>
+            <dd v-else>
+              功能冻结后计算测试用例目标
+            </dd>
+          </div>
+        </dl>
+        <p class="task-detail__business-reason">
+          {{ businessProgress.businessReason }}
+        </p>
+      </section>
 
       <div
         v-if="canCancel || canRetry"
@@ -337,6 +447,20 @@ onMounted(loadTask)
         {{ detail.status === 'PARTIAL' ? '下载已完成部分的 Excel' : '下载 Excel' }}
       </a>
     </div>
+    <div
+      v-else
+      class="task-detail__empty"
+      data-state="empty"
+      role="status"
+    >
+      <p>暂未获得可展示的任务详情。</p>
+      <button
+        type="button"
+        @click="loadTask"
+      >
+        重新加载
+      </button>
+    </div>
     <dialog
       v-if="pendingAction"
       ref="confirmationDialog"
@@ -376,3 +500,86 @@ onMounted(loadTask)
     </dialog>
   </section>
 </template>
+
+<style scoped>
+.task-detail__progress-heading {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-16);
+  align-items: start;
+  justify-content: space-between;
+}
+
+.task-detail__progress-heading > .status-chip {
+  margin: var(--space-0);
+}
+
+.task-detail__stage-flow {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: var(--space-8);
+  margin: var(--space-24) var(--space-0);
+  padding: var(--space-0);
+  list-style: none;
+}
+
+.task-detail__stage {
+  min-width: 0;
+  padding: var(--space-16);
+  border: 1px solid var(--color-divider-input);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-muted);
+  color: var(--color-text-secondary);
+}
+
+.task-detail__stage strong,
+.task-detail__stage span {
+  display: block;
+}
+
+.task-detail__stage span {
+  margin-top: var(--space-4);
+  font: var(--type-caption);
+}
+
+.task-detail__stage--complete,
+.task-detail__stage--current {
+  border-color: var(--color-tech-cyan);
+  color: var(--color-text-primary);
+}
+
+.task-detail__stage--current {
+  background: var(--color-tech-cyan-bg);
+}
+
+.task-detail__progress-counts {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.task-detail__business-reason {
+  margin-top: var(--space-16);
+  color: var(--color-text-secondary);
+}
+
+.task-detail__empty {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-16);
+  margin-inline: var(--space-32);
+  padding: var(--space-24);
+  border: 1px dashed var(--color-divider-input);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-muted);
+}
+
+@media (max-width: 760px) {
+  .task-detail__stage-flow,
+  .task-detail__progress-counts {
+    grid-template-columns: 1fr;
+  }
+
+  .task-detail__empty {
+    margin-inline: var(--space-16);
+  }
+}
+</style>

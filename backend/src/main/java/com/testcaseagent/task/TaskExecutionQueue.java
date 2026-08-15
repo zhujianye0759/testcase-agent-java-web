@@ -58,20 +58,30 @@ public final class TaskExecutionQueue {
         }));
     }
 
-    public void recoverExpiredClaims() {
+    /**
+     * Performs the one-time process-start recovery before this JVM begins claiming work.
+     *
+     * <p>This is not a general heartbeat: ordinary {@link #claimNext()} only recovers expired running leases.
+     * Startup additionally releases an AUDITING claim that has not reached a running batch, including the narrow
+     * crash window after frozen batches were committed but before generation began.</p>
+     *
+     * [Req-ID]: REQ-CAG-001, REQ-TSK-008
+     */
+    public void recoverAtStartup() {
         transactionTemplate.executeWithoutResult(ignored -> recoverExpiredClaimsInTransaction(true));
     }
 
-    private void recoverExpiredClaimsInTransaction(boolean recoverUnbatchedAudit) {
-        // ALL discovery creates no batch until the agent returns a complete Markdown feature table. At
-        // startup an AUDITING task therefore has no batch lease from which to infer recovery; release
-        // that abandoned slot before applying the ordinary running-batch lease recovery below.
-        if (recoverUnbatchedAudit) {
+    private void recoverExpiredClaimsInTransaction(boolean startupRecovery) {
+        if (startupRecovery) {
+            // The process-start runner alone recovers an AUDITING claim with no running batch. It covers both the
+            // unplanned audit phase and the committed-frozen-plan window, without treating live workers as dead.
             jdbcTemplate.update("""
                                 UPDATE task_execution_slot s JOIN generation_task t ON t.id = s.task_id
-                                LEFT JOIN generation_batch b ON b.task_id = t.id
                                 SET s.task_id = NULL, t.status = 'QUEUED'
-                                WHERE t.status = 'AUDITING' AND b.id IS NULL
+                                WHERE t.status = 'AUDITING'
+                                  AND NOT EXISTS (
+                                      SELECT 1 FROM generation_batch b
+                                      WHERE b.task_id = t.id AND b.status = 'RUNNING')
                                 """);
         }
         jdbcTemplate.update("""

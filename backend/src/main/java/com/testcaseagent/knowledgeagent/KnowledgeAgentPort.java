@@ -1,8 +1,5 @@
 package com.testcaseagent.knowledgeagent;
 
-import com.testcaseagent.markdown.MarkdownFeatureRow;
-import java.util.List;
-
 /**
  * Invokes the configured remote knowledge agent through one isolated session.
  *
@@ -13,5 +10,11 @@ public interface KnowledgeAgentPort {
 
     KnowledgeAgentInvocationResult invoke(KnowledgeAgentInvocation invocation);
 
-    List<MarkdownFeatureRow> discoverFeatures(FeatureDiscoveryInvocation invocation);
+    /**
+     * Reconciles feature-list and requirement candidates within one frozen formal scope.
+     *
+     * [Req-ID]: REQ-KSI-001, REQ-KSI-002, REQ-KSI-003, REQ-BFA-003
+     */
+    KnowledgeAgentInvocationResult reconcileFeatures(FeatureReconciliationInvocation invocation);
+
 }

@@ -42,6 +42,33 @@ export interface TaskCreated {
   id: string
 }
 
+/** Aggregate-only progress used by the detail page; it deliberately excludes technical identifiers and raw model output. */
+export interface GenerationTaskBusinessProgress {
+  currentBusinessStage: string
+  materialDocumentTotal: number
+  completeMaterialDocumentCount: number
+  materialUnitTotal: number
+  processedMaterialUnitCount: number
+  totalAuditWork: number
+  completedAuditWork: number
+  failedAuditWork: number
+  featureCandidateTotal: number
+  functionListMissingCount: number
+  requirementMissingCount: number
+  conflictCount: number
+  splitCount: number
+  mergeCount: number
+  insufficientEvidenceCount: number
+  frozenComplete: boolean
+  frozenFeatureTotal: number | null
+  generationEligibleFrozenFeatureCount: number | null
+  generationIneligibleFrozenFeatureCount: number | null
+  expectedTestCaseTotal: number | null
+  acceptedTestCaseCount: number
+  coverageStatus: string
+  businessReason: string
+}
+
 export interface GenerationTaskDetail {
   id: string
   taskMode: 'FEATURE' | 'ALL'
@@ -72,6 +99,7 @@ export interface GenerationTaskDetail {
     expectedResult?: string
     requirementContent?: string
   }>
+  businessProgress: GenerationTaskBusinessProgress
 }
 
 export interface GenerationTaskListItem {

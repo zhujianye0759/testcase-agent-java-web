@@ -41,13 +41,16 @@ public final class DynamicTaskScopeResolver {
         }
 
         ScopeSelection coordinate = revalidated.get(0);
-        List<String> documentIds = revalidated.stream().flatMap(value -> value.documentIds().stream())
-                .distinct().sorted().toList();
+        List<RequirementDocumentCoordinate> documents = revalidated.stream()
+                .flatMap(value -> value.documentIds().stream()
+                        .map(documentId -> new RequirementDocumentCoordinate(documentId, value.admissionTypeKey())))
+                .sorted(java.util.Comparator.comparing(RequirementDocumentCoordinate::documentId))
+                .toList();
         List<String> admissionTypes = revalidated.stream().map(ScopeSelection::admissionTypeKey)
                 .distinct().sorted().toList();
         RequirementScope requirementScope = new RequirementScope(coordinate.knowledgeBaseId(), coordinate.systemId(),
                 coordinate.versionId(), coordinate.materialCategory(), null,
-                documentIds.stream().map(RequirementDocumentCoordinate::new).toList());
+                documents);
 
         if (command.taskMode() == GenerationTaskMode.ALL) {
             return new CreateGenerationTaskRequest(command.taskMode(), "all-pending", List.of(), Map.of(),
