@@ -37,3 +37,24 @@
 - 静态测试核对来源确认的 token 值，并检查 1200px 内容容器规则与可见焦点规则。
 - 视觉检查使用 1440×820 设计检查画布，以及一个较窄和一个较宽的 PC 视口；1440×820 不作为固定产品尺寸。
 - 后续页面仍需按各自任务补齐 loading、ready、empty、no-results、error、forbidden、not-found 等状态，不能由本基础切片虚构。
+
+## 智能测试工作台视觉扩展
+
+本节记录 `REQ-UIX-001` 至 `REQ-UIX-007` 的桌面端视觉决策。它不改变业务接口、任务状态或材料范围语义。
+
+| 决策 | 本项目实现 | 权威标签 |
+|---|---|---|
+| 视觉方向 | 亮色企业底、深海军蓝导航与标题强调、受控青色作为智能工作流提示；网格和光晕仅作为不可交互背景 | `project-configurable` |
+| 技术角色色 | `--color-tech-navy`、`--color-tech-cyan`、`--color-tech-grid`、`--color-tech-glow`；同时服务于导航、页眉、状态提示和背景 | `project-configurable` |
+| 表面层次 | `--color-surface-raised/muted/inset` 用于页面、信息区和只读范围摘要，不以嵌套卡片作纯装饰 | `project-configurable` |
+| 阴影层次 | `--shadow-base/middle/high` 仅用于悬停、导航、对话框和内容层级，参数不从截图反推 | `project-configurable` |
+| 动效 | `--motion-fast/standard/complex` 用于短促交互反馈；`prefers-reduced-motion` 下移除过渡与环境装饰 | `ai-adjudicated-v1` + `project-configurable` |
+| 内容容器 | 产品壳以 1440px 作为流式桌面内容最大宽度，1200px 内容阈值两侧边距和沟槽同步从 16px 切换到 24px | `project-configurable` + `source-confirmed` + `ai-adjudicated-v1` |
+| 导航与业务上下文 | 顶部保留品牌、当前路由和“后台执行 · 任务可追踪”产品说明；受控青色短线仅为装饰，不使用成功色或声明实时服务健康状态 | `project-configurable` |
+
+### 页面状态与无障碍
+
+- 启动页：材料范围加载、可用、空范围和创建失败均在本地表单区域表达；失败后保留选择和补充说明，并将焦点移到错误摘要。
+- 列表页：保留加载、初始空、已加载、请求错误和分页恢复；本期没有服务端筛选合同，因此不伪造“无筛选结果”状态。
+- 详情页：保留加载、已加载、局部加载错误、任务失败摘要、取消/重试确认与下载动作；状态标签同时显示文字。
+- 全部可操作元素支持键盘访问和可见焦点；背景网格、光晕和按钮过渡均不承载业务信息，减少动态效果时会移除。

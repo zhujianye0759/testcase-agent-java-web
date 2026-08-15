@@ -33,6 +33,8 @@ describe('generation task form', () => {
     const { wrapper } = await mountPage({ createTask })
 
     expect(wrapper.text()).toContain('生成全部测试用例')
+    expect(wrapper.get('.generation-workspace__hero').text()).toContain('以材料为依据')
+    expect(wrapper.get('[data-testid="all-mode-card"]').attributes('data-selected')).toBe('true')
     expect(wrapper.text()).toContain('自动参考优质示例（推荐）')
     expect(wrapper.text()).toContain('后台执行')
     expect(wrapper.get('[data-testid="scope-summary"]').text()).toContain('战略运管 V1.0 准入材料')
@@ -58,6 +60,7 @@ describe('generation task form', () => {
     const { wrapper } = await mountPage({ createTask })
 
     await wrapper.get('input[value="FEATURE"]').setValue(true)
+    expect(wrapper.get('[data-testid="feature-mode-card"]').attributes('data-selected')).toBe('true')
     expect(wrapper.get('input[name="featureDescription"]').attributes('placeholder')).toContain('例如')
     await wrapper.get('input[name="featureDescription"]').setValue('用户登录与忘记密码')
     await wrapper.get('form').trigger('submit.prevent')
@@ -97,6 +100,14 @@ describe('generation task form', () => {
     expect(wrapper.get('[role="alert"]').text()).toContain('暂时没有可用于生成测试用例的材料范围')
     expect(wrapper.get('button[type="button"]').text()).toContain('重新加载')
     expect(wrapper.text()).not.toContain('project_id')
+  })
+
+  it('keeps the launch action discoverable while scope material is loading', async () => {
+    const pendingOptions = new Promise<typeof singleScope>(() => undefined)
+    const { wrapper } = await mountPage({ loadTaskOptions: vi.fn().mockReturnValue(pendingOptions) })
+
+    expect(wrapper.get('[data-state="loading"]').text()).toContain('正在准备可用材料范围')
+    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeDefined()
   })
 
   it('shows only business labels when several authorized scopes are available', async () => {

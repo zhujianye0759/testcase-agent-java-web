@@ -130,14 +130,25 @@ onMounted(loadTask)
 
 <template>
   <!-- [Req-ID]: REQ-WEB-003, REQ-WEB-004, REQ-WEB-005, REQ-WEB-006, REQ-WEB-007, REQ-WEB-008 -->
+  <!-- [Req-ID]: REQ-UIX-001, REQ-UIX-005, REQ-UIX-006, REQ-UIX-007 -->
   <section
     class="task-detail"
     aria-labelledby="task-detail-title"
   >
-    <h1 id="task-detail-title">
-      生成任务详情
-    </h1>
-    <p>查看当前任务的进度、审查发现、测试用例和下载结果。</p>
+    <header class="task-detail__heading">
+      <div>
+        <p class="page-eyebrow">
+          TASK INTELLIGENCE
+        </p>
+        <h1 id="task-detail-title">
+          生成任务详情
+        </h1>
+        <p>查看当前任务的进度、审查发现、测试用例和下载结果。</p>
+      </div>
+      <p class="task-detail__heading-note">
+        材料范围已锁定<br>结果可追溯
+      </p>
+    </header>
 
     <p
       v-if="loading"
@@ -159,11 +170,17 @@ onMounted(loadTask)
         重试加载
       </button>
     </div>
-    <template v-else-if="detail">
+    <div
+      v-else-if="detail"
+      data-state="ready"
+    >
       <dl class="task-detail__summary">
         <div>
           <dt>状态</dt>
-          <dd :aria-label="`状态：${statusText(detail.status)}`">
+          <dd
+            class="status-chip"
+            :aria-label="`状态：${statusText(detail.status)}`"
+          >
             {{ statusText(detail.status) }}
           </dd>
         </div>
@@ -314,11 +331,12 @@ onMounted(loadTask)
       </p>
       <a
         v-if="downloadUrl"
+        class="task-detail__download-action"
         :href="downloadUrl"
       >
         {{ detail.status === 'PARTIAL' ? '下载已完成部分的 Excel' : '下载 Excel' }}
       </a>
-    </template>
+    </div>
     <dialog
       v-if="pendingAction"
       ref="confirmationDialog"

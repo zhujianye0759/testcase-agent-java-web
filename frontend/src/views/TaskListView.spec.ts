@@ -51,6 +51,8 @@ describe('shared generation task list', () => {
 
     expect(loadTasks).toHaveBeenNthCalledWith(1, { page: 0, size: 20 })
     expect(wrapper.text()).toContain('指定功能测试用例生成')
+    expect(wrapper.get('[data-state="ready"]').text()).toContain('共 1 个任务')
+    expect(wrapper.get('.task-list__heading').text()).toContain('共享任务')
     expect(wrapper.text()).not.toContain('task-old')
     expect(wrapper.find('form.task-list__filters').exists()).toBe(false)
     wrapper.unmount()
@@ -93,6 +95,7 @@ describe('shared generation task list', () => {
     await flushPromises()
 
     expect(wrapper.get('[aria-label="状态：部分完成"]').text()).toContain('部分完成')
+    expect(wrapper.get('[aria-label="状态：部分完成"]').classes()).toContain('status-chip')
     expect(wrapper.text()).toContain('2 / 3 批次')
     expect(wrapper.text()).toContain('-')
     wrapper.unmount()

@@ -81,14 +81,34 @@ async function submitTask() {
 
 <template>
   <!-- [Req-ID]: REQ-WEB-001, REQ-WEB-006, REQ-WEB-007 -->
-  <section aria-labelledby="generation-page-title">
-    <h1 id="generation-page-title">
-      测试用例生成
-    </h1>
-    <p>选择材料范围后即可后台执行；提交后可前往任务列表查看进度、重试或下载结果。</p>
-    <RouterLink :to="{ name: 'task-list' }">
-      查看共享任务
-    </RouterLink>
+  <!-- [Req-ID]: REQ-UIX-001, REQ-UIX-003, REQ-UIX-006, REQ-UIX-007 -->
+  <section
+    class="generation-workspace"
+    aria-labelledby="generation-page-title"
+  >
+    <header class="generation-workspace__hero">
+      <div>
+        <p class="page-eyebrow">
+          TEST DESIGN WORKSPACE
+        </p>
+        <h1 id="generation-page-title">
+          测试用例生成
+        </h1>
+        <p class="generation-workspace__lead">
+          以材料为依据，自动沉淀审查发现与可执行的测试用例。
+        </p>
+      </div>
+      <div class="generation-workspace__hero-note">
+        <span aria-hidden="true">01</span>
+        <p>任务将在后台执行<br>结果可在共享任务中查看</p>
+      </div>
+    </header>
+    <div class="generation-workspace__context">
+      <p>选择已授权材料范围后即可开始。系统会保留本次任务的材料快照，方便后续查看和下载。</p>
+      <RouterLink :to="{ name: 'task-list' }">
+        查看共享任务
+      </RouterLink>
+    </div>
 
     <form
       class="task-form"
@@ -98,24 +118,40 @@ async function submitTask() {
         class="task-form__mode"
         :disabled="submitting || loadingOptions || scopeOptions.length === 0"
       >
-        <legend>生成方式</legend>
-        <label class="task-form__choice">
+        <legend>选择生成方式</legend>
+        <label
+          data-testid="all-mode-card"
+          class="task-form__choice"
+          :class="{ 'task-form__choice--selected': form.taskMode === 'ALL' }"
+          :data-selected="form.taskMode === 'ALL'"
+        >
           <input
             v-model="form.taskMode"
             type="radio"
             name="taskMode"
             value="ALL"
           >
-          <span>生成全部测试用例（推荐）</span>
+          <span>
+            <strong>生成全部测试用例</strong>
+            <small>推荐 · 自动识别材料中的功能并分批生成</small>
+          </span>
         </label>
-        <label class="task-form__choice">
+        <label
+          data-testid="feature-mode-card"
+          class="task-form__choice"
+          :class="{ 'task-form__choice--selected': form.taskMode === 'FEATURE' }"
+          :data-selected="form.taskMode === 'FEATURE'"
+        >
           <input
             v-model="form.taskMode"
             type="radio"
             name="taskMode"
             value="FEATURE"
           >
-          <span>指定功能生成</span>
+          <span>
+            <strong>指定功能生成</strong>
+            <small>输入功能名称或描述，聚焦当前需要验证的内容</small>
+          </span>
         </label>
         <p class="task-form__help">
           系统将从已授权材料中识别功能并分批生成。
@@ -132,9 +168,17 @@ async function submitTask() {
       </fieldset>
 
       <fieldset :disabled="submitting || loadingOptions || scopeOptions.length === 0">
-        <legend>材料范围</legend>
+        <legend>本次材料范围</legend>
         <p
-          v-if="scopeOptions.length === 1"
+          v-if="loadingOptions"
+          class="task-form__loading"
+          data-state="loading"
+          role="status"
+        >
+          正在准备可用材料范围…
+        </p>
+        <p
+          v-else-if="scopeOptions.length === 1"
           data-testid="scope-summary"
           class="task-form__scope-summary"
         >
@@ -161,8 +205,10 @@ async function submitTask() {
       </fieldset>
 
       <fieldset :disabled="submitting || loadingOptions || scopeOptions.length === 0">
-        <legend>示例参考</legend>
-        <p>自动参考优质示例（推荐）</p>
+        <legend>生成策略</legend>
+        <p class="task-form__strategy-note">
+          <strong>自动参考优质示例（推荐）</strong><span>用于优化用例结构和表达，不替代正式材料依据</span>
+        </p>
         <details>
           <summary>高级设置</summary>
           <label>
@@ -203,6 +249,7 @@ async function submitTask() {
         {{ submitError }}
       </p>
       <div class="task-form__actions">
+        <p>开始后将转入后台执行，您可随时在共享任务中查看进度。</p>
         <button
           class="task-form__secondary-action"
           type="button"

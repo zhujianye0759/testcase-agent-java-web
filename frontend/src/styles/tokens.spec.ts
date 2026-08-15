@@ -54,4 +54,21 @@ describe('PC UI semantic foundations', () => {
     expect(globalStyles).toContain('padding-inline: var(--space-24)')
     expect(globalStyles).toContain(':focus-visible')
   })
+
+  it('defines reusable restrained technology tokens and honours reduced motion', () => {
+    for (const token of [
+      '--color-tech-navy',
+      '--color-tech-cyan',
+      '--color-tech-grid',
+      '--shadow-base',
+      '--shadow-middle',
+      '--motion-fast',
+      '--motion-standard',
+    ]) {
+      expect(tokens).toContain(token)
+    }
+
+    expect(globalStyles).toContain('prefers-reduced-motion: reduce')
+    expect(globalStyles).toContain('.app-shell__ambient')
+  })
 })

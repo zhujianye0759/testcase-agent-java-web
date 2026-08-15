@@ -74,14 +74,25 @@ function progressText(item: GenerationTaskListItem) {
 
 <template>
   <!-- [Req-ID]: REQ-WEB-002, REQ-WEB-006, REQ-WEB-007 -->
+  <!-- [Req-ID]: REQ-UIX-001, REQ-UIX-004, REQ-UIX-006, REQ-UIX-007 -->
   <section
     class="task-list"
     aria-labelledby="task-list-title"
   >
-    <h1 id="task-list-title">
-      共享任务
-    </h1>
-    <p>查看所有测试用例生成任务的状态、进度和失败摘要。</p>
+    <header class="task-list__heading">
+      <div>
+        <p class="page-eyebrow">
+          TASK OPERATIONS
+        </p>
+        <h1 id="task-list-title">
+          共享任务
+        </h1>
+        <p>查看所有测试用例生成任务的状态、进度和失败摘要。</p>
+      </div>
+      <p class="task-list__heading-note">
+        <span aria-hidden="true">↗</span>所有成员均可查看与处理已授权任务
+      </p>
+    </header>
 
     <div
       v-if="state === 'loading'"
@@ -115,7 +126,10 @@ function progressText(item: GenerationTaskListItem) {
         创建任务
       </RouterLink>
     </div>
-    <template v-else-if="state === 'ready'">
+    <div
+      v-else-if="state === 'ready'"
+      data-state="ready"
+    >
       <div class="task-list__overview">
         共 {{ taskPage.totalItems }} 个任务，第 {{ taskPage.page + 1 }} / {{ totalPages }} 页
       </div>
@@ -154,7 +168,7 @@ function progressText(item: GenerationTaskListItem) {
               <td>{{ formatCreatedAt(item.createdAt) }}</td>
               <td>
                 <span
-                  class="task-list__status"
+                  class="task-list__status status-chip"
                   :class="`task-list__status--${item.status.toLowerCase()}`"
                   :aria-label="`状态：${statusText(item.status)}`"
                 >{{ statusText(item.status) }}</span>
@@ -190,6 +204,6 @@ function progressText(item: GenerationTaskListItem) {
           下一页
         </button>
       </nav>
-    </template>
+    </div>
   </section>
 </template>

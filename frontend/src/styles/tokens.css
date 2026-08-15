@@ -90,4 +90,21 @@
 
   /* Project-configurable overlay layer; see docs/ui-decisions.md. */
   --layer-dialog: 1000;
+
+  /* Project-configurable intelligence-operations roles; see docs/ui-decisions.md. */
+  --color-tech-navy: #102A4C;
+  --color-tech-navy-soft: #1D416E;
+  --color-tech-cyan: #008FA3;
+  --color-tech-cyan-bg: #E4F7F8;
+  --color-tech-grid: rgb(21 91 212 / 8%);
+  --color-tech-glow: rgb(0 143 163 / 14%);
+  --color-surface-raised: #FFFFFF;
+  --color-surface-muted: #F7FAFD;
+  --color-surface-inset: #EEF4FA;
+  --shadow-base: 0 4px 16px rgb(16 42 76 / 8%);
+  --shadow-middle: 0 12px 32px rgb(16 42 76 / 12%);
+  --shadow-high: 0 20px 48px rgb(16 42 76 / 18%);
+  --motion-fast: 120ms ease;
+  --motion-standard: 200ms ease;
+  --motion-complex: 320ms ease;
 }

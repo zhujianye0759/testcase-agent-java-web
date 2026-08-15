@@ -40,9 +40,12 @@ describe('generation task detail', () => {
     await flushPromises()
 
     const download = wrapper.get('a[href*="/download"]')
+    expect(download.classes()).toContain('task-detail__download-action')
     expect(download.attributes('href')).toBe('/api/artifacts/artifact-456/download')
     expect(download.attributes()).not.toHaveProperty('download')
     expect(wrapper.get('[aria-label="状态：已完成"]').text()).toContain('已完成')
+    expect(wrapper.get('[aria-label="状态：已完成"]').classes()).toContain('status-chip')
+    expect(wrapper.find('[data-state="ready"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('本次材料范围')
     expect(wrapper.text()).toContain('用户正常登录')
     expect(wrapper.text()).toContain('本次材料范围')
