@@ -4,7 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -20,6 +22,7 @@ import com.testcaseagent.fewshot.ExampleScope;
 import com.testcaseagent.knowledgeagent.KnowledgeAgentInvocation;
 import com.testcaseagent.knowledgeagent.KnowledgeAgentInvocationResult;
 import com.testcaseagent.knowledgeagent.KnowledgeAgentPort;
+import com.testcaseagent.knowledgeagent.KnowledgeAgentSkillPreparationException;
 import com.testcaseagent.scope.RequirementDocumentCoordinate;
 import com.testcaseagent.scope.RequirementScope;
 import com.testcaseagent.testcase.FewShotPolicy;
@@ -113,6 +116,58 @@ class GenerationWorkflowBatchAcceptanceTest {
         verify(repository).acceptMarkdownBatch(eq("batch-1"), eq("attempt-1"), any());
     }
 
+    @Test
+    void opensAndClosesOneSkillPreparationConversationForEachGenerationBatch() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        KnowledgeAgentPort agent = mock(KnowledgeAgentPort.class);
+        CreateGenerationTaskRequest request = multiFeatureAllRequest();
+        GenerationTaskRepository.TaskExecutionWork first = new GenerationTaskRepository.TaskExecutionWork(
+                TASK_ID, "batch-1", "attempt-1", "feature-1", request);
+        GenerationTaskRepository.TaskExecutionWork second = new GenerationTaskRepository.TaskExecutionWork(
+                TASK_ID, "batch-2", "attempt-2", "feature-2", request);
+        when(repository.request(TASK_ID)).thenReturn(request);
+        when(repository.requireQueuedWork(TASK_ID)).thenReturn(first);
+        when(repository.nextQueuedWork(TASK_ID)).thenReturn(Optional.of(first), Optional.of(second), Optional.empty());
+        when(repository.frozenFeatureTargets(TASK_ID)).thenReturn(List.of(
+                frozenTarget("feature-1", 1, "订单管理/订单查询"), frozenTarget("feature-2", 2, "订单管理/订单创建")));
+        when(repository.acceptedMarkdownRows(TASK_ID)).thenReturn(new MarkdownTaskRows(List.of(), List.of()));
+        when(agent.invoke(any())).thenReturn(new KnowledgeAgentInvocationResult("session-1", List.of(), validMarkdown()),
+                new KnowledgeAgentInvocationResult("session-2", List.of(), validMarkdown().replace("订单查询", "订单创建")));
+
+        workflow(repository, agent).executeClaimed(new TaskExecutionClaim(TASK_ID, 1));
+
+        verify(agent, times(2)).prepareGenerationSession(any());
+        verify(agent, times(2)).invoke(any());
+        verify(agent, times(2)).closePreparedSession();
+        verify(repository).startBatch("batch-1", "attempt-1");
+        verify(repository).startBatch("batch-2", "attempt-2");
+    }
+
+    @Test
+    void stopsTheTaskAfterPreparationExhaustionBeforeItStartsTheNextBatch() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        KnowledgeAgentPort agent = mock(KnowledgeAgentPort.class);
+        CreateGenerationTaskRequest request = multiFeatureAllRequest();
+        GenerationTaskRepository.TaskExecutionWork first = new GenerationTaskRepository.TaskExecutionWork(
+                TASK_ID, "batch-1", "attempt-1", "feature-1", request);
+        GenerationTaskRepository.TaskExecutionWork second = new GenerationTaskRepository.TaskExecutionWork(
+                TASK_ID, "batch-2", "attempt-2", "feature-2", request);
+        when(repository.request(TASK_ID)).thenReturn(request);
+        when(repository.requireQueuedWork(TASK_ID)).thenReturn(first);
+        when(repository.nextQueuedWork(TASK_ID)).thenReturn(Optional.of(first), Optional.of(second));
+        when(repository.frozenFeatureTargets(TASK_ID)).thenReturn(List.of(
+                frozenTarget("feature-1", 1, "订单管理/订单查询"), frozenTarget("feature-2", 2, "订单管理/订单创建")));
+        doThrow(new KnowledgeAgentSkillPreparationException("Skill transport retries exhausted", true, null))
+                .when(agent).prepareGenerationSession(any());
+
+        workflow(repository, agent).executeClaimed(new TaskExecutionClaim(TASK_ID, 1));
+
+        verify(repository).failTask(eq(TASK_ID), eq("batch-1"), eq("attempt-1"), any());
+        verify(repository, never()).startBatch(eq("batch-2"), eq("attempt-2"));
+        verify(agent, never()).invoke(any());
+        verify(agent, never()).closePreparedSession();
+    }
+
     private static GenerationWorkflow workflow(GenerationTaskRepository repository, KnowledgeAgentPort agent) {
         when(repository.finalizationReadiness(TASK_ID))
                 .thenReturn(new GenerationTaskRepository.FinalizationReadiness(GenerationTaskStatus.FAILED, false));
@@ -127,6 +182,13 @@ class GenerationWorkflowBatchAcceptanceTest {
                 new ExampleScope("example-kb", List.of("example-1")), List.of("function_list", "work_order_plan"), "补充说明");
     }
 
+    private static CreateGenerationTaskRequest multiFeatureAllRequest() {
+        return new CreateGenerationTaskRequest(GenerationTaskMode.ALL, "all", List.of("feature-1", "feature-2"),
+                Map.of("feature-1", "订单管理/订单查询", "feature-2", "订单管理/订单创建"), FewShotPolicy.NONE,
+                "markdown-1.0", "1.0", "agent", scope(), new ExampleScope("example-kb", List.of("example-1")),
+                List.of("function_list"), "补充说明");
+    }
+
     private static RequirementScope scope() {
         return new RequirementScope("requirement-kb", "system", "version", "admission_material", null,
                 List.of(new RequirementDocumentCoordinate("function-document", "function_list")));
@@ -135,6 +197,12 @@ class GenerationWorkflowBatchAcceptanceTest {
     private static FrozenFeatureTarget frozenTarget() {
         return new FrozenFeatureTarget(FEATURE_ID, 1, "订单管理/订单查询", true,
                 new FrozenFeatureSource("conclusion-1", FeatureReviewConclusionType.MATCHED,
+                        List.of("candidate-a", "candidate-b"), "双向核对完成"));
+    }
+
+    private static FrozenFeatureTarget frozenTarget(String featureId, int sequence, String featurePath) {
+        return new FrozenFeatureTarget(featureId, sequence, featurePath, true,
+                new FrozenFeatureSource("conclusion-" + sequence, FeatureReviewConclusionType.MATCHED,
                         List.of("candidate-a", "candidate-b"), "双向核对完成"));
     }
 

@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -15,6 +16,7 @@ import com.testcaseagent.fewshot.ExampleScope;
 import com.testcaseagent.knowledgeagent.FeatureReconciliationInvocation;
 import com.testcaseagent.knowledgeagent.KnowledgeAgentInvocationResult;
 import com.testcaseagent.knowledgeagent.KnowledgeAgentPort;
+import com.testcaseagent.knowledgeagent.KnowledgeAgentSkillPreparationException;
 import com.testcaseagent.scope.RequirementDocumentCoordinate;
 import com.testcaseagent.scope.RequirementScope;
 import com.testcaseagent.task.CreateGenerationTaskRequest;
@@ -88,8 +90,8 @@ class FeatureAuditServiceTest {
                         "documentId=requirement-doc; unitId=requirement-unit", 2, 1)), true);
         ArgumentCaptor<FeatureReconciliationInvocation> invocation = ArgumentCaptor.forClass(FeatureReconciliationInvocation.class);
         verify(knowledgeAgentPort, times(4)).reconcileFeatures(invocation.capture());
-        verify(knowledgeAgentPort).prepareReconciliationSession(any());
-        verify(knowledgeAgentPort).closePreparedSession();
+        verify(knowledgeAgentPort, times(4)).prepareReconciliationSession(any());
+        verify(knowledgeAgentPort, times(4)).closePreparedSession();
         FeatureReconciliationInvocation finalInvocation = invocation.getAllValues().get(3);
         assertThat(finalInvocation.prompt()).contains(functionId, requirementId, "documentId=function-doc", "unitId=requirement-unit")
                 .doesNotContain("example-kb", "example-doc");
@@ -113,7 +115,7 @@ class FeatureAuditServiceTest {
 
         FeatureAuditResult result = service.audit("task-1", request);
 
-        verify(repository).failAuditWork(eq(claim), eq("remote terminal failure"));
+        verify(repository).failAuditWork(eq(claim), eq("remote terminal failure"), eq(true));
         verify(knowledgeAgentPort).prepareReconciliationSession(any());
         verify(knowledgeAgentPort).closePreparedSession();
         assertThat(result.complete()).isFalse();
@@ -150,7 +152,8 @@ class FeatureAuditServiceTest {
     @Test
     void doesNotTreatAnEmptyCandidateLedgerAsACompleteAllAudit() {
         GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
-        FeatureAuditService service = new FeatureAuditService(repository, mock(KnowledgeAgentPort.class));
+        KnowledgeAgentPort knowledgeAgentPort = mock(KnowledgeAgentPort.class);
+        FeatureAuditService service = new FeatureAuditService(repository, knowledgeAgentPort);
         CreateGenerationTaskRequest request = request();
         when(repository.hasCompleteMaterialInventory("task-1", request.requirementScope())).thenReturn(true);
         when(repository.materialInventory("task-1")).thenReturn(List.of());
@@ -158,6 +161,47 @@ class FeatureAuditServiceTest {
         when(repository.featureAuditCounts("task-1")).thenReturn(new GenerationTaskRepository.FeatureAuditCounts(0, 0, 0, 0, 0, 0));
 
         assertThat(service.audit("task-1", request).complete()).isFalse();
+        verify(knowledgeAgentPort, never()).prepareReconciliationSession(any());
+        verify(knowledgeAgentPort, never()).closePreparedSession();
+    }
+
+    @Test
+    void doesNotPrepareAConversationWhenAllAuditWorkAndCoverageAreAlreadyDurable() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        KnowledgeAgentPort knowledgeAgentPort = mock(KnowledgeAgentPort.class);
+        FeatureAuditService service = new FeatureAuditService(repository, knowledgeAgentPort);
+        CreateGenerationTaskRequest request = request();
+
+        when(repository.hasCompleteMaterialInventory("task-1", request.requirementScope())).thenReturn(true);
+        when(repository.materialInventory("task-1")).thenReturn(List.of());
+        when(repository.claimNextAuditWork(eq("task-1"), any(), any())).thenReturn(Optional.empty());
+        when(repository.featureAuditCounts("task-1")).thenReturn(new GenerationTaskRepository.FeatureAuditCounts(2, 2, 0, 2, 2, 2));
+
+        assertThat(service.audit("task-1", request).complete()).isTrue();
+        verify(knowledgeAgentPort, never()).prepareReconciliationSession(any());
+        verify(knowledgeAgentPort, never()).reconcileFeatures(any());
+        verify(knowledgeAgentPort, never()).closePreparedSession();
+    }
+
+    @Test
+    void recordsSkillPreparationFailureAsImmediatelyPermanentAuditWork() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        KnowledgeAgentPort knowledgeAgentPort = mock(KnowledgeAgentPort.class);
+        FeatureAuditService service = new FeatureAuditService(repository, knowledgeAgentPort);
+        CreateGenerationTaskRequest request = request();
+        MaterialInventoryUnit unit = new MaterialInventoryUnit("function-doc", "FUNCTION_LIST", "function-unit", 0, 1, "功能", 0, 2);
+        AuditWorkClaim claim = claim("function-work", "function-doc", "function-unit", 1, "FEATURE_LIST_SCAN");
+
+        when(repository.hasCompleteMaterialInventory("task-1", request.requirementScope())).thenReturn(true);
+        when(repository.materialInventory("task-1")).thenReturn(List.of(unit));
+        when(repository.claimNextAuditWork(eq("task-1"), any(), any())).thenReturn(Optional.of(claim), Optional.empty());
+        doThrow(new KnowledgeAgentSkillPreparationException("Skill unavailable", false, null))
+                .when(knowledgeAgentPort).prepareReconciliationSession(any());
+        when(repository.featureAuditCounts("task-1")).thenReturn(new GenerationTaskRepository.FeatureAuditCounts(1, 0, 1, 0, 0, 0));
+
+        assertThat(service.audit("task-1", request).permanentlyFailedAuditWork()).isOne();
+        verify(repository).failAuditWork(eq(claim), eq("Skill unavailable"), eq(false));
+        verify(knowledgeAgentPort, never()).reconcileFeatures(any());
     }
 
     @Test

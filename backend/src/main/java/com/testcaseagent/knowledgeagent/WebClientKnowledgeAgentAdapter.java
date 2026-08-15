@@ -26,6 +26,8 @@ import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientRequestException;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -58,10 +60,7 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
     private final Duration timeout;
     private final int maxAgentDiscoveryAttempts;
     private final int maxEventCharacters;
-    /**
-     * A prepared conversation is deliberately thread-bound: task execution is serial per claimed
-     * task, while sharing one KEE session across unrelated worker threads would leak context.
-     */
+    /** Holds one preparation/business pair only; callers close it before the next bounded work item. */
     private final ThreadLocal<PreparedSkillSession> preparedSession = new ThreadLocal<>();
     private final ObjectMapper objectMapper = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
@@ -87,7 +86,7 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
                 invocation.requirementAdmissionTypeKeys(), GENERATION_SKILL);
         String markdown = invokeChat(session.sessionId(),
                 AgentChatRequest.forGeneration(invocation, MarkdownPrompt.generation(invocation.prompt(), examples)), GENERATION_SKILL,
-                session.requiresReadSkillEvidence());
+                session.requiresReadSkillEvidence(), false);
         return new KnowledgeAgentInvocationResult(session.sessionId(), List.of(), markdown);
     }
 
@@ -108,7 +107,7 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
         SessionSelection session = sessionFor(invocation.agentId(), invocation.requirementScope(),
                 invocation.requirementAdmissionTypeKeys(), RECONCILIATION_SKILL);
         String markdown = invokeChat(session.sessionId(), AgentChatRequest.forReconciliation(invocation), RECONCILIATION_SKILL,
-                session.requiresReadSkillEvidence());
+                session.requiresReadSkillEvidence(), false);
         return new KnowledgeAgentInvocationResult(session.sessionId(), List.of(), markdown);
     }
 
@@ -306,15 +305,19 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
     }
 
     private String createSession() {
-        SessionEnvelope response = webClient.post().uri("/sessions").header(API_KEY_HEADER, apiKey)
-                .contentType(MediaType.APPLICATION_JSON).bodyValue(new SessionRequest("测试用例生成任务", "Java Web 批次任务"))
-                .exchangeToMono(clientResponse -> clientResponse.statusCode().isError()
-                        ? clientResponse.createException().flatMap(error -> Mono.error(new KnowledgeAgentInvocationException("Knowledge agent session creation failed", error)))
-                        : clientResponse.bodyToMono(SessionEnvelope.class)).block(timeout);
-        if (response == null || !response.success() || response.data() == null || response.data().id() == null || response.data().id().isBlank()) {
-            throw new KnowledgeAgentInvocationException("Knowledge agent session response has no id");
+        try {
+            SessionEnvelope response = webClient.post().uri("/sessions").header(API_KEY_HEADER, apiKey)
+                    .contentType(MediaType.APPLICATION_JSON).bodyValue(new SessionRequest("测试用例生成任务", "Java Web 批次任务"))
+                    .exchangeToMono(clientResponse -> clientResponse.statusCode().isError()
+                            ? clientResponse.createException().flatMap(error -> Mono.error(new KnowledgeAgentInvocationException("Knowledge agent session creation failed", error)))
+                            : clientResponse.bodyToMono(SessionEnvelope.class)).block(timeout);
+            if (response == null || !response.success() || response.data() == null || response.data().id() == null || response.data().id().isBlank()) {
+                throw new KnowledgeAgentInvocationException("Knowledge agent session response has no id");
+            }
+            return response.data().id();
+        } catch (RuntimeException exception) {
+            throw invocationFailure("Knowledge agent session creation failed", exception);
         }
-        return response.data().id();
     }
 
     /**
@@ -334,15 +337,19 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
             try {
                 String sessionId = createSession();
                 invokeChat(sessionId, AgentChatRequest.forSkillPreparation(agentId, scope, requirementAdmissionTypeKeys, skillName),
-                        skillName, true);
+                        skillName, true, true);
                 preparedSession.set(new PreparedSkillSession(sessionId, agentId, scope, requirementAdmissionTypeKeys, skillName));
                 return;
-            } catch (KnowledgeAgentInvocationException exception) {
-                failure = exception;
+            } catch (RuntimeException exception) {
+                failure = invocationFailure("Knowledge agent Skill preparation failed", exception);
+                if (!isSafePreparationTransportFailure(failure)) {
+                    throw new KnowledgeAgentSkillPreparationException(failure.getMessage(), false, failure);
+                }
             }
         }
-        throw new KnowledgeAgentInvocationException("Knowledge agent Skill preparation failed after " + SKILL_PREPARATION_ATTEMPTS
-                + " attempts: " + (failure == null ? "unknown failure" : failure.getMessage()), failure);
+        throw new KnowledgeAgentSkillPreparationException("Knowledge agent Skill preparation failed after "
+                + SKILL_PREPARATION_ATTEMPTS + " attempts: " + (failure == null ? "unknown failure" : failure.getMessage()),
+                true, failure);
     }
 
     private SessionSelection sessionFor(String agentId, RequirementScope scope, List<String> requirementAdmissionTypeKeys,
@@ -355,14 +362,15 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
         return new SessionSelection(prepared.sessionId(), false);
     }
 
-    private String invokeChat(String sessionId, AgentChatRequest request, String expectedSkillName, boolean requireReadSkillEvidence) {
+    private String invokeChat(String sessionId, AgentChatRequest request, String expectedSkillName, boolean requireReadSkillEvidence,
+            boolean preparationOnly) {
         try {
             AnswerAccumulator answer = webClient.post().uri("/agent-chat/{sessionId}", sessionId)
                     .header(API_KEY_HEADER, apiKey).contentType(MediaType.APPLICATION_JSON).accept(MediaType.TEXT_EVENT_STREAM)
                     .bodyValue(request).exchangeToFlux(clientResponse -> clientResponse.statusCode().isError()
                             ? clientResponse.createException().flatMapMany(error -> Flux.error(new KnowledgeAgentInvocationException("Knowledge agent chat request failed", error)))
                             : clientResponse.bodyToFlux(new ParameterizedTypeReference<ServerSentEvent<String>>() { }))
-                    .timeout(timeout).map(event -> parseRawEvent(event, expectedSkillName)).takeUntil(ParsedStreamEvent::complete)
+                    .timeout(timeout).map(event -> parseRawEvent(event, expectedSkillName, preparationOnly)).takeUntil(ParsedStreamEvent::complete)
                     .reduce(new AnswerAccumulator(), AnswerAccumulator::append).block(timeout.plusMillis(100));
             if (answer == null || !answer.complete()) throw new KnowledgeAgentInvocationException("Knowledge agent SSE ended without an explicit complete event");
             if (requireReadSkillEvidence && !answer.hasSuccessfulReadSkill()) {
@@ -370,21 +378,26 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
             }
             return answer.content();
         } catch (RuntimeException exception) {
-            if (hasCause(exception, TimeoutException.class)) throw new KnowledgeAgentInvocationException("Knowledge agent SSE request timed out", exception);
-            throw exception;
+            throw invocationFailure("Knowledge agent SSE request failed", exception);
         }
     }
 
-    private ParsedStreamEvent parseRawEvent(ServerSentEvent<String> rawEvent, String expectedSkillName) {
+    private ParsedStreamEvent parseRawEvent(ServerSentEvent<String> rawEvent, String expectedSkillName, boolean preparationOnly) {
         if (!"message".equals(rawEvent.event())) throw new KnowledgeAgentInvocationException("Knowledge agent SSE event must be message");
         String data = rawEvent.data();
         if (data == null || data.length() > maxEventCharacters) throw new KnowledgeAgentInvocationException("Knowledge agent SSE event exceeds maximum size");
         AgentStreamData streamData = parseStreamData(data);
         if ("error".equals(streamData.responseType()) && streamData.done()) throw new KnowledgeAgentInvocationException("Knowledge agent terminal error: " + streamData.message());
+        if (preparationOnly && "tool_call".equals(streamData.responseType()) && !isReadSkillTool(streamData.data())) {
+            throw new KnowledgeAgentInvocationException("Knowledge agent Skill preparation may only call read_skill");
+        }
+        if (preparationOnly && "tool_result".equals(streamData.responseType()) && hasNamedNonReadSkillTool(streamData.data())) {
+            throw new KnowledgeAgentInvocationException("Knowledge agent Skill preparation may only call read_skill");
+        }
         if ("tool_call".equals(streamData.responseType()) && isExpectedReadSkill(streamData.data(), expectedSkillName)) {
             return ParsedStreamEvent.readSkillCall(toolCallId(streamData.data()));
         }
-        if ("tool_result".equals(streamData.responseType()) && isReadSkillTool(streamData.data())
+        if ("tool_result".equals(streamData.responseType()) && toolCallId(streamData.data()) != null
                 && (skillName(streamData.data()) == null || expectedSkillName.equals(skillName(streamData.data())))) {
             return ParsedStreamEvent.readSkillResult(toolCallId(streamData.data()), successfulToolResult(streamData.data()));
         }
@@ -400,10 +413,15 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
         return data != null && data.isObject() && "read_skill".equals(textField(data, "tool_name"));
     }
 
+    private static boolean hasNamedNonReadSkillTool(JsonNode data) {
+        String toolName = textField(data, "tool_name");
+        return toolName != null && !"read_skill".equals(toolName);
+    }
+
     private static String skillName(JsonNode data) {
         String direct = textField(data, "skill_name");
         if (direct != null) return direct;
-        for (String field : List.of("args", "input")) {
+        for (String field : List.of("arguments", "args", "input")) {
             JsonNode nested = data.get(field);
             if (nested != null && nested.isObject()) {
                 String value = textField(nested, "skill_name");
@@ -443,6 +461,21 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
     }
 
     private static boolean isTransientStatus(int status) { return status == 408 || status == 429 || status == 502 || status == 503 || status == 504; }
+    private static KnowledgeAgentInvocationException invocationFailure(String context, RuntimeException exception) {
+        if (exception instanceof KnowledgeAgentInvocationException known) return known;
+        if (hasCause(exception, TimeoutException.class) || String.valueOf(exception.getMessage()).contains("Timeout on blocking read")) {
+            return new KnowledgeAgentInvocationException(context + " timed out", exception);
+        }
+        return new KnowledgeAgentInvocationException(context, exception);
+    }
+    private static boolean isSafePreparationTransportFailure(KnowledgeAgentInvocationException failure) {
+        if (hasCause(failure, TimeoutException.class) || hasCause(failure, WebClientRequestException.class)
+                || String.valueOf(failure.getMessage()).contains("timed out")) return true;
+        for (Throwable current = failure; current != null; current = current.getCause()) {
+            if (current instanceof WebClientResponseException response && isTransientStatus(response.getStatusCode().value())) return true;
+        }
+        return false;
+    }
     private static boolean hasCause(Throwable value, Class<? extends Throwable> type) { for (Throwable current = value; current != null; current = current.getCause()) if (type.isInstance(current)) return true; return false; }
     private static String requireText(String value, String field) { if (value == null || value.isBlank()) throw new IllegalArgumentException(field + " must not be blank"); return value; }
 

@@ -307,6 +307,15 @@ public final class GenerationTaskRepository {
 
     /** Marks one failed scan attempt retryable until its third failure, after which it is an explicit permanent failure. */
     public void failAuditWork(AuditWorkClaim claim, String failureSummary) {
+        failAuditWork(claim, failureSummary, true);
+    }
+
+    /**
+     * Records a bounded audit failure and immediately closes a caller-proven permanent protocol failure.
+     *
+     * [Req-ID]: REQ-KSI-002
+     */
+    public void failAuditWork(AuditWorkClaim claim, String failureSummary, boolean retryable) {
         String summary = failureSummary == null || failureSummary.isBlank() ? "Audit scan failed" : failureSummary;
         transactionTemplate.executeWithoutResult(ignored -> {
             int attemptUpdated = jdbcTemplate.update("""
@@ -317,10 +326,10 @@ public final class GenerationTaskRepository {
             if (attemptUpdated != 1) throw new IllegalStateException("Audit work claim is no longer running: " + claim.workId());
             int workUpdated = jdbcTemplate.update("""
                             UPDATE material_audit_work
-                            SET status = CASE WHEN ? >= ? THEN 'FAILED' ELSE 'QUEUED' END,
+                            SET status = CASE WHEN ? = FALSE OR ? >= ? THEN 'FAILED' ELSE 'QUEUED' END,
                                 lease_owner = NULL, lease_expires_at = NULL
                             WHERE id = ? AND status = 'RUNNING'
-                            """, claim.attemptNumber(), MAX_ATTEMPTS, claim.workId());
+                            """, retryable, claim.attemptNumber(), MAX_ATTEMPTS, claim.workId());
             if (workUpdated != 1) throw new IllegalStateException("Audit work state changed concurrently: " + claim.workId());
         });
     }

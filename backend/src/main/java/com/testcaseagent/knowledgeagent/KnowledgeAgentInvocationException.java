@@ -5,7 +5,7 @@ package com.testcaseagent.knowledgeagent;
  *
  * [Req-ID]: REQ-KAG-001, REQ-KAG-004, REQ-KAG-005
  */
-public final class KnowledgeAgentInvocationException extends RuntimeException {
+public class KnowledgeAgentInvocationException extends RuntimeException {
 
     public KnowledgeAgentInvocationException(String message) {
         super(message);

@@ -13,6 +13,7 @@ import com.testcaseagent.featureaudit.FrozenFeatureTarget;
 import com.testcaseagent.featureaudit.RequirementMaterialTraversalService;
 import com.testcaseagent.knowledgeagent.KnowledgeAgentInvocation;
 import com.testcaseagent.knowledgeagent.KnowledgeAgentPort;
+import com.testcaseagent.knowledgeagent.KnowledgeAgentSkillPreparationException;
 import com.testcaseagent.markdown.MarkdownGenerationResult;
 import com.testcaseagent.markdown.MarkdownGenerationResultParser;
 import com.testcaseagent.testcase.FrozenFeatureBatchAcceptanceValidator;
@@ -148,33 +149,32 @@ public final class GenerationWorkflow {
 
     private void executeBatches(String taskId) {
         GenerationTaskRepository.TaskExecutionWork work;
-        boolean prepared = false;
-        try {
-            while ((work = repository.nextQueuedWork(taskId).orElse(null)) != null) {
+        while ((work = repository.nextQueuedWork(taskId).orElse(null)) != null) {
+            try {
+                repository.startBatch(work.batchId(), work.attemptId());
+                if (repository.cancelAtCheckpoint(work.taskId(), work.batchId(), work.attemptId())) return;
+                String feature = requireFeaturePath(work);
+                FrozenFeatureTarget frozenFeature = frozenFeatureFor(work);
+                KnowledgeAgentInvocation invocation = new KnowledgeAgentInvocation(work.request().agentId(),
+                        work.request().requirementScope(), work.request().exampleScope(), work.request().requirementAdmissionTypeKeys(),
+                        generationPrompt(work.request(), feature, frozenFeature), work.request().fewShotPolicy());
+                knowledgeAgentPort.prepareGenerationSession(invocation);
                 try {
-                    repository.startBatch(work.batchId(), work.attemptId());
-                    if (repository.cancelAtCheckpoint(work.taskId(), work.batchId(), work.attemptId())) return;
-                    String feature = requireFeaturePath(work);
-                    FrozenFeatureTarget frozenFeature = frozenFeatureFor(work);
-                    KnowledgeAgentInvocation invocation = new KnowledgeAgentInvocation(work.request().agentId(),
-                            work.request().requirementScope(), work.request().exampleScope(), work.request().requirementAdmissionTypeKeys(),
-                            generationPrompt(work.request(), feature, frozenFeature), work.request().fewShotPolicy());
-                    if (!prepared) {
-                        knowledgeAgentPort.prepareGenerationSession(invocation);
-                        prepared = true;
-                    }
                     String markdown = knowledgeAgentPort.invoke(invocation).terminalMarkdown();
                     MarkdownGenerationResult accepted = markdownParser.parse(markdown);
                     if (frozenFeature != null) {
                         frozenFeatureBatchAcceptanceValidator.validate(frozenFeature, accepted);
                     }
                     repository.acceptMarkdownBatch(work.batchId(), work.attemptId(), accepted);
-                } catch (RuntimeException exception) {
-                    repository.failBatch(work.batchId(), work.attemptId(), safeFailureMessage(exception), true);
+                } finally {
+                    knowledgeAgentPort.closePreparedSession();
                 }
+            } catch (KnowledgeAgentSkillPreparationException exception) {
+                repository.failTask(work.taskId(), work.batchId(), work.attemptId(), safeFailureMessage(exception));
+                return;
+            } catch (RuntimeException exception) {
+                repository.failBatch(work.batchId(), work.attemptId(), safeFailureMessage(exception), true);
             }
-        } finally {
-            if (prepared) knowledgeAgentPort.closePreparedSession();
         }
         finishAndExport(taskId);
     }

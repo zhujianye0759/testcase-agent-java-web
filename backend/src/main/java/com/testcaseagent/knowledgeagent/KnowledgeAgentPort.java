@@ -11,8 +11,9 @@ public interface KnowledgeAgentPort {
     KnowledgeAgentInvocationResult invoke(KnowledgeAgentInvocation invocation);
 
     /**
-     * Starts a generation-stage conversation only after the exact required Skill has been loaded
-     * and proven through its SSE tool events. Default keeps focused test doubles source-compatible.
+     * Starts one isolated generation-batch conversation only after the exact required Skill has
+     * been loaded and proven through its SSE tool events. The caller closes it before the next
+     * bounded batch. Default keeps focused test doubles source-compatible.
      *
      * [Req-ID]: REQ-KSI-001, REQ-KSI-002, REQ-KSI-003
      */
@@ -26,15 +27,16 @@ public interface KnowledgeAgentPort {
     KnowledgeAgentInvocationResult reconcileFeatures(FeatureReconciliationInvocation invocation);
 
     /**
-     * Starts a reconciliation-stage conversation only after the exact required Skill has been
-     * loaded and proven through its SSE tool events. Default keeps focused test doubles
+     * Starts one isolated reconciliation-work conversation only after the exact required Skill
+     * has been loaded and proven through its SSE tool events. The caller closes it before the
+     * next bounded material work or final reconciliation. Default keeps focused test doubles
      * source-compatible.
      *
      * [Req-ID]: REQ-KSI-001, REQ-KSI-002, REQ-KSI-003
      */
     default void prepareReconciliationSession(FeatureReconciliationInvocation invocation) { }
 
-    /** Ends the current thread-bound prepared conversation, if any. [Req-ID]: REQ-KSI-002 */
+    /** Ends the current bounded work item's prepared conversation, if any. [Req-ID]: REQ-KSI-002 */
     default void closePreparedSession() { }
 
 }

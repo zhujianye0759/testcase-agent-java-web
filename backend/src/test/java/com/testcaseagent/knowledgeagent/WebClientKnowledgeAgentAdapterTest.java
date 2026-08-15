@@ -181,7 +181,7 @@ class WebClientKnowledgeAgentAdapterTest {
     }
 
     @Test
-    void retriesIsolatedPreparationBeforeAnyBusinessReconciliationIsSent() {
+    void doesNotRetryACompletedPreparationThatLacksReadSkillEvidence() {
         stubAgent();
         knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/sessions"))
                 .inScenario("preparation retry")
@@ -195,29 +195,68 @@ class WebClientKnowledgeAgentAdapterTest {
         knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
                 .withRequestBody(containing("会话准备"))
                 .willReturn(sse("SKILL_READY")));
-        knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-2"))
-                .inScenario("prepared retry session")
-                .whenScenarioStateIs(Scenario.STARTED)
-                .withRequestBody(containing("会话准备"))
-                .willSetStateTo("skill-loaded")
-                .willReturn(sseWithReadSkill("SKILL_READY", RECONCILIATION_SKILL)));
-        knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-2"))
-                .inScenario("prepared retry session")
-                .whenScenarioStateIs("skill-loaded")
-                .withRequestBody(containing("核对提示"))
-                .willReturn(sse("## 双向核对结论\n")));
-
         KnowledgeAgentPort port = new WebClientKnowledgeAgentAdapter(knowledgeEngine.baseUrl() + "/api/v1",
                 "test-key", FIXTURE_TIMEOUT, 2, 20_000);
         FeatureReconciliationInvocation invocation = reconciliationInvocation("核对提示");
-        port.prepareReconciliationSession(invocation);
-        assertThat(port.reconcileFeatures(invocation).terminalMarkdown()).isEqualTo("## 双向核对结论\n");
-        port.closePreparedSession();
+        assertThatThrownBy(() -> port.prepareReconciliationSession(invocation))
+                .isInstanceOf(KnowledgeAgentSkillPreparationException.class)
+                .hasMessageContaining("required read_skill evidence");
 
-        knowledgeEngine.verify(2, postRequestedFor(urlEqualTo("/api/v1/sessions")));
+        knowledgeEngine.verify(1, postRequestedFor(urlEqualTo("/api/v1/sessions")));
         knowledgeEngine.verify(1, postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-1"))
                 .withRequestBody(containing("会话准备")));
-        knowledgeEngine.verify(1, postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-2"))
+        knowledgeEngine.verify(0, postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-1"))
+                .withRequestBody(containing("核对提示")));
+    }
+
+    @Test
+    void retriesThreeFreshSessionsForPreparationTransportTimeoutsBeforeAnyBusinessPrompt() {
+        stubAgent();
+        knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/sessions"))
+                .willReturn(okJson("{\"success\":true,\"data\":{\"id\":\"session-timeout\"}}")
+                        .withFixedDelay(200)));
+
+        KnowledgeAgentPort port = new WebClientKnowledgeAgentAdapter(knowledgeEngine.baseUrl() + "/api/v1",
+                "test-key", Duration.ofMillis(50), 1, 20_000);
+        assertThatThrownBy(() -> port.prepareReconciliationSession(reconciliationInvocation("核对提示")))
+                .isInstanceOf(KnowledgeAgentSkillPreparationException.class)
+                .satisfies(exception -> assertThat(((KnowledgeAgentSkillPreparationException) exception)
+                        .transportRetriesExhausted()).isTrue());
+
+        knowledgeEngine.verify(3, postRequestedFor(urlEqualTo("/api/v1/sessions")));
+        knowledgeEngine.verify(0, postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-timeout")));
+    }
+
+    @Test
+    void retriesThreeFreshSessionsForPreparationConnectionFailuresBeforeAnyBusinessPrompt() {
+        stubAgent();
+        knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/sessions"))
+                .willReturn(aResponse().withFault(com.github.tomakehurst.wiremock.http.Fault.CONNECTION_RESET_BY_PEER)));
+
+        assertThatThrownBy(() -> adapter().prepareReconciliationSession(reconciliationInvocation("核对提示")))
+                .isInstanceOf(KnowledgeAgentSkillPreparationException.class)
+                .satisfies(exception -> assertThat(((KnowledgeAgentSkillPreparationException) exception)
+                        .transportRetriesExhausted()).isTrue());
+
+        knowledgeEngine.verify(3, postRequestedFor(urlEqualTo("/api/v1/sessions")));
+    }
+
+    @Test
+    void rejectsAnyRetrievalToolDuringPreparationWithoutSendingTheBusinessPrompt() {
+        stubAgentAndSession();
+        knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
+                .withRequestBody(containing("会话准备"))
+                .willReturn(aResponse().withHeader("Content-Type", "text/event-stream")
+                        .withBody("event: message\ndata: {\"response_type\":\"tool_call\",\"done\":false,\"data\":{\"tool_name\":\"knowledge_search\",\"tool_call_id\":\"search-1\"}}\n\n"
+                                + "event: message\ndata: {\"response_type\":\"complete\",\"done\":true,\"content\":\"\"}\n\n")));
+
+        KnowledgeAgentPort port = adapter();
+        assertThatThrownBy(() -> port.prepareReconciliationSession(reconciliationInvocation("核对提示")))
+                .isInstanceOf(KnowledgeAgentSkillPreparationException.class)
+                .hasMessageContaining("may only call read_skill");
+
+        knowledgeEngine.verify(1, postRequestedFor(urlEqualTo("/api/v1/sessions")));
+        knowledgeEngine.verify(0, postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-1"))
                 .withRequestBody(containing("核对提示")));
     }
 
@@ -330,12 +369,12 @@ class WebClientKnowledgeAgentAdapterTest {
         knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
                 .willReturn(aResponse().withHeader("Content-Type", "text/event-stream")
                         .withBody(readSkillEvents(GENERATION_SKILL, true)
-                                + "event: message\ndata: {\"response_type\":\"answer\",\"done\":false,\"content\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\n\n"
-                                + "event: message\ndata: {\"response_type\":\"answer\",\"done\":false,\"content\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}\n\n"
-                                + "event: message\ndata: {\"response_type\":\"answer\",\"done\":false,\"content\":\"cccccccccccccccccccccccccccccccccccccccccccccccccc\"}\n\n"
+                                + "event: message\ndata: {\"response_type\":\"answer\",\"done\":false,\"content\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\n\n"
+                                + "event: message\ndata: {\"response_type\":\"answer\",\"done\":false,\"content\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}\n\n"
+                                + "event: message\ndata: {\"response_type\":\"answer\",\"done\":false,\"content\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}\n\n"
                                 + "event: message\ndata: {\"response_type\":\"complete\",\"done\":true,\"content\":\"\"}\n\n")));
         WebClientKnowledgeAgentAdapter adapter = new WebClientKnowledgeAgentAdapter(knowledgeEngine.baseUrl() + "/api/v1",
-                "test-key", FIXTURE_TIMEOUT, 1, 140);
+                "test-key", FIXTURE_TIMEOUT, 1, 220);
         assertThatThrownBy(() -> adapter.invoke(invocation(FewShotPolicy.NONE)))
                 .isInstanceOf(KnowledgeAgentInvocationException.class).hasMessageContaining("answer exceeds maximum size");
     }
@@ -412,18 +451,20 @@ class WebClientKnowledgeAgentAdapterTest {
     }
 
     private static String readSkillEvents(String skillName, boolean success) {
-        return "event: message\ndata: {\"response_type\":\"tool_call\",\"done\":false,\"data\":{\"tool_name\":\"read_skill\",\"skill_name\":"
-                + quote(skillName) + "}}\n\n"
-                + "event: message\ndata: {\"response_type\":\"tool_result\",\"done\":false,\"data\":{\"tool_name\":\"read_skill\",\"skill_name\":"
-                + quote(skillName) + ",\"success\":" + success + "}}\n\n";
+        // KEE handler contract: tool-call arguments hold the Skill name and the tool result is
+        // correlated only through tool_call_id. Keep this fixture wire-compatible with KEE.
+        return "event: message\ndata: {\"response_type\":\"tool_call\",\"done\":false,\"data\":{\"tool_name\":\"read_skill\",\"tool_call_id\":\"read-skill-1\",\"arguments\":{\"skill_name\":"
+                + quote(skillName) + "}}}\n\n"
+                + "event: message\ndata: {\"response_type\":\"tool_result\",\"done\":false,\"data\":{\"tool_call_id\":\"read-skill-1\",\"success\":"
+                + success + "}}\n\n";
     }
 
     private static com.github.tomakehurst.wiremock.client.ResponseDefinitionBuilder sseWithCallIdReadSkillResult(
             String answer, String toolCallId, String resultToolCallId) {
         String resultCallId = resultToolCallId == null ? "" : "\"tool_call_id\":" + quote(resultToolCallId) + ",";
         return aResponse().withHeader("Content-Type", "text/event-stream")
-                .withBody("event: message\ndata: {\"response_type\":\"tool_call\",\"done\":false,\"data\":{\"tool_name\":\"read_skill\",\"id\":"
-                        + quote(toolCallId) + ",\"args\":{\"skill_name\":\"functional-testcase-design\"}}}\n\n"
+                .withBody("event: message\ndata: {\"response_type\":\"tool_call\",\"done\":false,\"data\":{\"tool_name\":\"read_skill\",\"tool_call_id\":"
+                        + quote(toolCallId) + ",\"arguments\":{\"skill_name\":\"functional-testcase-design\"}}}\n\n"
                         + "event: message\ndata: {\"response_type\":\"tool_result\",\"done\":false,\"data\":{" + resultCallId
                         + "\"tool_name\":\"read_skill\",\"success\":true}}\n\n" + answerAndComplete(answer));
     }
