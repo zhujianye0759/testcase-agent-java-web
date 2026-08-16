@@ -250,6 +250,52 @@ class FeatureAuditServiceTest {
     }
 
     @Test
+    void tellsAReclaimedSecondHeadingFailureToOutputOnlyTwoContiguousTablesWithoutSelfReview() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        KnowledgeAgentPort knowledgeAgentPort = mock(KnowledgeAgentPort.class);
+        FeatureAuditService service = new FeatureAuditService(repository, knowledgeAgentPort);
+        CreateGenerationTaskRequest request = request();
+        MaterialInventoryUnit unit = new MaterialInventoryUnit("requirement-doc", "REQUIREMENT", "requirement-unit", 0, 1,
+                "需求", 0, 2);
+        FeatureSourceCandidate acceptedFirstPass = new FeatureSourceCandidate("first-pass", FeatureCandidateKind.REQUIREMENT,
+                "requirement-doc", "requirement-unit", 1, 1, "订单查询", "功能项",
+                "documentId=requirement-doc; unitId=requirement-unit", 1, 1);
+        AuditWorkClaim firstAttempt = claim("second-heading-work", "requirement-doc", "requirement-unit", 2, "REQUIREMENT_SCAN", 1);
+        AuditWorkClaim secondAttempt = claim("second-heading-work", "requirement-doc", "requirement-unit", 2, "REQUIREMENT_SCAN", 2,
+                "Candidate evidence has duplicate or malformed coordinate tokens");
+        AuditWorkClaim thirdAttempt = claim("second-heading-work", "requirement-doc", "requirement-unit", 2, "REQUIREMENT_SCAN", 3,
+                "Expected strict scan Markdown with heading ## 测试用例");
+        GenerationTaskRepository.FeatureAuditCounts completeCounts =
+                new GenerationTaskRepository.FeatureAuditCounts(1, 1, 0, 1, 1, 1);
+        String selfReview = "Wait, the instruction says the tentative row should be withdrawn.";
+        String repeatedTable = "## 需求与功能清单审查发现";
+
+        when(repository.hasCompleteMaterialInventory("task-1", request.requirementScope())).thenReturn(true);
+        when(repository.materialInventory("task-1")).thenReturn(List.of(unit));
+        when(repository.claimNextAuditWork(eq("task-1"), any(), any())).thenReturn(Optional.of(firstAttempt),
+                Optional.of(secondAttempt), Optional.of(thirdAttempt), Optional.empty());
+        when(repository.featureSourceCandidates("task-1", "requirement-doc", "requirement-unit", 1))
+                .thenReturn(List.of(acceptedFirstPass));
+        when(repository.featureAuditCounts("task-1")).thenReturn(completeCounts);
+        when(knowledgeAgentPort.reconcileFeatures(any())).thenReturn(
+                result(scanResponse("""
+                        | 1 | 订单查询 | 功能项 | documentId=requirement-doc; documentId=requirement-doc; unitId=requirement-unit; 来源文字 |
+                        """)),
+                result(secondHeadingFailureResponse(selfReview, repeatedTable)),
+                result(scanResponse("")));
+
+        service.audit("task-1", request);
+
+        ArgumentCaptor<FeatureReconciliationInvocation> invocations = ArgumentCaptor.forClass(FeatureReconciliationInvocation.class);
+        verify(knowledgeAgentPort, times(3)).reconcileFeatures(invocations.capture());
+        String thirdFeedback = retryFeedback(invocations.getAllValues().get(2).prompt());
+        assertThat(thirdFeedback).contains("整份输出只能包含两张表", "第一表最后一行后的下一非空行必须直接是 ## 测试用例",
+                "不得输出思考过程、Wait/Let's、复核说明、自我纠错、重复标题或重复表", "若判断无新增项，直接返回零数据行第一表",
+                "不得先列暂定行再解释/撤销", "重复标题或重复表")
+                .doesNotContain(selfReview, "暂定新增项", "requirement-doc", "requirement-unit", "Expected strict scan Markdown");
+    }
+
+    @Test
     void replacesUnknownPriorFailureWithGenericFeedbackWithoutLeakingItsRawText() {
         GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
         KnowledgeAgentPort knowledgeAgentPort = mock(KnowledgeAgentPort.class);
@@ -439,6 +485,23 @@ class FeatureAuditServiceTest {
         int start = prompt.lastIndexOf(marker);
         assertThat(start).isGreaterThanOrEqualTo(0);
         return prompt.substring(start + marker.length());
+    }
+
+    private static String secondHeadingFailureResponse(String selfReview, String repeatedTable) {
+        return """
+                ## 需求与功能清单审查发现
+                | 序号 | 对象/功能点 | 问题分类 | 证据对照 |
+                |---|---|---|---|
+                | 1 | 暂定新增项 | 功能项 | documentId=requirement-doc; unitId=requirement-unit; 来源文字 |
+
+                %s
+                %s
+                | 序号 | 对象/功能点 | 问题分类 | 证据对照 |
+                |---|---|---|---|
+                ## 测试用例
+                | 用例名称 | 功能模块 | 前提约束 | 执行步骤 | 预期结果 | 对应需求内容 |
+                |---|---|---|---|---|---|
+                """.formatted(selfReview, repeatedTable);
     }
 
     private static String scanResponse(String rows) {
