@@ -101,6 +101,8 @@ class FeatureAuditServiceTest {
                 "仅当对象/功能点和问题分类与既有 anchor 行逐字完全相同时，才允许复用更早的 groupAnchorId",
                 "只要任一不同，必须 self-anchor",
                 "不得因为同一 unitId、documentId、大模块或问题分类而批量复用 groupAnchorId",
+                "按 NFKC、首尾 strip、连续空白折叠成一个空格并转为小写后相同的任一业务路径",
+                "禁止将同一路径 self-anchor 成多个结论",
                 "至少两个互异纯文本业务路径", "其他分类必须为单一纯文本且不得含 `<br>`", "不同层级值不是冲突", "同一层级或同一语义字段互斥", "归为证据不足")
                 .doesNotContain("example-kb", "example-doc");
         inOrder(repository).verify(repository).persistScanAndCompleteAuditWork(eq(functionClaim), any(), any(), eq(true));
@@ -174,6 +176,84 @@ class FeatureAuditServiceTest {
                 "仅当对象/功能点和问题分类与既有 anchor 行逐字完全相同时，才允许复用更早的 groupAnchorId",
                 "只要任一不同，必须 self-anchor",
                 "不得因为同一 unitId、documentId、大模块或问题分类而批量复用 groupAnchorId");
+        verify(repository).persistFeatureReviewConclusions(eq("task-1"), any());
+    }
+
+    @Test
+    void rejectsNormalizedBusinessPathsThatWouldCreateDistinctFrozenConclusions() {
+        assertRejectedFinalReconciliation(List.of(candidate(1), candidate(2)), scanResponse("""
+                | 1 | 订单 查询 | 匹配 | candidateIds=candidate-01; groupAnchorId=candidate-01; documentId=requirement-doc; unitId=requirement-unit |
+                | 2 | 订单　查询 | 匹配 | candidateIds=candidate-02; groupAnchorId=candidate-02; documentId=requirement-doc; unitId=requirement-unit |
+                """));
+        assertRejectedFinalReconciliation(List.of(candidate(1), candidate(2)), scanResponse("""
+                | 1 | 订单查询 | 匹配 | candidateIds=candidate-01; groupAnchorId=candidate-01; documentId=requirement-doc; unitId=requirement-unit |
+                | 2 | 订单查询 | 功能清单遗漏 | candidateIds=candidate-02; groupAnchorId=candidate-01; documentId=requirement-doc; unitId=requirement-unit |
+                """));
+        assertRejectedFinalReconciliation(List.of(candidate(1), candidate(2)), scanResponse("""
+                | 1 | 创建订单<br>取消订单 | 拆分 | candidateIds=candidate-01; groupAnchorId=candidate-01; documentId=requirement-doc; unitId=requirement-unit |
+                | 2 | 取消订单<br>查询订单 | 拆分 | candidateIds=candidate-02; groupAnchorId=candidate-02; documentId=requirement-doc; unitId=requirement-unit |
+                """));
+    }
+
+    @Test
+    void rejectsACrossPageNormalizedPathThatIsSelfAnchoredAgain() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        KnowledgeAgentPort knowledgeAgentPort = mock(KnowledgeAgentPort.class);
+        FeatureAuditService service = new FeatureAuditService(repository, knowledgeAgentPort);
+        CreateGenerationTaskRequest request = request();
+        List<FeatureSourceCandidate> candidates = java.util.stream.IntStream.rangeClosed(1, 17)
+                .mapToObj(FeatureAuditServiceTest::candidate).toList();
+
+        when(repository.hasCompleteMaterialInventory("task-1", request.requirementScope())).thenReturn(true);
+        when(repository.materialInventory("task-1")).thenReturn(List.of());
+        when(repository.claimNextAuditWork(eq("task-1"), any(), any())).thenReturn(Optional.empty());
+        when(repository.featureSourceCandidates("task-1")).thenReturn(candidates);
+        when(repository.featureAuditCounts("task-1")).thenReturn(
+                new GenerationTaskRepository.FeatureAuditCounts(1, 1, 0, 17, 0, 0));
+        StringBuilder firstPageRows = new StringBuilder();
+        for (FeatureSourceCandidate candidate : candidates.subList(0, 16)) {
+            String path = candidate.occurrenceId().equals("candidate-01") ? "订单 查询" : candidate.featureText();
+            firstPageRows.append(finalReconciliationRow(candidate, path, "匹配", candidate.occurrenceId()));
+        }
+        String invalidSecondPage = scanResponse(finalReconciliationRow(candidates.get(16), "订单　查询", "匹配", "candidate-17"));
+        when(knowledgeAgentPort.reconcileFeatures(any())).thenReturn(
+                result(scanResponse(firstPageRows.toString())), result(invalidSecondPage), result(invalidSecondPage), result(invalidSecondPage));
+
+        assertThatThrownBy(() -> service.audit("task-1", request))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Final reconciliation page did not meet the strict contract after three attempts");
+
+        ArgumentCaptor<FeatureReconciliationInvocation> invocations = ArgumentCaptor.forClass(FeatureReconciliationInvocation.class);
+        verify(knowledgeAgentPort, times(4)).reconcileFeatures(invocations.capture());
+        assertThat(invocations.getAllValues().get(2).prompt()).contains(
+                "重试纠正要求：",
+                "按 NFKC、首尾 strip、连续空白折叠成一个空格并转为小写后相同的业务路径必须使用同一 groupAnchorId 和同一问题分类",
+                "禁止将同一路径 self-anchor 成多个结论");
+        verify(repository, never()).persistFeatureReviewConclusions(any(), any());
+    }
+
+    @Test
+    void acceptsNormalizedBusinessPathsWithinOneEarlierAnchorAndMergesThem() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        KnowledgeAgentPort knowledgeAgentPort = mock(KnowledgeAgentPort.class);
+        FeatureAuditService service = new FeatureAuditService(repository, knowledgeAgentPort);
+        CreateGenerationTaskRequest request = request();
+        List<FeatureSourceCandidate> candidates = List.of(candidate(1), candidate(2));
+
+        when(repository.hasCompleteMaterialInventory("task-1", request.requirementScope())).thenReturn(true);
+        when(repository.materialInventory("task-1")).thenReturn(List.of());
+        when(repository.claimNextAuditWork(eq("task-1"), any(), any())).thenReturn(Optional.empty());
+        when(repository.featureSourceCandidates("task-1")).thenReturn(candidates);
+        when(repository.featureAuditCounts("task-1")).thenReturn(
+                new GenerationTaskRepository.FeatureAuditCounts(1, 1, 0, 2, 0, 0),
+                new GenerationTaskRepository.FeatureAuditCounts(1, 1, 0, 2, 2, 2));
+        when(knowledgeAgentPort.reconcileFeatures(any())).thenReturn(result(scanResponse("""
+                | 1 | 订单查询 | 匹配 | candidateIds=candidate-01; groupAnchorId=candidate-01; documentId=requirement-doc; unitId=requirement-unit |
+                | 2 | 订单查询 | 匹配 | candidateIds=candidate-02; groupAnchorId=candidate-01; documentId=requirement-doc; unitId=requirement-unit |
+                """)));
+
+        assertThat(service.audit("task-1", request).complete()).isTrue();
+
         verify(repository).persistFeatureReviewConclusions(eq("task-1"), any());
     }
 
@@ -651,6 +731,13 @@ class FeatureAuditServiceTest {
                     .append(" |\n");
         }
         return scanResponse(rows.toString());
+    }
+
+    private static String finalReconciliationRow(
+            FeatureSourceCandidate candidate, String path, String issueCategory, String groupAnchorId) {
+        return "| " + candidate.modelSequence() + " | " + path + " | " + issueCategory + " | candidateIds="
+                + candidate.occurrenceId() + "; groupAnchorId=" + groupAnchorId + "; documentId="
+                + candidate.documentId() + "; unitId=" + candidate.unitId() + " |\n";
     }
 
     private static void assertRejectedFinalReconciliation(List<FeatureSourceCandidate> candidates, String invalidResponse) {

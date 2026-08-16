@@ -6,6 +6,7 @@ import com.testcaseagent.knowledgeagent.KnowledgeAgentSkillPreparationException;
 import com.testcaseagent.task.CreateGenerationTaskRequest;
 import com.testcaseagent.task.GenerationTaskRepository;
 import java.nio.charset.StandardCharsets;
+import java.text.Normalizer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
@@ -16,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 
@@ -33,6 +35,10 @@ public final class FeatureAuditService {
     private static final int RECONCILIATION_TARGET_PAGE_SIZE = 16;
     private static final int RECONCILIATION_PAGE_ATTEMPTS = 3;
     private static final String SAFE_RETRY_PREFIX = "上一轮未通过固定 Markdown 格式校验：";
+    private static final String NORMALIZED_PATH_CONFLICT = "Each normalized business path must retain one groupAnchorId and conclusion type";
+    private static final String NORMALIZED_PATH_RETRY_FEEDBACK = SAFE_RETRY_PREFIX
+            + "按 NFKC、首尾 strip、连续空白折叠成一个空格并转为小写后相同的业务路径必须使用同一 groupAnchorId 和同一问题分类；"
+            + "禁止将同一路径 self-anchor 成多个结论。";
     private static final String COMPREHENSIVE_RETRY_BASELINE = "固定格式基线：输出第一个字符必须是 #，第一行必须精确为 ## 需求与功能清单审查发现，"
             + "第一标题前不得有分析、说明、结论或引导语；必须返回精确两张 Markdown 表；标题、表头和分隔行必须与本次提示完全一致；"
             + "第一张表每个非空数据行必须恰好四列；不得返回 JSON 或代码围栏；表格单元格中仅允许 <br>；"
@@ -83,7 +89,8 @@ public final class FeatureAuditService {
             Map.entry("groupAnchorId", SAFE_RETRY_PREFIX + "每行必须有一个独立且有效的 groupAnchorId= 机器 token。"),
             Map.entry("Every anchored group", SAFE_RETRY_PREFIX + "默认每个目标 candidateId 都必须令 groupAnchorId 等于自身 candidateId；"
                     + "仅当对象/功能点和问题分类与既有 anchor 行逐字完全相同时，才允许复用更早的 groupAnchorId；"
-                    + "只要任一不同，必须 self-anchor；不得因为同一 unitId、documentId、大模块或问题分类而批量复用 groupAnchorId。"));
+                    + "只要任一不同，必须 self-anchor；不得因为同一 unitId、documentId、大模块或问题分类而批量复用 groupAnchorId。"),
+            Map.entry("Each normalized business path", NORMALIZED_PATH_RETRY_FEEDBACK));
 
     private final GenerationTaskRepository repository;
     private final KnowledgeAgentPort knowledgeAgentPort;
@@ -224,7 +231,9 @@ public final class FeatureAuditService {
                 .append("仅当对象/功能点和问题分类与既有 anchor 行逐字完全相同时，才允许复用更早的 groupAnchorId；")
                 .append("只要任一不同，必须 self-anchor；不得因为同一 unitId、documentId、大模块或问题分类而批量复用 groupAnchorId。")
                 .append("同组必须按全量候选项给出的顺序选择最早的 candidateId 作为 groupAnchorId，且该 anchor 自身行必须令 groupAnchorId 等于自身 candidateId；")
-                .append("同一 groupAnchorId 的问题分类和对象/功能点业务路径必须逐字完全一致。\n")
+                .append("同一 groupAnchorId 的问题分类和对象/功能点业务路径必须逐字完全一致。")
+                .append("按 NFKC、首尾 strip、连续空白折叠成一个空格并转为小写后相同的任一业务路径（拆分中的每条路径逐条计算）"
+                        + "必须使用同一 groupAnchorId 和同一问题分类；禁止将同一路径 self-anchor 成多个结论。\n")
                 .append("只返回精确两张 Markdown 表。第一张必须为 `## 需求与功能清单审查发现`，表头必须为")
                 .append(" `| 序号 | 对象/功能点 | 问题分类 | 证据对照 |`；第二张必须为 `## 测试用例` 且零数据行。\n")
                 .append("问题分类仅可为：未发现问题、匹配、功能清单遗漏、需求未覆盖该功能点、冲突、拆分、合并、重复、证据不足。\n")
@@ -300,7 +309,31 @@ public final class FeatureAuditService {
                 throw new IllegalArgumentException("Every anchored group must have one exact type and business path");
             }
         }
+        Map<String, PathDisposition> dispositionByNormalizedPath = new HashMap<>();
+        for (FeatureSourceCandidate candidate : candidates) {
+            FeatureReviewConclusion conclusion = knownByCandidate.get(candidate.occurrenceId());
+            if (conclusion == null) continue;
+            PathDisposition disposition = new PathDisposition(
+                    groupAnchorId(conclusion.evidenceText(), allCandidateIds), conclusion.type());
+            for (String path : businessPaths(conclusion)) {
+                PathDisposition prior = dispositionByNormalizedPath.putIfAbsent(normalizeBusinessPath(path), disposition);
+                if (prior != null && !prior.equals(disposition)) {
+                    throw new IllegalArgumentException(NORMALIZED_PATH_CONFLICT);
+                }
+            }
+        }
     }
+
+    private static List<String> businessPaths(FeatureReviewConclusion conclusion) {
+        if (conclusion.type() != FeatureReviewConclusionType.SPLIT) return List.of(conclusion.explanation());
+        return List.of(conclusion.explanation().split("<br>", -1));
+    }
+
+    private static String normalizeBusinessPath(String path) {
+        return Normalizer.normalize(path, Normalizer.Form.NFKC).strip().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+    }
+
+    private record PathDisposition(String anchorId, FeatureReviewConclusionType type) { }
 
     private static List<FeatureReviewConclusion> mergeAnchoredConclusions(
             List<FeatureSourceCandidate> candidates, Set<String> allCandidateIds, List<FeatureReviewConclusion> pageConclusions) {
@@ -381,6 +414,9 @@ public final class FeatureAuditService {
     }
 
     private static String finalReconciliationRetryFeedback(String failure) {
+        if (NORMALIZED_PATH_CONFLICT.equals(failure)) {
+            return COMPREHENSIVE_RETRY_BASELINE + "\n" + NORMALIZED_PATH_RETRY_FEEDBACK;
+        }
         String focus = SAFE_FINAL_RECONCILIATION_RETRY_FEEDBACK.entrySet().stream()
                 .filter(entry -> failure != null && failure.contains(entry.getKey())).map(Map.Entry::getValue).findFirst()
                 .orElse(SAFE_RETRY_PREFIX + "请逐条遵守本页目标、锚点和两张 Markdown 表的固定合同。不得回显错误或说明。 ");

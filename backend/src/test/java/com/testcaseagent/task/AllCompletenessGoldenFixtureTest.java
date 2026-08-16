@@ -308,32 +308,36 @@ class AllCompletenessGoldenFixtureTest {
             for (Candidate candidate : candidates) {
                 byFeature.computeIfAbsent(candidate.feature(), ignored -> new ArrayList<>()).add(candidate);
             }
-            List<Conclusion> conclusions = new ArrayList<>();
-            for (Candidate candidate : candidates) {
-                if ("重复功能".equals(candidate.feature())) {
-                    if (byFeature.get(candidate.feature()).get(0) == candidate) {
-                        conclusions.add(new Conclusion("重复功能", "重复", byFeature.get(candidate.feature())));
-                    }
-                } else if ("组合功能".equals(candidate.feature())) {
-                    conclusions.add(new Conclusion("组合功能正向<br>组合功能逆向", "拆分", List.of(candidate)));
-                } else if ("证据不足功能".equals(candidate.feature()) && disposition == FixtureDisposition.UNRESOLVED_CONFLICT) {
-                    conclusions.add(new Conclusion(candidate.feature(), "证据不足", List.of(candidate)));
-                } else if ("冲突功能".equals(candidate.feature()) && disposition == FixtureDisposition.UNRESOLVED_CONFLICT) {
-                    conclusions.add(new Conclusion(candidate.feature(), "冲突", List.of(candidate)));
-                } else if ("功能01".equals(candidate.feature())) {
-                    conclusions.add(new Conclusion(candidate.feature(), "需求未覆盖该功能点", List.of(candidate)));
-                } else if (candidate.feature().startsWith("需求遗漏")) {
-                    conclusions.add(new Conclusion(candidate.feature(), "功能清单遗漏", List.of(candidate)));
-                } else {
-                    conclusions.add(new Conclusion(candidate.feature(), "匹配", List.of(candidate)));
-                }
-            }
             StringBuilder rows = new StringBuilder();
-            for (int index = 0; index < conclusions.size(); index++) {
-                Conclusion conclusion = conclusions.get(index);
-                rows.append("| ").append(index + 1).append(" | ").append(conclusion.feature())
-                        .append(" | ").append(conclusion.category()).append(" | ")
-                        .append(evidence(conclusion.candidates())).append(" |\n");
+            int sequence = 1;
+            for (Candidate candidate : targetCandidates(prompt, candidates)) {
+                Candidate anchor = byFeature.get(candidate.feature()).get(0);
+                String feature;
+                String category;
+                if ("重复功能".equals(candidate.feature())) {
+                    feature = "重复功能";
+                    category = "重复";
+                } else if ("组合功能".equals(candidate.feature())) {
+                    feature = "组合功能正向<br>组合功能逆向";
+                    category = "拆分";
+                } else if ("证据不足功能".equals(candidate.feature()) && disposition == FixtureDisposition.UNRESOLVED_CONFLICT) {
+                    feature = candidate.feature();
+                    category = "证据不足";
+                } else if ("冲突功能".equals(candidate.feature()) && disposition == FixtureDisposition.UNRESOLVED_CONFLICT) {
+                    feature = candidate.feature();
+                    category = "冲突";
+                } else if ("功能01".equals(candidate.feature())) {
+                    feature = candidate.feature();
+                    category = "需求未覆盖该功能点";
+                } else if (candidate.feature().startsWith("需求遗漏")) {
+                    feature = candidate.feature();
+                    category = "功能清单遗漏";
+                } else {
+                    feature = candidate.feature();
+                    category = "匹配";
+                }
+                rows.append("| ").append(sequence++).append(" | ").append(feature).append(" | ").append(category)
+                        .append(" | ").append(evidence(candidate, anchor)).append(" |\n");
             }
             return scan(rows.toString());
         }
@@ -341,7 +345,7 @@ class AllCompletenessGoldenFixtureTest {
         private static List<Candidate> candidates(String prompt) {
             List<Candidate> result = new ArrayList<>();
             for (String line : prompt.lines().toList()) {
-                if (!line.startsWith("candidateId=")) continue;
+                if (!line.startsWith("candidateId=") || !line.contains("; kind=")) continue;
                 Map<String, String> tokens = new LinkedHashMap<>();
                 for (String token : line.split("; ")) {
                     int separator = token.indexOf('=');
@@ -352,6 +356,18 @@ class AllCompletenessGoldenFixtureTest {
             }
             if (result.size() != 32) throw new IllegalArgumentException("Golden reconciliation must receive 32 candidates");
             return result;
+        }
+
+        private static List<Candidate> targetCandidates(String prompt, List<Candidate> candidates) {
+            int start = prompt.indexOf("本页目标候选：");
+            if (start < 0) throw new IllegalArgumentException("Golden reconciliation must identify target candidates");
+            List<String> targetIds = prompt.substring(start).lines().filter(line -> line.startsWith("candidateId="))
+                    .map(line -> line.substring("candidateId=".length()).strip()).toList();
+            List<Candidate> targets = candidates.stream().filter(candidate -> targetIds.contains(candidate.id())).toList();
+            if (targets.size() != targetIds.size()) {
+                throw new IllegalArgumentException("Golden reconciliation must bind every target candidate");
+            }
+            return targets;
         }
 
         private static String functionRows(String documentId, String unitId) {
@@ -387,10 +403,9 @@ class AllCompletenessGoldenFixtureTest {
                     """.formatted(rows);
         }
 
-        private static String evidence(List<Candidate> candidates) {
-            return "candidateIds=" + candidates.stream().map(Candidate::id).sorted().reduce((left, right) -> left + "," + right)
-                    .orElseThrow() + "; " + candidates.stream().map(candidate -> "documentId=" + candidate.documentId()
-                            + "; unitId=" + candidate.unitId()).distinct().reduce((left, right) -> left + "; " + right).orElseThrow();
+        private static String evidence(Candidate candidate, Candidate anchor) {
+            return "candidateIds=" + candidate.id() + "; groupAnchorId=" + anchor.id() + "; documentId="
+                    + candidate.documentId() + "; unitId=" + candidate.unitId();
         }
 
         private static String tokenAfter(String value, String token) {
@@ -410,7 +425,6 @@ class AllCompletenessGoldenFixtureTest {
 
         private record Candidate(String id, String documentId, String unitId, String feature) { }
 
-        private record Conclusion(String feature, String category, List<Candidate> candidates) { }
     }
 
     @TestConfiguration(proxyBeanMethods = false)
