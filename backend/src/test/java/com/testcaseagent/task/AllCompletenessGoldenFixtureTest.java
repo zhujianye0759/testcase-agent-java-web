@@ -52,7 +52,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * End-to-end deterministic golden fixture for the ALL audit gate. It deliberately uses the durable MySQL ledger,
  * the real traversal/audit/freeze/workflow services, and a local deterministic KEE-model substitute.
  *
- * [Req-ID]: REQ-BFA-001, REQ-BFA-002, REQ-BFA-003, REQ-BFA-004, REQ-BFA-005, REQ-CAG-004
+ * [Req-ID]: REQ-BFA-001, REQ-BFA-002, REQ-BFA-003, REQ-BFA-004, REQ-BFA-005, REQ-BFA-007, REQ-CAG-004
  */
 @Testcontainers
 @SpringBootTest(classes = TestCaseAgentApplication.class, properties = "app.knowledge-agent.enabled=false")

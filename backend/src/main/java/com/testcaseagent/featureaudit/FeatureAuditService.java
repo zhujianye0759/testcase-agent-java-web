@@ -6,7 +6,6 @@ import com.testcaseagent.knowledgeagent.KnowledgeAgentSkillPreparationException;
 import com.testcaseagent.task.CreateGenerationTaskRequest;
 import com.testcaseagent.task.GenerationTaskRepository;
 import java.nio.charset.StandardCharsets;
-import java.text.Normalizer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
@@ -17,7 +16,6 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 
@@ -39,6 +37,9 @@ public final class FeatureAuditService {
     private static final String NORMALIZED_PATH_RETRY_FEEDBACK = SAFE_RETRY_PREFIX
             + "按 NFKC、首尾 strip、连续空白折叠成一个空格并转为小写后相同的业务路径必须使用同一 groupAnchorId 和同一问题分类；"
             + "禁止将同一路径 self-anchor 成多个结论。";
+    private static final String NORMALIZED_SPLIT_PATH_CONFLICT = "SPLIT conclusions require distinct normalized business paths";
+    private static final String NORMALIZED_SPLIT_PATH_RETRY_FEEDBACK = SAFE_RETRY_PREFIX
+            + "拆分结论内归一化后的业务路径必须互异；不得用空白或全半角变体重复同一路径。";
     private static final String COMPREHENSIVE_RETRY_BASELINE = "固定格式基线：输出第一个字符必须是 #，第一行必须精确为 ## 需求与功能清单审查发现，"
             + "第一标题前不得有分析、说明、结论或引导语；必须返回精确两张 Markdown 表；标题、表头和分隔行必须与本次提示完全一致；"
             + "第一张表每个非空数据行必须恰好四列；不得返回 JSON 或代码围栏；表格单元格中仅允许 <br>；"
@@ -90,7 +91,8 @@ public final class FeatureAuditService {
             Map.entry("Every anchored group", SAFE_RETRY_PREFIX + "默认每个目标 candidateId 都必须令 groupAnchorId 等于自身 candidateId；"
                     + "仅当对象/功能点和问题分类与既有 anchor 行逐字完全相同时，才允许复用更早的 groupAnchorId；"
                     + "只要任一不同，必须 self-anchor；不得因为同一 unitId、documentId、大模块或问题分类而批量复用 groupAnchorId。"),
-            Map.entry("Each normalized business path", NORMALIZED_PATH_RETRY_FEEDBACK));
+            Map.entry("Each normalized business path", NORMALIZED_PATH_RETRY_FEEDBACK),
+            Map.entry("SPLIT conclusions require distinct normalized business paths", NORMALIZED_SPLIT_PATH_RETRY_FEEDBACK));
 
     private final GenerationTaskRepository repository;
     private final KnowledgeAgentPort knowledgeAgentPort;
@@ -316,7 +318,7 @@ public final class FeatureAuditService {
             PathDisposition disposition = new PathDisposition(
                     groupAnchorId(conclusion.evidenceText(), allCandidateIds), conclusion.type());
             for (String path : businessPaths(conclusion)) {
-                PathDisposition prior = dispositionByNormalizedPath.putIfAbsent(normalizeBusinessPath(path), disposition);
+                PathDisposition prior = dispositionByNormalizedPath.putIfAbsent(BusinessPathNormalizer.normalize(path), disposition);
                 if (prior != null && !prior.equals(disposition)) {
                     throw new IllegalArgumentException(NORMALIZED_PATH_CONFLICT);
                 }
@@ -326,11 +328,14 @@ public final class FeatureAuditService {
 
     private static List<String> businessPaths(FeatureReviewConclusion conclusion) {
         if (conclusion.type() != FeatureReviewConclusionType.SPLIT) return List.of(conclusion.explanation());
-        return List.of(conclusion.explanation().split("<br>", -1));
-    }
-
-    private static String normalizeBusinessPath(String path) {
-        return Normalizer.normalize(path, Normalizer.Form.NFKC).strip().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+        List<String> paths = List.of(conclusion.explanation().split("<br>", -1));
+        Set<String> normalizedPaths = new LinkedHashSet<>();
+        for (String path : paths) {
+            if (!normalizedPaths.add(BusinessPathNormalizer.normalize(path))) {
+                throw new IllegalArgumentException(NORMALIZED_SPLIT_PATH_CONFLICT);
+            }
+        }
+        return paths;
     }
 
     private record PathDisposition(String anchorId, FeatureReviewConclusionType type) { }
@@ -416,6 +421,9 @@ public final class FeatureAuditService {
     private static String finalReconciliationRetryFeedback(String failure) {
         if (NORMALIZED_PATH_CONFLICT.equals(failure)) {
             return COMPREHENSIVE_RETRY_BASELINE + "\n" + NORMALIZED_PATH_RETRY_FEEDBACK;
+        }
+        if (NORMALIZED_SPLIT_PATH_CONFLICT.equals(failure)) {
+            return COMPREHENSIVE_RETRY_BASELINE + "\n" + NORMALIZED_SPLIT_PATH_RETRY_FEEDBACK;
         }
         String focus = SAFE_FINAL_RECONCILIATION_RETRY_FEEDBACK.entrySet().stream()
                 .filter(entry -> failure != null && failure.contains(entry.getKey())).map(Map.Entry::getValue).findFirst()

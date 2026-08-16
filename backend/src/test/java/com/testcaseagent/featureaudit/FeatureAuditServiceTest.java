@@ -196,6 +196,37 @@ class FeatureAuditServiceTest {
     }
 
     @Test
+    void rejectsDuplicateNormalizedPathsWithinOneSplitBeforePersistence() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        KnowledgeAgentPort knowledgeAgentPort = mock(KnowledgeAgentPort.class);
+        FeatureAuditService service = new FeatureAuditService(repository, knowledgeAgentPort);
+        CreateGenerationTaskRequest request = request();
+        List<FeatureSourceCandidate> candidates = List.of(candidate(1));
+        String invalidResponse = scanResponse("""
+                | 1 | 订单 查询<br>订单　查询 | 拆分 | candidateIds=candidate-01; groupAnchorId=candidate-01; documentId=requirement-doc; unitId=requirement-unit |
+                """);
+
+        when(repository.hasCompleteMaterialInventory("task-1", request.requirementScope())).thenReturn(true);
+        when(repository.materialInventory("task-1")).thenReturn(List.of());
+        when(repository.claimNextAuditWork(eq("task-1"), any(), any())).thenReturn(Optional.empty());
+        when(repository.featureSourceCandidates("task-1")).thenReturn(candidates);
+        when(repository.featureAuditCounts("task-1")).thenReturn(
+                new GenerationTaskRepository.FeatureAuditCounts(1, 1, 0, 1, 0, 0));
+        when(knowledgeAgentPort.reconcileFeatures(any())).thenReturn(
+                result(invalidResponse), result(invalidResponse), result(invalidResponse));
+
+        assertThatThrownBy(() -> service.audit("task-1", request))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Final reconciliation page did not meet the strict contract after three attempts");
+
+        ArgumentCaptor<FeatureReconciliationInvocation> invocations = ArgumentCaptor.forClass(FeatureReconciliationInvocation.class);
+        verify(knowledgeAgentPort, times(3)).reconcileFeatures(invocations.capture());
+        assertThat(invocations.getAllValues().get(1).prompt()).contains(
+                "重试纠正要求：", "拆分结论内归一化后的业务路径必须互异");
+        verify(repository, never()).persistFeatureReviewConclusions(any(), any());
+    }
+
+    @Test
     void rejectsACrossPageNormalizedPathThatIsSelfAnchoredAgain() {
         GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
         KnowledgeAgentPort knowledgeAgentPort = mock(KnowledgeAgentPort.class);

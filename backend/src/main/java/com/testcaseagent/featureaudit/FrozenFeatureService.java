@@ -5,14 +5,12 @@ import com.testcaseagent.task.GenerationTaskRepository;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -83,7 +81,7 @@ public final class FrozenFeatureService {
                     conclusion.explanation());
             boolean eligible = conclusion.type() != FeatureReviewConclusionType.INSUFFICIENT_EVIDENCE;
             for (String path : paths) {
-                String normalizedPath = normalizePath(path);
+                String normalizedPath = BusinessPathNormalizer.normalize(path);
                 if (!normalizedPaths.add(normalizedPath)) {
                     throw new IllegalArgumentException("Frozen business paths must be distinct");
                 }
@@ -153,7 +151,7 @@ public final class FrozenFeatureService {
         Set<String> normalized = new LinkedHashSet<>();
         for (String rawPath : rawPaths) {
             String path = requiredPath(rawPath);
-            if (!normalized.add(normalizePath(path))) {
+            if (!normalized.add(BusinessPathNormalizer.normalize(path))) {
                 throw new IllegalArgumentException("SPLIT conclusions require distinct business paths");
             }
             paths.add(path);
@@ -168,10 +166,6 @@ public final class FrozenFeatureService {
             throw new IllegalArgumentException("Business paths must be plain text");
         }
         return path;
-    }
-
-    private static String normalizePath(String path) {
-        return Normalizer.normalize(path, Normalizer.Form.NFKC).strip().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
     }
 
     private static String stableId(List<String> sortedSourceCandidateIds, String normalizedPath) {
