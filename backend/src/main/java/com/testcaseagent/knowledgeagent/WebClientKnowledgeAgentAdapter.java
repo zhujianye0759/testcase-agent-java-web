@@ -39,7 +39,7 @@ import reactor.core.publisher.Mono;
  * event is required before the Markdown reaches task parsing.</p>
  *
  * [Req-ID]: REQ-KAG-001, REQ-KAG-002, REQ-KAG-003, REQ-KAG-004, REQ-KAG-005, REQ-SCP-001,
- * REQ-SCP-003, REQ-FEW-002, REQ-FEW-003, REQ-ANA-004
+ * REQ-SCP-003, REQ-FEW-002, REQ-FEW-003, REQ-ANA-004, REQ-KSI-004
  */
 public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort, RequirementMaterialReaderPort {
 
@@ -366,13 +366,15 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
         if (!prepared.matches(agentId, scope, requirementAdmissionTypeKeys, skillName)) {
             throw new KnowledgeAgentInvocationException("Prepared Knowledge agent Skill session does not match the current frozen stage scope");
         }
-        return new SessionSelection(prepared.sessionId(), false);
+        // The isolated endpoint clears conversational runtime state for every call. A preparation
+        // turn cannot prove that a later business turn has read the pinned Skill.
+        return new SessionSelection(prepared.sessionId(), true);
     }
 
     private String invokeChat(String sessionId, AgentChatRequest request, String expectedSkillName, boolean requireReadSkillEvidence,
             boolean preparationOnly) {
         try {
-            AnswerAccumulator answer = webClient.post().uri("/agent-chat/{sessionId}", sessionId)
+            AnswerAccumulator answer = webClient.post().uri("/agent-chat/{sessionId}/isolated-skill", sessionId)
                     .header(API_KEY_HEADER, apiKey).contentType(MediaType.APPLICATION_JSON).accept(MediaType.TEXT_EVENT_STREAM)
                     .bodyValue(request).exchangeToFlux(clientResponse -> clientResponse.statusCode().isError()
                             ? clientResponse.createException().flatMapMany(error -> Flux.error(new KnowledgeAgentInvocationException("Knowledge agent chat request failed", error)))
@@ -399,9 +401,15 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
                     ? "Knowledge agent Skill preparation error: " + streamData.message()
                     : "Knowledge agent terminal error: " + streamData.message());
         }
-        if (preparationOnly && "tool_call".equals(streamData.responseType())) {
-            if (!isReadSkillTool(streamData.data())) {
+        if ("tool_call".equals(streamData.responseType())) {
+            if (preparationOnly && !isReadSkillTool(streamData.data())) {
                 throw new KnowledgeAgentInvocationException("Knowledge agent Skill preparation may only call the exact read_skill");
+            }
+            if (!preparationOnly && !isIsolatedSkillTool(streamData.data())) {
+                throw new KnowledgeAgentInvocationException("Knowledge agent isolated Skill call emitted a forbidden tool");
+            }
+            if (!isReadSkillTool(streamData.data())) {
+                return ParsedStreamEvent.none();
             }
             String callId = toolCallId(streamData.data());
             String actualSkillName = skillName(streamData.data());
@@ -422,6 +430,10 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
         if (preparationOnly && "tool_result".equals(streamData.responseType()) && hasNamedNonReadSkillTool(streamData.data())) {
             throw new KnowledgeAgentInvocationException("Knowledge agent Skill preparation may only call read_skill");
         }
+        if (!preparationOnly && "tool_result".equals(streamData.responseType())
+                && hasNamedForbiddenIsolatedSkillTool(streamData.data())) {
+            throw new KnowledgeAgentInvocationException("Knowledge agent isolated Skill call emitted a forbidden tool");
+        }
         if (preparationOnly && "tool_result".equals(streamData.responseType()) && skillName(streamData.data()) != null
                 && !expectedSkillName.equals(skillName(streamData.data()))) {
             throw new KnowledgeAgentInvocationException("Knowledge agent Skill preparation may only return the exact read_skill");
@@ -429,9 +441,6 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
         if (preparationOnly && "tool_result".equals(streamData.responseType())
                 && streamData.data().path("success").isBoolean() && !successfulToolResult(streamData.data())) {
             throw new KnowledgeAgentInvocationException("Knowledge agent Skill preparation read_skill failed");
-        }
-        if ("tool_call".equals(streamData.responseType()) && isExpectedReadSkill(streamData.data(), expectedSkillName)) {
-            return ParsedStreamEvent.exactReadSkillCall(toolCallId(streamData.data()));
         }
         if ("tool_result".equals(streamData.responseType()) && toolCallId(streamData.data()) != null
                 && (skillName(streamData.data()) == null || expectedSkillName.equals(skillName(streamData.data())))) {
@@ -441,10 +450,6 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
                 "complete".equals(streamData.responseType()) && streamData.done(), false, false, false, null, null, false);
     }
 
-    private static boolean isExpectedReadSkill(JsonNode data, String expectedSkillName) {
-        return isReadSkillTool(data) && expectedSkillName.equals(skillName(data));
-    }
-
     private static boolean isReadSkillTool(JsonNode data) {
         return data != null && data.isObject() && "read_skill".equals(textField(data, "tool_name"));
     }
@@ -452,6 +457,16 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
     private static boolean hasNamedNonReadSkillTool(JsonNode data) {
         String toolName = textField(data, "tool_name");
         return toolName != null && !"read_skill".equals(toolName);
+    }
+
+    private static boolean isIsolatedSkillTool(JsonNode data) {
+        String toolName = textField(data, "tool_name");
+        return "read_skill".equals(toolName) || "execute_skill_script".equals(toolName);
+    }
+
+    private static boolean hasNamedForbiddenIsolatedSkillTool(JsonNode data) {
+        String toolName = textField(data, "tool_name");
+        return toolName != null && !"read_skill".equals(toolName) && !"execute_skill_script".equals(toolName);
     }
 
     private static String skillName(JsonNode data) {
@@ -556,6 +571,9 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
         private static ParsedStreamEvent readSkillResult(String toolCallId, boolean success) {
             return new ParsedStreamEvent("", false, false, false, true, null, toolCallId, success);
         }
+        private static ParsedStreamEvent none() {
+            return new ParsedStreamEvent("", false, false, false, false, null, null, false);
+        }
     }
     private final class AnswerAccumulator {
         private final String content;
@@ -589,11 +607,10 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
                 declarations.add(event.readSkillCallId());
             }
             if (event.exactReadSkillCall()) {
-                if (event.readSkillCallId() != null) {
-                    declarations.remove(event.readSkillCallId());
-                    pending.add(event.readSkillCallId());
+                if (event.readSkillCallId() == null || !declarations.remove(event.readSkillCallId())) {
+                    throw new KnowledgeAgentInvocationException("Knowledge agent read_skill requires a prior declaration with the same tool_call_id");
                 }
-                else unnamed++;
+                pending.add(event.readSkillCallId());
             }
             if (event.readSkillResult()) {
                 boolean matched = event.readSkillResultId() != null

@@ -62,6 +62,7 @@ public final class FeatureCandidateScanner {
     static String promptPrefix(MaterialInventoryUnit unit, String instruction) {
         return "仅处理一个材料单元；不得使用示例、不得读取其他文档、不得推断单元外内容。\n"
                 + "documentId=" + unit.documentId() + "; unitId=" + unit.unitId() + "; ordinal=" + unit.ordinal() + "\n"
+                + "每个非空候选行的证据对照必须原样包含上述 documentId 和 unitId。\n"
                 + instruction + "\n";
     }
 

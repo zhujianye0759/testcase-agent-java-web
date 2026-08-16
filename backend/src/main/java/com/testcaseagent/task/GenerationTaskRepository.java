@@ -37,7 +37,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * MySQL persistence boundary for durable task, batch, and attempt state.
  *
  * [Req-ID]: REQ-TSK-001, REQ-TSK-002, REQ-TSK-004, REQ-TSK-005, REQ-TSK-006, REQ-TSK-007,
- * REQ-ANA-007
+ * REQ-ANA-007, REQ-CWR-003
  */
 public final class GenerationTaskRepository {
 
@@ -858,9 +858,9 @@ public final class GenerationTaskRepository {
                         ORDER BY batch.batch_sequence, audit.row_sequence
                         """, (resultSet, ignored) -> new MarkdownAuditRow(
                 resultSet.getInt("row_sequence"),
-                resultSet.getString("subject_or_feature"),
-                resultSet.getString("issue_category"),
-                resultSet.getString("evidence_comparison")), taskId);
+                stripMachineEvidenceTokens(resultSet.getString("subject_or_feature")),
+                stripMachineEvidenceTokens(resultSet.getString("issue_category")),
+                stripMachineEvidenceTokens(resultSet.getString("evidence_comparison"))), taskId);
         List<MarkdownTestCaseRow> testCaseRows = jdbcTemplate.query("""
                         SELECT test_case.case_name, test_case.feature_module, test_case.preconditions,
                                test_case.execution_steps, test_case.expected_result, test_case.requirement_content
@@ -869,12 +869,12 @@ public final class GenerationTaskRepository {
                         WHERE batch.task_id = ? AND batch.status = 'ACCEPTED'
                         ORDER BY batch.batch_sequence, test_case.row_sequence
                         """, (resultSet, ignored) -> new MarkdownTestCaseRow(
-                resultSet.getString("case_name"),
-                resultSet.getString("feature_module"),
-                resultSet.getString("preconditions"),
-                resultSet.getString("execution_steps"),
-                resultSet.getString("expected_result"),
-                resultSet.getString("requirement_content")), taskId);
+                stripMachineEvidenceTokens(resultSet.getString("case_name")),
+                stripMachineEvidenceTokens(resultSet.getString("feature_module")),
+                stripMachineEvidenceTokens(resultSet.getString("preconditions")),
+                stripMachineEvidenceTokens(resultSet.getString("execution_steps")),
+                stripMachineEvidenceTokens(resultSet.getString("expected_result")),
+                stripMachineEvidenceTokens(resultSet.getString("requirement_content"))), taskId);
         return new MarkdownTaskRows(auditRows, testCaseRows);
     }
 
@@ -896,9 +896,9 @@ public final class GenerationTaskRepository {
                         ORDER BY conclusion_sequence
                         """, (resultSet, ignored) -> new MarkdownAuditRow(
                 resultSet.getInt("conclusion_sequence"),
-                stripCandidateIds(resultSet.getString("explanation")),
+                stripMachineEvidenceTokens(resultSet.getString("explanation")),
                 exportIssueCategory(FeatureReviewConclusionType.valueOf(resultSet.getString("conclusion_type"))),
-                stripCandidateIds(resultSet.getString("evidence_text"))), taskId);
+                stripMachineEvidenceTokens(resultSet.getString("evidence_text"))), taskId);
         List<MarkdownTestCaseRow> testCaseRows = jdbcTemplate.query("""
                         SELECT test_case.case_name, test_case.feature_module, test_case.preconditions,
                                test_case.execution_steps, test_case.expected_result, test_case.requirement_content
@@ -907,12 +907,12 @@ public final class GenerationTaskRepository {
                         WHERE batch.task_id = ? AND batch.status = 'ACCEPTED'
                         ORDER BY batch.batch_sequence, test_case.row_sequence
                         """, (resultSet, ignored) -> new MarkdownTestCaseRow(
-                resultSet.getString("case_name"),
-                resultSet.getString("feature_module"),
-                resultSet.getString("preconditions"),
-                resultSet.getString("execution_steps"),
-                resultSet.getString("expected_result"),
-                stripCandidateIds(resultSet.getString("requirement_content"))), taskId);
+                stripMachineEvidenceTokens(resultSet.getString("case_name")),
+                stripMachineEvidenceTokens(resultSet.getString("feature_module")),
+                stripMachineEvidenceTokens(resultSet.getString("preconditions")),
+                stripMachineEvidenceTokens(resultSet.getString("execution_steps")),
+                stripMachineEvidenceTokens(resultSet.getString("expected_result")),
+                stripMachineEvidenceTokens(resultSet.getString("requirement_content"))), taskId);
         return new MarkdownTaskRows(auditRows, testCaseRows);
     }
 
@@ -929,10 +929,11 @@ public final class GenerationTaskRepository {
         };
     }
 
-    private static String stripCandidateIds(String value) {
+    /** Removes internal candidate and source-unit binding tokens from reader-facing projections. */
+    private static String stripMachineEvidenceTokens(String value) {
         if (value == null || value.isBlank()) return value == null ? "" : value.strip();
-        String withoutCandidateIds = value.replaceAll("(?i)candidateIds\\s*=\\s*[^;\\r\\n<]*(?:;\\s*)?", "");
-        return withoutCandidateIds.replaceAll("(?:<br>|\\R)\\s*(?=<br>|\\R|$)", "").strip();
+        String sanitized = value.replaceAll("(?i)(?:candidateIds|documentId|unitId)\\s*=\\s*[^;\\r\\n<]*(?:;\\s*)?", "");
+        return sanitized.replaceAll("(?:<br>|\\R)\\s*(?=<br>|\\R|$)", "").strip();
     }
 
     /** Completes or partially completes a task using its already-persisted Markdown rows. */

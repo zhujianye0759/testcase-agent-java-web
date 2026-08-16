@@ -42,7 +42,7 @@ class FeatureCandidateScannerTest {
     void promptContainsOnlyTheSuppliedUnitAndTheFixedContract() {
         String prompt = scanner.promptFor(functionUnit());
 
-        assertThat(prompt).contains("documentId=function-doc", "unitId=unit-7", "一个材料单元", "only unit text");
+        assertThat(prompt).contains("documentId=function-doc", "unitId=unit-7", "每个非空候选行", "一个材料单元", "only unit text");
         assertThat(prompt).doesNotContain("other document", "other unit");
     }
 

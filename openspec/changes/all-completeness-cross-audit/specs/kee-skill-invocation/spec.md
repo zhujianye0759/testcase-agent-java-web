@@ -47,3 +47,23 @@ Java MAY 仅在一个准备/业务请求对内暂存已验证的会话 ID、冻�
 - **WHEN** 联合验收的 KEE 部署已以非 disabled sandbox mode 提供两个预装 Skill
 - **THEN** Java 仅依据请求中的精确 `skill_names` 和 SSE `read_skill` 成功事件处理结果
 - **THEN** Java 不请求或判断 Skill 版本、哈希或 manifest
+
+### Requirement: [REQ-KSI-004] 仅通过隔离 Skill 入口调用并拒绝非 Skill 工具
+Java 的 Skill 准备和所有审查/生成业务调用 SHALL 仅使用 `POST /agent-chat/{session_id}/isolated-skill`。请求 SHALL 保持已授权的知识库、文档白名单和 `system_scopes`，`agent_enabled=true`、`web_search_enabled=false`、`channel=api`，且恰好包含一个阶段对应的 `skill_names`；不得包含 MCP、图片或附件。旧 `POST /agent-chat/{session_id}` 不得作为回退路径：隔离入口返回 404 或任何永久 HTTP 错误时，Java SHALL 失败关闭。
+
+每一次隔离调用 SHALL 在同一稳定 `tool_call_id` 上观察 `read_skill` 声明、精确的阶段 Skill 参数、成功的 `tool_result` 和显式 `complete` 后才可接收。除 `read_skill` 与 `execute_skill_script` 外，任一工具调用或结果（包括检索、知识、Wiki、PageIndex、Web、MCP 或数据工具）均 SHALL 使该调用失败关闭；`execute_skill_script` 不得替代要求的 `read_skill` 证据。
+
+#### Scenario: 运行中的 KEE 尚未提供隔离入口
+- **WHEN** Java 请求隔离 Skill 入口得到 HTTP 404
+- **THEN** Java 拒绝当前准备或业务项
+- **THEN** Java 不得向旧 agent-chat 入口重发该请求
+
+#### Scenario: 隔离流出现检索工具
+- **WHEN** 一个隔离审查或生成 SSE 流出现 `grep_chunks`、知识检索、Wiki、PageIndex、Web、MCP 或数据工具事件
+- **THEN** Java 立即拒绝该调用
+- **THEN** 即使同一流随后出现正确的 `read_skill` 和 `complete` 也不得接收结果
+
+#### Scenario: 隔离流执行受控脚本
+- **WHEN** 已完成精确 `read_skill` 链的隔离流调用 `execute_skill_script`
+- **THEN** Java 可继续等待显式完成终态
+- **THEN** 该脚本事件不得替代 `read_skill` 的同 ID 成功证据

@@ -16,7 +16,7 @@ import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.VerticalAlignment;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 
-/** Deterministic two-sheet Markdown workbook writer. [Req-ID]: REQ-EXP-001, REQ-EXP-002, REQ-EXP-003, REQ-EXP-004, REQ-EXP-005, REQ-EXP-007 */
+/** Deterministic two-sheet Markdown workbook writer. [Req-ID]: REQ-EXP-001, REQ-EXP-002, REQ-EXP-003, REQ-EXP-004, REQ-EXP-005, REQ-EXP-007, REQ-CWR-003 */
 public final class ApachePoiWorkbookExporter implements WorkbookExporter {
     private static final List<String> SHEETS = List.of("需求与功能清单审查发现", "测试用例");
     private static final List<String> AUDIT_HEADERS = List.of("序号", "对象/功能点", "问题分类", "证据对照");
@@ -29,6 +29,7 @@ public final class ApachePoiWorkbookExporter implements WorkbookExporter {
     @Override public WorkbookArtifact exportMarkdown(MarkdownWorkbookExportRequest request) {
         if (!request.validationPassed() || request.testCaseRows().isEmpty()) throw new WorkbookExportException("Validated test-case rows are required");
         rejectImages(request);
+        rejectMachineEvidenceTokens(request);
         try {
             Files.createDirectories(artifactRoot);
             String id = UUID.randomUUID().toString();
@@ -74,6 +75,16 @@ public final class ApachePoiWorkbookExporter implements WorkbookExporter {
     private void rejectImages(MarkdownWorkbookExportRequest request) {
         request.auditRows().forEach(row -> reject(row.subjectOrFeature(), row.issueCategory(), row.evidenceComparison()));
         request.testCaseRows().forEach(row -> reject(row.caseName(), row.featureModule(), row.preconditions(), row.executionSteps(), row.expectedResult(), row.requirementContent()));
+    }
+    private void rejectMachineEvidenceTokens(MarkdownWorkbookExportRequest request) {
+        request.auditRows().forEach(row -> rejectMachineEvidenceTokens(row.subjectOrFeature(), row.issueCategory(), row.evidenceComparison()));
+        request.testCaseRows().forEach(row -> rejectMachineEvidenceTokens(
+                row.caseName(), row.featureModule(), row.preconditions(), row.executionSteps(), row.expectedResult(), row.requirementContent()));
+    }
+    private void rejectMachineEvidenceTokens(String... values) {
+        for (String value : values) if (value != null && value.matches("(?is).*\\b(?:candidateIds|documentId|unitId)\\s*=.*")) {
+            throw new WorkbookExportException("Reader-facing workbook cannot contain internal evidence binding tokens");
+        }
     }
     private void reject(String... values) { for (String value : values) if (value != null && value.contains("![")) throw new WorkbookExportException("Markdown image syntax is not supported in workbook exports"); }
     private static String safe(String value) { if (value == null) return ""; return value.startsWith("=") || value.startsWith("+") || value.startsWith("-") || value.startsWith("@") ? "'" + value : value; }

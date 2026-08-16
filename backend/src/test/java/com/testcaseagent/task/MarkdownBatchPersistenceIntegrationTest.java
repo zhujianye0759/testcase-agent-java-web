@@ -111,12 +111,13 @@ class MarkdownBatchPersistenceIntegrationTest {
                 "需求片段A<br>candidateIds=first-a; documentId=document-a; unitId=unit-a");
 
         MarkdownTaskRows rows = repository.exportMarkdownRows(taskId);
+        MarkdownTaskRows taskDetailRows = repository.acceptedMarkdownRows(taskId);
 
         assertThat(rows.auditRows()).extracting(MarkdownAuditRow::sequence, MarkdownAuditRow::subjectOrFeature,
                         MarkdownAuditRow::issueCategory, MarkdownAuditRow::evidenceComparison)
                 .containsExactly(
                         org.assertj.core.groups.Tuple.tuple(1, "订单查询", "未发现问题",
-                                "需求片段A<br>documentId=document-a; unitId=unit-a"),
+                                "需求片段A"),
                         org.assertj.core.groups.Tuple.tuple(2, "功能清单遗漏：订单导出", "功能清单遗漏", "功能清单片段B"));
         assertThat(rows.testCaseRows()).extracting(MarkdownTestCaseRow::caseName)
                 .containsExactly("case-first_正向", "case-first_反向", "case-second_正向", "case-second_反向");
@@ -124,6 +125,11 @@ class MarkdownBatchPersistenceIntegrationTest {
                 .containsExactly("需求摘要第一", "依据通用经验，待确认", "需求摘要第二", "依据通用经验，待确认");
         assertThat(rows.auditRows()).allSatisfy(row -> assertThat(row.evidenceComparison()).doesNotContain("candidateIds="));
         assertThat(rows.testCaseRows()).allSatisfy(row -> assertThat(row.requirementContent()).doesNotContain("candidateIds="));
+        assertThat(taskDetailRows.auditRows()).allSatisfy(row -> assertThat(row.subjectOrFeature() + row.issueCategory()
+                + row.evidenceComparison()).doesNotContain("candidateIds=", "documentId=", "unitId="));
+        assertThat(taskDetailRows.testCaseRows()).allSatisfy(row -> assertThat(row.caseName() + row.featureModule()
+                + row.preconditions() + row.executionSteps() + row.expectedResult() + row.requirementContent())
+                .doesNotContain("candidateIds=", "documentId=", "unitId="));
 
         WorkbookArtifact artifact = new ApachePoiWorkbookExporter(artifactRoot).exportMarkdown(
                 new MarkdownWorkbookExportRequest(taskId, rows.auditRows(), rows.testCaseRows(), true, false));
@@ -134,10 +140,15 @@ class MarkdownBatchPersistenceIntegrationTest {
             assertThat(workbook.getSheetAt(0).getRow(0).getLastCellNum()).isEqualTo((short) 4);
             assertThat(workbook.getSheetAt(1).getRow(0).getLastCellNum()).isEqualTo((short) 6);
             assertThat(workbook.getSheetAt(0).getRow(1).getCell(3).getStringCellValue())
-                    .isEqualTo("需求片段A<br>documentId=document-a; unitId=unit-a");
+                    .isEqualTo("需求片段A");
             assertThat(workbook.getSheetAt(1).getRow(1).getCell(5).getStringCellValue()).isEqualTo("需求摘要第一");
             assertThat(workbook.getSheetAt(1).getRow(4).getCell(0).getStringCellValue()).isEqualTo("case-second_反向");
         }
+        assertThatThrownBy(() -> new ApachePoiWorkbookExporter(artifactRoot).exportMarkdown(
+                new MarkdownWorkbookExportRequest(taskId, List.of(new MarkdownAuditRow(1, "订单查询", "已匹配",
+                        "需求摘要; documentId=document-a; unitId=unit-a; candidateIds=first-a")),
+                        rows.testCaseRows(), true, false)))
+                .hasMessageContaining("internal evidence binding tokens");
     }
 
     @Test

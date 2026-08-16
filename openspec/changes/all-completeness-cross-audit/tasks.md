@@ -30,6 +30,10 @@
 
 - [x] 3.3b 联合验收确认 KEE 会将非 casual 的准备说明预执行为 RAG 后，准备请求保持冻结范围但使用固定 `你好` token，仍仅传入阶段精确 `skill_names`。接受 KEE 同一 `tool_call_id` 的 `arguments:null` `read_skill` 声明，但仅在同 ID 后续精确名称、成功结果和完成终态齐备时通过；声明或精确调用悬空、ID 不一致、错误 Skill/工具/结果/error 均失败关闭。更新 WireMock RED→GREEN。验证：`./backend/mvnw.cmd -f backend/pom.xml -Dtest=WebClientKnowledgeAgentAdapterTest test`。 `[Req-ID]: REQ-KSI-001~003`
 
+- [x] 3.3c 将准备和业务调用收敛到 KEE `isolated-skill` 专用入口，不对 404 回退旧 agent-chat；每次调用都验证同 ID `read_skill` 声明、精确参数、成功结果及完成终态，并拒绝除 `read_skill`/`execute_skill_script` 外的任意工具。更新 WireMock RED→GREEN。验证：`./backend/mvnw.cmd -f backend/pom.xml -Dtest=WebClientKnowledgeAgentAdapterTest test`。 `[Req-ID]: REQ-KSI-004`
+
+- [x] 3.3d 将 `documentId`、`unitId`、`candidateIds` 从任务详情、最终 Markdown 和两 Sheet 导出投影中确定性清理，并让导出器拒绝仍含机器 token 的输入；更新 MySQL/Apache POI 集成回归。验证：`./backend/mvnw.cmd -f backend/pom.xml -Dtest=MarkdownBatchPersistenceIntegrationTest test`。 `[Req-ID]: REQ-CWR-003`
+
 - [x] 3.4 在 `FeatureAuditService` 与 `GenerationTaskRepository` 实现每个候选项恰好一个可追溯结论：匹配、`功能清单遗漏`、`需求未覆盖该功能点`、冲突、拆分、合并、重复或证据不足；正式事实只用 document/chunk 证据。直接调用方为冻结服务；前置：3.3。验证：`./backend/mvnw.cmd -f backend/pom.xml -Dtest=FeatureAuditServiceTest test`。 `[Req-ID]: REQ-BFA-003, REQ-BFA-004`
 
 - [x] 3.5 新建 `backend/src/main/java/com/testcaseagent/featureaudit/FrozenFeatureService.java` 与 `FrozenFeatureServiceTest`，仅在所有单元/候选/关系已终态时原子冻结稳定 ID、顺序、来源和可生成性，且重试复用冻结结果。直接调用方为 `GenerationWorkflow.freezeAllFeatures`；前置：3.4。验证：`./backend/mvnw.cmd -f backend/pom.xml -Dtest=FrozenFeatureServiceTest,MaterialInventoryPersistenceIntegrationTest test`。 `[Req-ID]: REQ-BFA-005`

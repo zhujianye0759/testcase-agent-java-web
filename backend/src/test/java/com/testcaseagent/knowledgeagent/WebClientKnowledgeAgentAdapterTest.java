@@ -11,11 +11,11 @@ import static com.github.tomakehurst.wiremock.client.WireMock.notMatching;
 import static com.github.tomakehurst.wiremock.client.WireMock.okJson;
 import static com.github.tomakehurst.wiremock.client.WireMock.post;
 import static com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor;
-import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.github.tomakehurst.wiremock.junit5.WireMockExtension;
+import com.github.tomakehurst.wiremock.matching.UrlPattern;
 import com.github.tomakehurst.wiremock.stubbing.Scenario;
 import com.testcaseagent.fewshot.ExampleQualityKind;
 import com.testcaseagent.fewshot.ExampleScope;
@@ -30,13 +30,15 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 
 /**
  * [Req-ID]: REQ-KAG-001, REQ-KAG-002, REQ-KAG-003, REQ-KAG-004, REQ-KAG-005, REQ-SCP-001,
- * REQ-SCP-003, REQ-FEW-002, REQ-FEW-003, REQ-ANA-004, REQ-KSI-001, REQ-KSI-002, REQ-KSI-003
+ * REQ-SCP-003, REQ-FEW-002, REQ-FEW-003, REQ-ANA-004, REQ-KSI-001, REQ-KSI-002, REQ-KSI-003, REQ-KSI-004
  */
 class WebClientKnowledgeAgentAdapterTest {
 
     private static final String AGENT_ID = "agent-1";
     private static final String GENERATION_SKILL = "functional-testcase-design";
     private static final String RECONCILIATION_SKILL = "feature-scope-reconciliation";
+    private static final String ORDINARY_CHAT_PATH = "/api/v1/agent-chat/session-1";
+    private static final String ISOLATED_SKILL_CHAT_PATH = ORDINARY_CHAT_PATH + "/isolated-skill";
     /**
      * Local HTTP fixtures exercise several sequential WebClient calls. This is a test budget, not
      * the production knowledge-agent deadline (which remains externally configured at five minutes).
@@ -45,6 +47,60 @@ class WebClientKnowledgeAgentAdapterTest {
 
     @RegisterExtension
     static WireMockExtension knowledgeEngine = WireMockExtension.newInstance().build();
+
+    @Test
+    void invokesOnlyTheDedicatedIsolatedSkillEndpointAndNeverFallsBackToOrdinaryChat() {
+        stubAgentAndSession();
+        knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill"))
+                .willReturn(sseWithReadSkill(markdownResult(), GENERATION_SKILL)));
+
+        assertThat(adapter().invoke(invocation(FewShotPolicy.NONE)).terminalMarkdown()).contains("## 测试用例");
+
+        knowledgeEngine.verify(1, postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill"))
+                .withRequestBody(matchingJsonPath("$.skill_names", equalToJson("[\"functional-testcase-design\"]"))));
+        knowledgeEngine.verify(0, postRequestedFor(com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo(ORDINARY_CHAT_PATH)));
+    }
+
+    @Test
+    void failsClosedWhenTheDedicatedIsolatedSkillEndpointIsUnavailableWithoutTryingOrdinaryChat() {
+        stubAgentAndSession();
+        knowledgeEngine.stubFor(post(com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo(ORDINARY_CHAT_PATH))
+                .willReturn(sseWithDeclaredReadSkill(markdownResult(), GENERATION_SKILL)));
+
+        assertThatThrownBy(() -> adapter().invoke(invocation(FewShotPolicy.NONE)))
+                .isInstanceOf(KnowledgeAgentInvocationException.class)
+                .hasMessageContaining("chat request failed");
+
+        knowledgeEngine.verify(1, postRequestedFor(urlEqualTo(ISOLATED_SKILL_CHAT_PATH)));
+        knowledgeEngine.verify(0, postRequestedFor(com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo(ORDINARY_CHAT_PATH)));
+    }
+
+    @Test
+    void rejectsAForbiddenRetrievalToolDuringAnIsolatedBusinessSkillCall() {
+        stubAgentAndSession();
+        knowledgeEngine.stubFor(post(urlEqualTo(ORDINARY_CHAT_PATH))
+                .willReturn(aResponse().withHeader("Content-Type", "text/event-stream")
+                        .withBody(readSkillDeclaration("read-skill-1") + readSkillEvents(GENERATION_SKILL, true)
+                                + "event: message\ndata: {\"response_type\":\"tool_call\",\"done\":false,\"data\":{\"tool_name\":\"grep_chunks\",\"tool_call_id\":\"grep-1\"}}\n\n"
+                                + answerAndComplete(markdownResult()))));
+
+        assertThatThrownBy(() -> adapter().invoke(invocation(FewShotPolicy.NONE)))
+                .isInstanceOf(KnowledgeAgentInvocationException.class)
+                .hasMessageContaining("forbidden tool");
+    }
+
+    @Test
+    void permitsExecuteSkillScriptAlongsideTheRequiredReadSkillEvidence() {
+        stubAgentAndSession();
+        knowledgeEngine.stubFor(post(urlEqualTo(ORDINARY_CHAT_PATH))
+                .willReturn(aResponse().withHeader("Content-Type", "text/event-stream")
+                        .withBody(readSkillDeclaration("read-skill-1") + readSkillEvents(GENERATION_SKILL, true)
+                                + "event: message\ndata: {\"response_type\":\"tool_call\",\"done\":false,\"data\":{\"tool_name\":\"execute_skill_script\",\"tool_call_id\":\"script-1\"}}\n\n"
+                                + "event: message\ndata: {\"response_type\":\"tool_result\",\"done\":false,\"data\":{\"tool_name\":\"execute_skill_script\",\"tool_call_id\":\"script-1\",\"success\":true}}\n\n"
+                                + answerAndComplete(markdownResult()))));
+
+        assertThat(adapter().invoke(invocation(FewShotPolicy.NONE)).terminalMarkdown()).contains("## 测试用例");
+    }
 
     @Test
     void acceptsMarkdownOnlyAfterExplicitCompleteAndSendsStrictRequirementScope() {
@@ -124,7 +180,7 @@ class WebClientKnowledgeAgentAdapterTest {
                 .inScenario("prepared reconciliation session")
                 .whenScenarioStateIs("skill-loaded")
                 .withRequestBody(containing(prompt))
-                .willReturn(sse("## 双向核对结论\n")));
+                .willReturn(sseWithDeclaredReadSkill("## 双向核对结论\n", RECONCILIATION_SKILL)));
 
         KnowledgeAgentPort port = adapter();
         FeatureReconciliationInvocation invocation = reconciliationInvocation(prompt);
@@ -166,7 +222,7 @@ class WebClientKnowledgeAgentAdapterTest {
                 .inScenario("prepared generation session")
                 .whenScenarioStateIs("skill-loaded")
                 .withRequestBody(containing("严格按以下两张 Markdown 表返回"))
-                .willReturn(sse(markdownResult())));
+                .willReturn(sseWithDeclaredReadSkill(markdownResult(), GENERATION_SKILL)));
 
         KnowledgeAgentPort port = adapter();
         KnowledgeAgentInvocation invocation = invocation(FewShotPolicy.NONE);
@@ -220,7 +276,7 @@ class WebClientKnowledgeAgentAdapterTest {
 
         assertThatThrownBy(() -> adapter().prepareReconciliationSession(reconciliationInvocation("核对提示")))
                 .isInstanceOf(KnowledgeAgentSkillPreparationException.class)
-                .hasMessageContaining("required read_skill evidence");
+                .hasMessageContaining("prior declaration");
     }
 
     @Test
@@ -345,7 +401,7 @@ class WebClientKnowledgeAgentAdapterTest {
         knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
                 .withRequestBody(matchingJsonPath("$.query", equalTo("你好")))
                 .willReturn(aResponse().withHeader("Content-Type", "text/event-stream")
-                        .withBody(readSkillEvents(RECONCILIATION_SKILL, true)
+                        .withBody(readSkillDeclaration("read-skill-1") + readSkillEvents(RECONCILIATION_SKILL, true)
                                 + "event: message\ndata: {\"response_type\":\"error\",\"done\":false,\"message\":\"工具失败\"}\n\n"
                                 + completeEvent())));
 
@@ -464,7 +520,7 @@ class WebClientKnowledgeAgentAdapterTest {
         stubAgentAndSession();
         knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
                 .willReturn(aResponse().withHeader("Content-Type", "text/event-stream")
-                        .withBody(readSkillEvents(GENERATION_SKILL, true)
+                        .withBody(readSkillDeclaration("read-skill-1") + readSkillEvents(GENERATION_SKILL, true)
                                 + "event: message\ndata: {\"response_type\":\"error\",\"done\":true,\"message\":\"失败\"}\n\n")));
         assertThatThrownBy(() -> adapter().invoke(invocation(FewShotPolicy.NONE)))
                 .isInstanceOf(KnowledgeAgentInvocationException.class)
@@ -474,7 +530,7 @@ class WebClientKnowledgeAgentAdapterTest {
         stubAgentAndSession();
         knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
                 .willReturn(aResponse().withHeader("Content-Type", "text/event-stream")
-                        .withBody(readSkillEvents(GENERATION_SKILL, true)
+                        .withBody(readSkillDeclaration("read-skill-1") + readSkillEvents(GENERATION_SKILL, true)
                                 + "event: message\ndata: {\"response_type\":\"answer\",\"done\":false,\"content\":\"内容\"}\n\n")));
         assertThatThrownBy(() -> adapter().invoke(invocation(FewShotPolicy.NONE)))
                 .isInstanceOf(KnowledgeAgentInvocationException.class)
@@ -486,7 +542,7 @@ class WebClientKnowledgeAgentAdapterTest {
         stubAgentAndSession();
         knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
                 .willReturn(aResponse().withHeader("Content-Type", "text/event-stream")
-                        .withBody(readSkillEvents(GENERATION_SKILL, true)
+                        .withBody(readSkillDeclaration("read-skill-1") + readSkillEvents(GENERATION_SKILL, true)
                                 + "event: message\ndata: {\"response_type\":\"error\",\"done\":false,\"message\":\"继续\"}\n\n"
                                 + answerAndComplete(markdownResult()))));
 
@@ -498,7 +554,7 @@ class WebClientKnowledgeAgentAdapterTest {
         stubAgentAndSession();
         knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
                 .willReturn(aResponse().withHeader("Content-Type", "text/event-stream")
-                        .withBody(readSkillEvents(GENERATION_SKILL, true)
+                        .withBody(readSkillDeclaration("read-skill-1") + readSkillEvents(GENERATION_SKILL, true)
                                 + "event: message\ndata: {\"response_type\":\"answer\",\"done\":false,\"content\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\n\n"
                                 + "event: message\ndata: {\"response_type\":\"answer\",\"done\":false,\"content\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}\n\n"
                                 + "event: message\ndata: {\"response_type\":\"answer\",\"done\":false,\"content\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}\n\n"
@@ -582,7 +638,7 @@ class WebClientKnowledgeAgentAdapterTest {
     private static com.github.tomakehurst.wiremock.client.ResponseDefinitionBuilder sseWithReadSkillResult(
             String answer, String skillName, boolean success) {
         return aResponse().withHeader("Content-Type", "text/event-stream")
-                .withBody(readSkillEvents(skillName, success) + answerAndComplete(answer));
+                .withBody(readSkillDeclaration("read-skill-1") + readSkillEvents(skillName, success) + answerAndComplete(answer));
     }
 
     private static String readSkillEvents(String skillName, boolean success) {
@@ -607,7 +663,8 @@ class WebClientKnowledgeAgentAdapterTest {
             String answer, String toolCallId, String resultToolCallId) {
         String resultCallId = resultToolCallId == null ? "" : "\"tool_call_id\":" + quote(resultToolCallId) + ",";
         return aResponse().withHeader("Content-Type", "text/event-stream")
-                .withBody("event: message\ndata: {\"response_type\":\"tool_call\",\"done\":false,\"data\":{\"tool_name\":\"read_skill\",\"tool_call_id\":"
+                .withBody(readSkillDeclaration(toolCallId)
+                        + "event: message\ndata: {\"response_type\":\"tool_call\",\"done\":false,\"data\":{\"tool_name\":\"read_skill\",\"tool_call_id\":"
                         + quote(toolCallId) + ",\"arguments\":{\"skill_name\":\"functional-testcase-design\"}}}\n\n"
                         + "event: message\ndata: {\"response_type\":\"tool_result\",\"done\":false,\"data\":{" + resultCallId
                         + "\"tool_name\":\"read_skill\",\"success\":true}}\n\n" + answerAndComplete(answer));
@@ -646,5 +703,11 @@ class WebClientKnowledgeAgentAdapterTest {
 
     private static String quote(String value) {
         return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n") + "\"";
+    }
+
+    /** Keeps legacy fixture declarations focused on their payload while targeting KEE's isolated Skill route. */
+    private static UrlPattern urlEqualTo(String path) {
+        return com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo(
+                ORDINARY_CHAT_PATH.equals(path) ? ISOLATED_SKILL_CHAT_PATH : path);
     }
 }
