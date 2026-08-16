@@ -42,8 +42,21 @@ class FeatureCandidateScannerTest {
     void promptContainsOnlyTheSuppliedUnitAndTheFixedContract() {
         String prompt = scanner.promptFor(functionUnit());
 
-        assertThat(prompt).contains("documentId=function-doc", "unitId=unit-7", "每个非空候选行", "一个材料单元", "only unit text");
+        assertThat(prompt).contains("documentId=function-doc", "unitId=unit-7", "每个非空候选行", "一个材料单元", "only unit text",
+                "必须且只能四列", "第三列只能填写问题分类", "documentId=<exact>; unitId=<exact>; ",
+                "不得用 <br> 紧接 unitId", "第二表必须为零数据行");
         assertThat(prompt).doesNotContain("other document", "other unit");
+    }
+
+    @Test
+    void acceptsEvidenceBodyOnlyAfterTheTwoSemicolonDelimitedCoordinates() {
+        FeatureCandidateScanResult result = scanner.accept(functionUnit(), 1, response("""
+                | 1 | 订单查询 | 功能项 | documentId=function-doc; unitId=unit-7; 明确的单元内证据 |
+                """));
+
+        assertThat(result.candidates()).singleElement()
+                .extracting(FeatureSourceCandidate::evidenceText)
+                .isEqualTo("documentId=function-doc; unitId=unit-7; 明确的单元内证据");
     }
 
     @Test
@@ -79,6 +92,10 @@ class FeatureCandidateScannerTest {
                 | 1 | 订单查询 | 功能项 | documentId=function-doc; unitId=unit-7 | 额外列 |
                 """)))
                 .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("column count");
+        assertThatThrownBy(() -> scanner.accept(functionUnit(), 1, response("""
+                | 1 | 订单查询 | 功能项 documentId=function-doc; unitId=unit-7; 证据 | |
+                """)))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("non-blank 证据对照");
     }
 
     @Test
@@ -99,6 +116,10 @@ class FeatureCandidateScannerTest {
                 | 1 | 订单查询 | 功能项 | documentId =function-doc; unitId=unit-7 |
                 """)))
                 .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("duplicate or malformed");
+        assertThatThrownBy(() -> scanner.accept(functionUnit(), 1, response("""
+                | 1 | 订单查询 | 功能项 | documentId=function-doc; unitId=unit-7<br>说明 |
+                """)))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("documentId and unitId");
     }
 
     private static MaterialInventoryUnit functionUnit() {

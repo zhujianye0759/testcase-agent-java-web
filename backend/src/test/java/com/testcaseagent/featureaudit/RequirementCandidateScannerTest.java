@@ -37,7 +37,9 @@ class RequirementCandidateScannerTest {
             assertThat(candidate.passNumber()).isEqualTo(2);
             assertThat(candidate.sourceRowPosition()).isEqualTo(2);
         });
-        assertThat(secondPrompt).contains("提交订单", "documentId=requirement-doc", "unitId=unit-r");
+        assertThat(secondPrompt).contains("提交订单", "documentId=requirement-doc", "unitId=unit-r",
+                "必须且只能四列", "第三列只能填写问题分类", "documentId=<exact>; unitId=<exact>; ",
+                "不得用 <br> 紧接 unitId", "第二表必须为零数据行");
     }
 
     @Test
