@@ -44,7 +44,7 @@ class FeatureCandidateScannerTest {
 
         assertThat(prompt).contains("documentId=function-doc", "unitId=unit-7", "每个非空候选行", "一个材料单元", "only unit text",
                 "必须且只能四列", "第三列只能填写问题分类", "documentId=<exact>; unitId=<exact>; ",
-                "不得用 <br> 紧接 unitId", "第二表必须为零数据行");
+                "不得用 <br> 紧接 unitId", "第二表必须为零数据行", "按列顺序将非空值组成一个业务路径", "不同层级值不是冲突", "标记证据不足");
         assertThat(prompt).doesNotContain("other document", "other unit");
     }
 

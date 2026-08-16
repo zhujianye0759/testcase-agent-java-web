@@ -20,7 +20,7 @@ public final class FeatureCandidateScanner {
     /** Builds the fixed bounded request for exactly one FUNCTION_LIST material unit. */
     public String promptFor(MaterialInventoryUnit unit) {
         requireFunctionList(unit);
-        return promptPrefix(unit, "从功能清单中逐行提取候选功能。保留重复展示的序号和文本，不要去重。")
+        return promptPrefix(unit, "从功能清单中逐行提取候选功能。保留重复展示的序号和文本，不要去重。若同一行的相邻列具有层级语义，按列顺序将非空值组成一个业务路径；不同层级值不是冲突。无表头或层级语义不足时标记证据不足。")
                 + "只返回下列精确两张 Markdown 表；第一表可为零行，第二表必须为零行。\n"
                 + tableContract() + unitContent(unit);
     }
