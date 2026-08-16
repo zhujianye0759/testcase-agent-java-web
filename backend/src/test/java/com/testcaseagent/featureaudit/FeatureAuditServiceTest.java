@@ -2,6 +2,7 @@ package com.testcaseagent.featureaudit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
@@ -32,7 +33,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 /**
- * [Req-ID]: REQ-KSI-001, REQ-KSI-002, REQ-KSI-003, REQ-BFA-001, REQ-BFA-002, REQ-BFA-003, REQ-BFA-004, REQ-BFA-006
+ * [Req-ID]: REQ-KSI-001, REQ-KSI-002, REQ-KSI-003, REQ-BFA-001, REQ-BFA-002, REQ-BFA-003, REQ-BFA-004, REQ-BFA-006, REQ-BFA-007
  */
 class FeatureAuditServiceTest {
 
@@ -74,8 +75,9 @@ class FeatureAuditServiceTest {
                 """)), result(scanResponse("""
                 | 1 | 提交订单 | 功能项 | documentId=requirement-doc; unitId=requirement-unit |
                 """)), result(scanResponse("""
-                | 1 | 订单查询与提交订单 | 匹配 | candidateIds=%s,%s; documentId=function-doc; unitId=function-unit; documentId=requirement-doc; unitId=requirement-unit |
-                """.formatted(functionId, requirementId))));
+                | 1 | 订单查询与提交订单 | 匹配 | candidateIds=%s; groupAnchorId=%s; documentId=function-doc; unitId=function-unit |
+                | 2 | 订单查询与提交订单 | 匹配 | candidateIds=%s; groupAnchorId=%s; documentId=requirement-doc; unitId=requirement-unit |
+                """.formatted(functionId, functionId, requirementId, functionId))));
 
         FeatureAuditResult result = service.audit("task-1", request);
 
@@ -94,10 +96,112 @@ class FeatureAuditServiceTest {
         verify(knowledgeAgentPort, times(4)).closePreparedSession();
         FeatureReconciliationInvocation finalInvocation = invocation.getAllValues().get(3);
         assertThat(finalInvocation.prompt()).contains(functionId, requirementId, "documentId=function-doc", "unitId=requirement-unit",
-                "机器 token 必须是独立分号段", "candidateIds=id1,id2; <reader evidence>", "不得与 `<br>` 或说明文字粘连",
+                "机器 token 必须是独立分号段", "groupAnchorId=<全量 candidateId>", "不得与 `<br>` 或说明文字粘连",
                 "至少两个互异纯文本业务路径", "其他分类必须为单一纯文本且不得含 `<br>`", "不同层级值不是冲突", "同一层级或同一语义字段互斥", "归为证据不足")
                 .doesNotContain("example-kb", "example-doc");
         inOrder(repository).verify(repository).persistScanAndCompleteAuditWork(eq(functionClaim), any(), any(), eq(true));
+    }
+
+    @Test
+    void reconcilesBoundedPagesWithGlobalContextAndAtomicallyMergesACrossPageGroup() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        KnowledgeAgentPort knowledgeAgentPort = mock(KnowledgeAgentPort.class);
+        FeatureAuditService service = new FeatureAuditService(repository, knowledgeAgentPort);
+        CreateGenerationTaskRequest request = request();
+        List<FeatureSourceCandidate> candidates = java.util.stream.IntStream.rangeClosed(1, 17)
+                .mapToObj(FeatureAuditServiceTest::candidate).toList();
+
+        when(repository.hasCompleteMaterialInventory("task-1", request.requirementScope())).thenReturn(true);
+        when(repository.materialInventory("task-1")).thenReturn(List.of());
+        when(repository.claimNextAuditWork(eq("task-1"), any(), any())).thenReturn(Optional.empty());
+        when(repository.featureSourceCandidates("task-1")).thenReturn(candidates);
+        when(repository.featureAuditCounts("task-1")).thenReturn(
+                new GenerationTaskRepository.FeatureAuditCounts(1, 1, 0, 17, 0, 0),
+                new GenerationTaskRepository.FeatureAuditCounts(1, 1, 0, 17, 16, 17));
+        when(knowledgeAgentPort.reconcileFeatures(any())).thenReturn(
+                result(boundedReconciliationResponse(candidates.subList(0, 16), "candidate-01", "candidate-17")),
+                result(boundedReconciliationResponse(candidates.subList(16, 17), "candidate-01", "candidate-17")));
+
+        FeatureAuditResult audit = service.audit("task-1", request);
+
+        assertThat(audit.complete()).isTrue();
+        ArgumentCaptor<FeatureReconciliationInvocation> invocations = ArgumentCaptor.forClass(FeatureReconciliationInvocation.class);
+        verify(knowledgeAgentPort, times(2)).reconcileFeatures(invocations.capture());
+        assertThat(invocations.getAllValues()).allSatisfy(invocation -> assertThat(invocation.prompt())
+                .contains("candidate-01", "candidate-17", "全量候选项仅作比较上下文"));
+        ArgumentCaptor<List<FeatureReviewConclusion>> persisted = ArgumentCaptor.forClass(List.class);
+        verify(repository).persistFeatureReviewConclusions(eq("task-1"), persisted.capture());
+        assertThat(persisted.getValue()).hasSize(16);
+        assertThat(persisted.getValue()).anySatisfy(conclusion -> assertThat(conclusion.candidateIds())
+                .containsExactly("candidate-01", "candidate-17"));
+    }
+
+    @Test
+    void retriesARejectedAnchoredGroupBeforeOneAtomicPersist() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        KnowledgeAgentPort knowledgeAgentPort = mock(KnowledgeAgentPort.class);
+        FeatureAuditService service = new FeatureAuditService(repository, knowledgeAgentPort);
+        CreateGenerationTaskRequest request = request();
+        List<FeatureSourceCandidate> candidates = List.of(candidate(1), candidate(2));
+
+        when(repository.hasCompleteMaterialInventory("task-1", request.requirementScope())).thenReturn(true);
+        when(repository.materialInventory("task-1")).thenReturn(List.of());
+        when(repository.claimNextAuditWork(eq("task-1"), any(), any())).thenReturn(Optional.empty());
+        when(repository.featureSourceCandidates("task-1")).thenReturn(candidates);
+        when(repository.featureAuditCounts("task-1")).thenReturn(
+                new GenerationTaskRepository.FeatureAuditCounts(1, 1, 0, 2, 0, 0),
+                new GenerationTaskRepository.FeatureAuditCounts(1, 1, 0, 2, 2, 2));
+        String inconsistent = scanResponse("""
+                | 1 | 同一功能 | 匹配 | candidateIds=candidate-01; groupAnchorId=candidate-01; documentId=requirement-doc; unitId=requirement-unit |
+                | 2 | 不同功能 | 重复 | candidateIds=candidate-02; groupAnchorId=candidate-01; documentId=requirement-doc; unitId=requirement-unit |
+                """);
+        when(knowledgeAgentPort.reconcileFeatures(any())).thenReturn(result(inconsistent), result(inconsistent),
+                result(boundedReconciliationResponse(candidates, "candidate-01", "outside-group")));
+
+        assertThat(service.audit("task-1", request).complete()).isTrue();
+
+        ArgumentCaptor<FeatureReconciliationInvocation> invocations = ArgumentCaptor.forClass(FeatureReconciliationInvocation.class);
+        verify(knowledgeAgentPort, times(3)).reconcileFeatures(invocations.capture());
+        assertThat(invocations.getAllValues().get(1).prompt()).contains("重试纠正要求：", "固定格式基线", "groupAnchorId");
+        verify(repository).persistFeatureReviewConclusions(eq("task-1"), any());
+    }
+
+    @Test
+    void failsClosedWithoutPersistingWhenTheSecondBoundedPageIsMalformedThreeTimes() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        KnowledgeAgentPort knowledgeAgentPort = mock(KnowledgeAgentPort.class);
+        FeatureAuditService service = new FeatureAuditService(repository, knowledgeAgentPort);
+        CreateGenerationTaskRequest request = request();
+        List<FeatureSourceCandidate> candidates = java.util.stream.IntStream.rangeClosed(1, 17)
+                .mapToObj(FeatureAuditServiceTest::candidate).toList();
+
+        when(repository.hasCompleteMaterialInventory("task-1", request.requirementScope())).thenReturn(true);
+        when(repository.materialInventory("task-1")).thenReturn(List.of());
+        when(repository.claimNextAuditWork(eq("task-1"), any(), any())).thenReturn(Optional.empty());
+        when(repository.featureSourceCandidates("task-1")).thenReturn(candidates);
+        when(repository.featureAuditCounts("task-1")).thenReturn(new GenerationTaskRepository.FeatureAuditCounts(1, 1, 0, 17, 0, 0));
+        when(knowledgeAgentPort.reconcileFeatures(any())).thenReturn(
+                result(boundedReconciliationResponse(candidates.subList(0, 16), "candidate-01", "outside-group")),
+                result("unexpected raw final response"), result("unexpected raw final response"), result("unexpected raw final response"));
+
+        Throwable failure = catchThrowable(() -> service.audit("task-1", request));
+        assertThat(failure).isInstanceOf(IllegalStateException.class)
+                .hasMessage("Final reconciliation page did not meet the strict contract after three attempts");
+        assertThat(failure.getMessage()).doesNotContain("unexpected raw final response");
+
+        verify(knowledgeAgentPort, times(4)).reconcileFeatures(any());
+        verify(repository, never()).persistFeatureReviewConclusions(any(), any());
+    }
+
+    @Test
+    void failsClosedAfterThreeRetriesForUnknownAndNonSelfAnchors() {
+        assertRejectedFinalReconciliation(List.of(candidate(1)), scanResponse("""
+                | 1 | 功能1 | 匹配 | candidateIds=candidate-01; groupAnchorId=unknown-anchor; documentId=requirement-doc; unitId=requirement-unit |
+                """));
+        assertRejectedFinalReconciliation(List.of(candidate(1), candidate(2)), scanResponse("""
+                | 1 | 同一功能 | 匹配 | candidateIds=candidate-01; groupAnchorId=candidate-02; documentId=requirement-doc; unitId=requirement-unit |
+                | 2 | 同一功能 | 匹配 | candidateIds=candidate-02; groupAnchorId=candidate-01; documentId=requirement-doc; unitId=requirement-unit |
+                """));
     }
 
     @Test
@@ -515,6 +619,47 @@ class FeatureAuditServiceTest {
                 | 用例名称 | 功能模块 | 前提约束 | 执行步骤 | 预期结果 | 对应需求内容 |
                 |---|---|---|---|---|---|
                 """).stripIndent();
+    }
+
+    private static FeatureSourceCandidate candidate(int sequence) {
+        String candidateId = "candidate-%02d".formatted(sequence);
+        return new FeatureSourceCandidate(candidateId, FeatureCandidateKind.REQUIREMENT, "requirement-doc", "requirement-unit",
+                1, sequence, "功能" + sequence, "功能项", "documentId=requirement-doc; unitId=requirement-unit", 1, sequence);
+    }
+
+    private static String boundedReconciliationResponse(
+            List<FeatureSourceCandidate> targets, String groupedFirstId, String groupedLastId) {
+        StringBuilder rows = new StringBuilder();
+        for (FeatureSourceCandidate target : targets) {
+            boolean grouped = target.occurrenceId().equals(groupedFirstId) || target.occurrenceId().equals(groupedLastId);
+            rows.append("| ").append(target.modelSequence()).append(" | ")
+                    .append(grouped ? "跨页归组功能" : target.featureText()).append(" | 匹配 | candidateIds=")
+                    .append(target.occurrenceId()).append("; groupAnchorId=")
+                    .append(grouped ? groupedFirstId : target.occurrenceId())
+                    .append("; documentId=").append(target.documentId()).append("; unitId=").append(target.unitId())
+                    .append(" |\n");
+        }
+        return scanResponse(rows.toString());
+    }
+
+    private static void assertRejectedFinalReconciliation(List<FeatureSourceCandidate> candidates, String invalidResponse) {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        KnowledgeAgentPort knowledgeAgentPort = mock(KnowledgeAgentPort.class);
+        FeatureAuditService service = new FeatureAuditService(repository, knowledgeAgentPort);
+        CreateGenerationTaskRequest request = request();
+        when(repository.hasCompleteMaterialInventory("task-1", request.requirementScope())).thenReturn(true);
+        when(repository.materialInventory("task-1")).thenReturn(List.of());
+        when(repository.claimNextAuditWork(eq("task-1"), any(), any())).thenReturn(Optional.empty());
+        when(repository.featureSourceCandidates("task-1")).thenReturn(candidates);
+        when(repository.featureAuditCounts("task-1")).thenReturn(
+                new GenerationTaskRepository.FeatureAuditCounts(1, 1, 0, candidates.size(), 0, 0));
+        when(knowledgeAgentPort.reconcileFeatures(any())).thenReturn(result(invalidResponse), result(invalidResponse), result(invalidResponse));
+
+        assertThatThrownBy(() -> service.audit("task-1", request))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Final reconciliation page did not meet the strict contract after three attempts");
+        verify(knowledgeAgentPort, times(3)).reconcileFeatures(any());
+        verify(repository, never()).persistFeatureReviewConclusions(any(), any());
     }
 
     private static CreateGenerationTaskRequest request() {

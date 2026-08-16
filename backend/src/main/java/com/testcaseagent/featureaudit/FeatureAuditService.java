@@ -5,8 +5,15 @@ import com.testcaseagent.knowledgeagent.KnowledgeAgentPort;
 import com.testcaseagent.knowledgeagent.KnowledgeAgentSkillPreparationException;
 import com.testcaseagent.task.CreateGenerationTaskRequest;
 import com.testcaseagent.task.GenerationTaskRepository;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -19,10 +26,12 @@ import java.util.concurrent.CancellationException;
  * service deliberately never passes examples: candidate and conclusion facts originate exclusively in the retained
  * requirement material inventory.</p>
  *
- * [Req-ID]: REQ-KSI-001, REQ-KSI-002, REQ-KSI-003, REQ-BFA-001, REQ-BFA-002, REQ-BFA-003, REQ-BFA-004
+ * [Req-ID]: REQ-KSI-001, REQ-KSI-002, REQ-KSI-003, REQ-BFA-001, REQ-BFA-002, REQ-BFA-003, REQ-BFA-004, REQ-BFA-007
  */
 public final class FeatureAuditService {
     private static final Duration AUDIT_LEASE = Duration.ofMinutes(5);
+    private static final int RECONCILIATION_TARGET_PAGE_SIZE = 16;
+    private static final int RECONCILIATION_PAGE_ATTEMPTS = 3;
     private static final String SAFE_RETRY_PREFIX = "上一轮未通过固定 Markdown 格式校验：";
     private static final String COMPREHENSIVE_RETRY_BASELINE = "固定格式基线：输出第一个字符必须是 #，第一行必须精确为 ## 需求与功能清单审查发现，"
             + "第一标题前不得有分析、说明、结论或引导语；必须返回精确两张 Markdown 表；标题、表头和分隔行必须与本次提示完全一致；"
@@ -66,6 +75,13 @@ public final class FeatureAuditService {
                     SAFE_RETRY_PREFIX + "证据列中的两个坐标标记必须各出现一次且格式正确。"),
             Map.entry("Candidate evidence must bind the exact documentId and unitId",
                     SAFE_RETRY_PREFIX + "证据列必须绑定本次提示给出的两个精确坐标标记。"));
+    private static final Map<String, String> SAFE_FINAL_RECONCILIATION_RETRY_FEEDBACK = Map.ofEntries(
+            Map.entry("each retained candidateId exactly once", SAFE_RETRY_PREFIX + "本页每个目标候选必须且只能出现一次。"),
+            Map.entry("only retained candidateIds", SAFE_RETRY_PREFIX + "candidateIds 只能填写本页目标候选，且每行只能填写一个。"),
+            Map.entry("candidateIds= token", SAFE_RETRY_PREFIX + "每行证据对照必须有一个独立的 candidateIds= 机器 token。"),
+            Map.entry("known terminal conclusion type", SAFE_RETRY_PREFIX + "问题分类只能使用本次提示列出的中文分类。"),
+            Map.entry("groupAnchorId", SAFE_RETRY_PREFIX + "每行必须有一个独立且有效的 groupAnchorId= 机器 token。"),
+            Map.entry("Every anchored group", SAFE_RETRY_PREFIX + "同一 groupAnchorId 的问题分类和对象/功能点必须完全一致。"));
 
     private final GenerationTaskRepository repository;
     private final KnowledgeAgentPort knowledgeAgentPort;
@@ -152,11 +168,39 @@ public final class FeatureAuditService {
 
     private void reconcile(String taskId, CreateGenerationTaskRequest request) {
         List<FeatureSourceCandidate> candidates = repository.featureSourceCandidates(taskId);
-        Set<String> ids = candidates.stream().map(FeatureSourceCandidate::occurrenceId)
-                .collect(java.util.stream.Collectors.toUnmodifiableSet());
-        List<FeatureReviewConclusion> conclusions = conclusionParser.parse(reconcile(request, reconciliationPrompt(candidates)), ids);
+        Set<String> ids = candidateIds(candidates);
+        List<FeatureReviewConclusion> pageConclusions = new ArrayList<>();
+        Map<String, FeatureReviewConclusion> acceptedByCandidate = new LinkedHashMap<>();
+        for (int start = 0; start < candidates.size(); start += RECONCILIATION_TARGET_PAGE_SIZE) {
+            List<FeatureSourceCandidate> targets = candidates.subList(start,
+                    Math.min(start + RECONCILIATION_TARGET_PAGE_SIZE, candidates.size()));
+            List<FeatureReviewConclusion> accepted = reconcilePage(request, candidates, ids, targets, acceptedByCandidate);
+            for (FeatureReviewConclusion conclusion : accepted) {
+                acceptedByCandidate.put(conclusion.candidateIds().get(0), conclusion);
+            }
+            pageConclusions.addAll(accepted);
+        }
+        List<FeatureReviewConclusion> conclusions = mergeAnchoredConclusions(candidates, ids, pageConclusions);
         requireFormalEvidenceReferences(conclusions, candidates);
         repository.persistFeatureReviewConclusions(taskId, conclusions);
+    }
+
+    private List<FeatureReviewConclusion> reconcilePage(
+            CreateGenerationTaskRequest request, List<FeatureSourceCandidate> candidates, Set<String> allCandidateIds,
+            List<FeatureSourceCandidate> targets, Map<String, FeatureReviewConclusion> acceptedByCandidate) {
+        Set<String> targetIds = candidateIds(targets);
+        String prompt = reconciliationPrompt(candidates, targets);
+        for (int attempt = 1; attempt <= RECONCILIATION_PAGE_ATTEMPTS; attempt++) {
+            try {
+                List<FeatureReviewConclusion> parsed = conclusionParser.parse(reconcile(request, prompt), targetIds);
+                validatePageConclusions(parsed, candidates, targets, allCandidateIds, acceptedByCandidate);
+                return parsed;
+            } catch (IllegalArgumentException exception) {
+                if (attempt == RECONCILIATION_PAGE_ATTEMPTS) break;
+                prompt = prompt + "\n重试纠正要求：" + finalReconciliationRetryFeedback(exception.getMessage()) + "\n";
+            }
+        }
+        throw new IllegalStateException("Final reconciliation page did not meet the strict contract after three attempts");
     }
 
     private String reconcile(CreateGenerationTaskRequest request, String prompt) {
@@ -170,15 +214,19 @@ public final class FeatureAuditService {
         }
     }
 
-    private static String reconciliationPrompt(List<FeatureSourceCandidate> candidates) {
+    private static String reconciliationPrompt(List<FeatureSourceCandidate> candidates, List<FeatureSourceCandidate> targets) {
         StringBuilder prompt = new StringBuilder("仅基于以下已持久化的正式材料候选项进行双向核对；不得使用示例、不得引入材料外事实。\n")
+                .append("全量候选项仅作比较上下文；本页只对下列目标候选输出结论。每个目标候选必须且只能占一条第一表结论，")
+                .append("candidateIds 必须只包含该目标候选自身。跨页的同一业务结论必须使用同一个 groupAnchorId；")
+                .append("同组必须按全量候选项给出的顺序选择最早的 candidateId 作为 groupAnchorId，且该 anchor 自身行必须令 groupAnchorId 等于自身 candidateId；")
+                .append("同一 groupAnchorId 的问题分类和对象/功能点业务路径必须逐字完全一致。\n")
                 .append("只返回精确两张 Markdown 表。第一张必须为 `## 需求与功能清单审查发现`，表头必须为")
                 .append(" `| 序号 | 对象/功能点 | 问题分类 | 证据对照 |`；第二张必须为 `## 测试用例` 且零数据行。\n")
                 .append("问题分类仅可为：未发现问题、匹配、功能清单遗漏、需求未覆盖该功能点、冲突、拆分、合并、重复、证据不足。\n")
-                .append("每行证据对照中的机器 token 必须是独立分号段：至少 `documentId=<exact>; unitId=<exact>; candidateIds=id1,id2; <reader evidence>`。")
+                .append("每行证据对照中的机器 token 必须是独立分号段：至少 `documentId=<exact>; unitId=<exact>; candidateIds=<本页目标 candidateId>; groupAnchorId=<全量 candidateId>; <reader evidence>`。")
                 .append("candidateIds 不得与 `<br>` 或说明文字粘连。分类为“拆分”时，对象/功能点必须以 literal `<br>` 分隔至少两个互异纯文本业务路径；其他分类必须为单一纯文本且不得含 `<br>`。")
                 .append("同一行不同层级列的非空值按列顺序构成业务路径，不同层级值不是冲突；冲突仅限同一层级或同一语义字段互斥，或跨正式材料对同一路径不兼容。无表头或层级语义不足时归为证据不足。")
-                .append("每个候选项必须且只能出现在一条第一表结论中。\n候选项：\n");
+                .append("\n全量候选项：\n");
         for (FeatureSourceCandidate candidate : candidates) {
             prompt.append("candidateId=").append(candidate.occurrenceId())
                     .append("; kind=").append(candidate.kind())
@@ -192,7 +240,146 @@ public final class FeatureAuditService {
                     .append("; category=").append(oneLine(candidate.category()))
                     .append("; evidence=").append(oneLine(candidate.evidenceText())).append('\n');
         }
+        prompt.append("本页目标候选：\n");
+        for (FeatureSourceCandidate target : targets) {
+            prompt.append("candidateId=").append(target.occurrenceId()).append('\n');
+        }
         return prompt.toString();
+    }
+
+    private static Set<String> candidateIds(List<FeatureSourceCandidate> candidates) {
+        Set<String> ids = new LinkedHashSet<>();
+        for (FeatureSourceCandidate candidate : candidates) {
+            if (!ids.add(candidate.occurrenceId())) throw new IllegalArgumentException("Candidate occurrence ids must be unique");
+        }
+        return Set.copyOf(ids);
+    }
+
+    private static void validatePageConclusions(
+            List<FeatureReviewConclusion> conclusions, List<FeatureSourceCandidate> candidates,
+            List<FeatureSourceCandidate> targets, Set<String> allCandidateIds,
+            Map<String, FeatureReviewConclusion> acceptedByCandidate) {
+        Map<String, FeatureReviewConclusion> pageByCandidate = new HashMap<>();
+        Map<String, Integer> candidatePositions = new HashMap<>();
+        for (int index = 0; index < candidates.size(); index++) {
+            candidatePositions.put(candidates.get(index).occurrenceId(), index);
+        }
+        for (FeatureReviewConclusion conclusion : conclusions) {
+            if (conclusion.candidateIds().size() != 1) {
+                throw new IllegalArgumentException("Each page conclusion must contain exactly one target candidateId");
+            }
+            String candidateId = conclusion.candidateIds().get(0);
+            if (pageByCandidate.put(candidateId, conclusion) != null) {
+                throw new IllegalArgumentException("Each page target candidateId must have exactly one conclusion");
+            }
+            groupAnchorId(conclusion.evidenceText(), allCandidateIds);
+        }
+        for (FeatureSourceCandidate target : targets) {
+            if (!pageByCandidate.containsKey(target.occurrenceId())) {
+                throw new IllegalArgumentException("Each page target candidateId must have exactly one conclusion");
+            }
+        }
+        Map<String, FeatureReviewConclusion> knownByCandidate = new HashMap<>(acceptedByCandidate);
+        knownByCandidate.putAll(pageByCandidate);
+        for (FeatureSourceCandidate target : targets) {
+            FeatureReviewConclusion current = pageByCandidate.get(target.occurrenceId());
+            String anchorId = groupAnchorId(current.evidenceText(), allCandidateIds);
+            if (candidatePositions.get(anchorId) > candidatePositions.get(target.occurrenceId())) {
+                throw new IllegalArgumentException("Each groupAnchorId must not point after its target candidate");
+            }
+            FeatureReviewConclusion anchor = knownByCandidate.get(anchorId);
+            if (anchor == null || !anchorId.equals(groupAnchorId(anchor.evidenceText(), allCandidateIds))) {
+                throw new IllegalArgumentException("Each groupAnchorId must reference a self-anchored global candidate");
+            }
+            if (current.type() != anchor.type() || !current.explanation().equals(anchor.explanation())) {
+                throw new IllegalArgumentException("Every anchored group must have one exact type and business path");
+            }
+        }
+    }
+
+    private static List<FeatureReviewConclusion> mergeAnchoredConclusions(
+            List<FeatureSourceCandidate> candidates, Set<String> allCandidateIds, List<FeatureReviewConclusion> pageConclusions) {
+        Map<String, FeatureReviewConclusion> byCandidate = new HashMap<>();
+        Map<String, String> anchorByCandidate = new HashMap<>();
+        for (FeatureReviewConclusion conclusion : pageConclusions) {
+            if (conclusion.candidateIds().size() != 1) {
+                throw new IllegalArgumentException("Each page conclusion must contain exactly one target candidateId");
+            }
+            String candidateId = conclusion.candidateIds().get(0);
+            if (!allCandidateIds.contains(candidateId) || byCandidate.put(candidateId, conclusion) != null) {
+                throw new IllegalArgumentException("Every retained candidate requires exactly one page conclusion");
+            }
+            anchorByCandidate.put(candidateId, groupAnchorId(conclusion.evidenceText(), allCandidateIds));
+        }
+        if (!byCandidate.keySet().equals(allCandidateIds)) {
+            throw new IllegalArgumentException("Every retained candidate requires exactly one page conclusion");
+        }
+
+        Map<String, List<String>> membersByAnchor = new LinkedHashMap<>();
+        for (FeatureSourceCandidate candidate : candidates) {
+            String candidateId = candidate.occurrenceId();
+            String anchorId = anchorByCandidate.get(candidateId);
+            FeatureReviewConclusion anchor = byCandidate.get(anchorId);
+            if (anchor == null || !anchorId.equals(anchorByCandidate.get(anchorId))) {
+                throw new IllegalArgumentException("Each groupAnchorId must reference a self-anchored global candidate");
+            }
+            FeatureReviewConclusion current = byCandidate.get(candidateId);
+            if (current.type() != anchor.type() || !current.explanation().equals(anchor.explanation())) {
+                throw new IllegalArgumentException("Every anchored group must have one exact type and business path");
+            }
+            membersByAnchor.computeIfAbsent(anchorId, ignored -> new ArrayList<>()).add(candidateId);
+        }
+
+        List<FeatureReviewConclusion> merged = new ArrayList<>();
+        int sequence = 1;
+        for (FeatureSourceCandidate candidate : candidates) {
+            List<String> memberIds = membersByAnchor.remove(candidate.occurrenceId());
+            if (memberIds == null) continue;
+            FeatureReviewConclusion anchor = byCandidate.get(candidate.occurrenceId());
+            String evidence = memberIds.stream().map(id -> byCandidate.get(id).evidenceText())
+                    .collect(java.util.stream.Collectors.joining("; "));
+            merged.add(new FeatureReviewConclusion(conclusionId(sequence, anchor.type(), anchor.explanation(), evidence, memberIds),
+                    sequence, anchor.type(), anchor.explanation(), evidence, List.copyOf(memberIds)));
+            sequence++;
+        }
+        if (!membersByAnchor.isEmpty()) throw new IllegalArgumentException("Every anchored group must close on a global candidate");
+        return List.copyOf(merged);
+    }
+
+    private static String groupAnchorId(String evidence, Set<String> allCandidateIds) {
+        String anchor = null;
+        for (String rawToken : evidence.split(";", -1)) {
+            String token = rawToken.trim();
+            int separator = token.indexOf('=');
+            if (separator <= 0 || separator != token.lastIndexOf('=')) continue;
+            if (!"groupAnchorId".equals(token.substring(0, separator))) continue;
+            String value = token.substring(separator + 1);
+            if (value.isBlank() || anchor != null) throw new IllegalArgumentException("Each conclusion must contain one valid groupAnchorId");
+            anchor = value;
+        }
+        if (anchor == null || !allCandidateIds.contains(anchor)) {
+            throw new IllegalArgumentException("Each groupAnchorId must reference a retained global candidate");
+        }
+        return anchor;
+    }
+
+    private static String conclusionId(int sequence, FeatureReviewConclusionType type, String explanation,
+            String evidence, List<String> candidateIds) {
+        try {
+            String identity = sequence + "\u001f" + type + "\u001f" + explanation + "\u001f" + evidence + "\u001f"
+                    + String.join(",", candidateIds);
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(identity.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is required by the Java runtime", exception);
+        }
+    }
+
+    private static String finalReconciliationRetryFeedback(String failure) {
+        String focus = SAFE_FINAL_RECONCILIATION_RETRY_FEEDBACK.entrySet().stream()
+                .filter(entry -> failure != null && failure.contains(entry.getKey())).map(Map.Entry::getValue).findFirst()
+                .orElse(SAFE_RETRY_PREFIX + "请逐条遵守本页目标、锚点和两张 Markdown 表的固定合同。不得回显错误或说明。 ");
+        return COMPREHENSIVE_RETRY_BASELINE + "\n" + focus;
     }
 
     static void requireFormalEvidenceReferences(

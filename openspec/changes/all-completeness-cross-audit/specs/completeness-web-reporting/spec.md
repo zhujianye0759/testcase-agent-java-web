@@ -22,7 +22,7 @@
 - **THEN** 页面不暴露技术游标或标识符
 
 ### Requirement: [REQ-CWR-003] 对外详情、Markdown 和工作簿不泄漏机器绑定
-任务详情 API、最终 Markdown 投影和两个 Excel Sheet SHALL 在交付边界确定性移除 `documentId=...`、`unitId=...`、`candidateIds=...` 机器绑定 token。系统 SHALL 保留可读的文档名称、版本、章节、页码、Sheet、行和摘录等已有 reader-facing 依据。若工作簿导出请求仍含上述 token，导出 SHALL 被拒绝，不能仅在页面隐藏。
+任务详情 API、最终 Markdown 投影和两个 Excel Sheet SHALL 在交付边界确定性移除 `documentId=...`、`unitId=...`、`candidateIds=...`、`groupAnchorId=...` 机器绑定 token。系统 SHALL 保留可读的文档名称、版本、章节、页码、Sheet、行和摘录等已有 reader-facing 依据。若工作簿导出请求仍含上述 token，导出 SHALL 被拒绝，不能仅在页面隐藏。
 
 #### Scenario: 内部候选结论进入任务详情
 - **WHEN** 已接收的候选或审查结论包含单元绑定 token
@@ -30,6 +30,6 @@
 - **THEN** 其他可读证据文本保持不变
 
 #### Scenario: 工作簿输入仍有机器 token
-- **WHEN** 两 Sheet 工作簿的任一单元格值包含 `documentId`、`unitId` 或 `candidateIds` 绑定
+- **WHEN** 两 Sheet 工作簿的任一单元格值包含 `documentId`、`unitId`、`candidateIds` 或 `groupAnchorId` 绑定
 - **THEN** 导出器拒绝生成工作簿
 - **THEN** 系统不得产生带隐藏机器标识的下载文件

@@ -82,7 +82,7 @@ public final class ApachePoiWorkbookExporter implements WorkbookExporter {
                 row.caseName(), row.featureModule(), row.preconditions(), row.executionSteps(), row.expectedResult(), row.requirementContent()));
     }
     private void rejectMachineEvidenceTokens(String... values) {
-        for (String value : values) if (value != null && value.matches("(?is).*\\b(?:candidateIds|documentId|unitId)\\s*=.*")) {
+        for (String value : values) if (value != null && value.matches("(?is).*\\b(?:candidateIds|groupAnchorId|documentId|unitId)\\s*=.*")) {
             throw new WorkbookExportException("Reader-facing workbook cannot contain internal evidence binding tokens");
         }
     }

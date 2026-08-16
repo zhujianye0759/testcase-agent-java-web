@@ -937,10 +937,10 @@ public final class GenerationTaskRepository {
         };
     }
 
-    /** Removes internal candidate and source-unit binding tokens from reader-facing projections. */
+    /** Removes internal candidate, source-unit and reconciliation-group binding tokens from reader-facing projections. [Req-ID]: REQ-CWR-003 */
     private static String stripMachineEvidenceTokens(String value) {
         if (value == null || value.isBlank()) return value == null ? "" : value.strip();
-        String sanitized = value.replaceAll("(?i)(?:candidateIds|documentId|unitId)\\s*=\\s*[^;\\r\\n<]*(?:;\\s*)?", "");
+        String sanitized = value.replaceAll("(?i)(?:candidateIds|groupAnchorId|documentId|unitId)\\s*=\\s*[^;\\r\\n<]*(?:;\\s*)?", "");
         return sanitized.replaceAll("(?:<br>|\\R)\\s*(?=<br>|\\R|$)", "").strip();
     }
 

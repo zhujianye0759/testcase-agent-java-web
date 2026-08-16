@@ -97,18 +97,19 @@ class MarkdownBatchPersistenceIntegrationTest {
         jdbcTemplate.update("DELETE FROM generation_task");
     }
 
+    /** [Req-ID]: REQ-CWR-003 */
     @Test
     void exportsTaskOwnedReviewConclusionsAndAllAcceptedBatchCasesWithoutTechnicalCandidateTokens() throws Exception {
         String taskId = taskId();
         repository.createTask(taskId, allRequest());
         accept(taskId, "batch-second", "attempt-second", "feature-second", 2,
-                twoCaseMarkdownResultWithEvidence("second", "需求摘要第二<br>candidateIds=second-a"));
+                twoCaseMarkdownResultWithEvidence("second", "需求摘要第二<br>candidateIds=second-a; groupAnchorId=second-a"));
         accept(taskId, "batch-first", "attempt-first", "feature-first", 1,
                 twoCaseMarkdownResultWithEvidence("first", "需求摘要第一\ncandidateIds=first-a"));
         persistConclusion(taskId, "conclusion-second", 2, "FUNCTION_LIST_MISSING", "功能清单遗漏：订单导出",
                 "功能清单片段B<br>candidateIds=second-a");
         persistConclusion(taskId, "conclusion-first", 1, "MATCHED", "订单查询",
-                "需求片段A<br>candidateIds=first-a; documentId=document-a; unitId=unit-a");
+                "需求片段A<br>candidateIds=first-a; groupAnchorId=first-a; documentId=document-a; unitId=unit-a");
 
         MarkdownTaskRows rows = repository.exportMarkdownRows(taskId);
         MarkdownTaskRows taskDetailRows = repository.acceptedMarkdownRows(taskId);
@@ -123,13 +124,15 @@ class MarkdownBatchPersistenceIntegrationTest {
                 .containsExactly("case-first_正向", "case-first_反向", "case-second_正向", "case-second_反向");
         assertThat(rows.testCaseRows()).extracting(MarkdownTestCaseRow::requirementContent)
                 .containsExactly("需求摘要第一", "依据通用经验，待确认", "需求摘要第二", "依据通用经验，待确认");
-        assertThat(rows.auditRows()).allSatisfy(row -> assertThat(row.evidenceComparison()).doesNotContain("candidateIds="));
-        assertThat(rows.testCaseRows()).allSatisfy(row -> assertThat(row.requirementContent()).doesNotContain("candidateIds="));
+        assertThat(rows.auditRows()).allSatisfy(row -> assertThat(row.evidenceComparison())
+                .doesNotContain("candidateIds=", "groupAnchorId="));
+        assertThat(rows.testCaseRows()).allSatisfy(row -> assertThat(row.requirementContent())
+                .doesNotContain("candidateIds=", "groupAnchorId="));
         assertThat(taskDetailRows.auditRows()).allSatisfy(row -> assertThat(row.subjectOrFeature() + row.issueCategory()
-                + row.evidenceComparison()).doesNotContain("candidateIds=", "documentId=", "unitId="));
+                + row.evidenceComparison()).doesNotContain("candidateIds=", "groupAnchorId=", "documentId=", "unitId="));
         assertThat(taskDetailRows.testCaseRows()).allSatisfy(row -> assertThat(row.caseName() + row.featureModule()
                 + row.preconditions() + row.executionSteps() + row.expectedResult() + row.requirementContent())
-                .doesNotContain("candidateIds=", "documentId=", "unitId="));
+                .doesNotContain("candidateIds=", "groupAnchorId=", "documentId=", "unitId="));
 
         WorkbookArtifact artifact = new ApachePoiWorkbookExporter(artifactRoot).exportMarkdown(
                 new MarkdownWorkbookExportRequest(taskId, rows.auditRows(), rows.testCaseRows(), true, false));
@@ -148,6 +151,10 @@ class MarkdownBatchPersistenceIntegrationTest {
                 new MarkdownWorkbookExportRequest(taskId, List.of(new MarkdownAuditRow(1, "订单查询", "已匹配",
                         "需求摘要; documentId=document-a; unitId=unit-a; candidateIds=first-a")),
                         rows.testCaseRows(), true, false)))
+                .hasMessageContaining("internal evidence binding tokens");
+        assertThatThrownBy(() -> new ApachePoiWorkbookExporter(artifactRoot).exportMarkdown(
+                new MarkdownWorkbookExportRequest(taskId, List.of(new MarkdownAuditRow(1, "订单查询", "已匹配",
+                        "需求摘要; groupAnchorId=first-a")), rows.testCaseRows(), true, false)))
                 .hasMessageContaining("internal evidence binding tokens");
     }
 
