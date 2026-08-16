@@ -580,17 +580,19 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
         private final boolean complete;
         private final Set<String> pendingReadSkillDeclarationIds;
         private final Set<String> pendingExactReadSkillCallIds;
+        private final Set<String> seenExactReadSkillCallIds;
         private final int pendingUnnamedReadSkillCalls;
         private final boolean successfulReadSkill;
         private final boolean failedReadSkill;
-        private AnswerAccumulator() { this("", false, Set.of(), Set.of(), 0, false, false); }
+        private AnswerAccumulator() { this("", false, Set.of(), Set.of(), Set.of(), 0, false, false); }
         private AnswerAccumulator(String content, boolean complete, Set<String> pendingReadSkillDeclarationIds,
-                Set<String> pendingExactReadSkillCallIds,
+                Set<String> pendingExactReadSkillCallIds, Set<String> seenExactReadSkillCallIds,
                 int pendingUnnamedReadSkillCalls, boolean successfulReadSkill, boolean failedReadSkill) {
             this.content = content;
             this.complete = complete;
             this.pendingReadSkillDeclarationIds = pendingReadSkillDeclarationIds;
             this.pendingExactReadSkillCallIds = pendingExactReadSkillCallIds;
+            this.seenExactReadSkillCallIds = seenExactReadSkillCallIds;
             this.pendingUnnamedReadSkillCalls = pendingUnnamedReadSkillCalls;
             this.successfulReadSkill = successfulReadSkill;
             this.failedReadSkill = failedReadSkill;
@@ -600,6 +602,7 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
             if (next.length() > maxEventCharacters) throw new KnowledgeAgentInvocationException("Knowledge agent SSE answer exceeds maximum size");
             Set<String> declarations = new HashSet<>(pendingReadSkillDeclarationIds);
             Set<String> pending = new HashSet<>(pendingExactReadSkillCallIds);
+            Set<String> seen = new HashSet<>(seenExactReadSkillCallIds);
             int unnamed = pendingUnnamedReadSkillCalls;
             boolean success = successfulReadSkill;
             boolean failure = failedReadSkill;
@@ -607,9 +610,11 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
                 declarations.add(event.readSkillCallId());
             }
             if (event.exactReadSkillCall()) {
-                if (event.readSkillCallId() == null || !declarations.remove(event.readSkillCallId())) {
-                    throw new KnowledgeAgentInvocationException("Knowledge agent read_skill requires a prior declaration with the same tool_call_id");
+                if (!seen.isEmpty()) {
+                    throw new KnowledgeAgentInvocationException("Knowledge agent Skill preparation may call the exact read_skill only once");
                 }
+                seen.add(event.readSkillCallId());
+                declarations.remove(event.readSkillCallId());
                 pending.add(event.readSkillCallId());
             }
             if (event.readSkillResult()) {
@@ -622,7 +627,7 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
                     else failure = true;
                 }
             }
-            return new AnswerAccumulator(next, event.complete(), Set.copyOf(declarations), Set.copyOf(pending), unnamed, success, failure);
+            return new AnswerAccumulator(next, event.complete(), Set.copyOf(declarations), Set.copyOf(pending), Set.copyOf(seen), unnamed, success, failure);
         }
         private String content() { return content; }
         private boolean complete() { return complete; }

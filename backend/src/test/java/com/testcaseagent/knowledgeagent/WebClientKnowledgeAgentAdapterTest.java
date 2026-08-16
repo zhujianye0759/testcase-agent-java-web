@@ -276,7 +276,39 @@ class WebClientKnowledgeAgentAdapterTest {
 
         assertThatThrownBy(() -> adapter().prepareReconciliationSession(reconciliationInvocation("核对提示")))
                 .isInstanceOf(KnowledgeAgentSkillPreparationException.class)
-                .hasMessageContaining("prior declaration");
+                .hasMessageContaining("required read_skill evidence");
+    }
+
+    @Test
+    void acceptsSingleCompleteReadSkillCallWithoutAnEarlierDeclaration() {
+        stubAgentAndSession();
+        knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
+                .withRequestBody(matchingJsonPath("$.query", equalTo("你好")))
+                .willReturn(aResponse().withHeader("Content-Type", "text/event-stream")
+                        .withBody(readSkillEvents(RECONCILIATION_SKILL, true) + answerAndComplete("SKILL_READY"))));
+
+        KnowledgeAgentPort port = adapter();
+        port.prepareReconciliationSession(reconciliationInvocation("核对提示"));
+        port.closePreparedSession();
+    }
+
+    @Test
+    void rejectsRepeatedExactReadSkillCallsWhetherTheCallIdIsReusedOrChanged() {
+        assertRepeatedExactReadSkillIsRejected("read-skill-1", "read-skill-1");
+        knowledgeEngine.resetAll();
+        assertRepeatedExactReadSkillIsRejected("read-skill-1", "read-skill-2");
+    }
+
+    private void assertRepeatedExactReadSkillIsRejected(String firstCallId, String secondCallId) {
+        stubAgentAndSession();
+        knowledgeEngine.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1"))
+                .withRequestBody(matchingJsonPath("$.query", equalTo("你好")))
+                .willReturn(aResponse().withHeader("Content-Type", "text/event-stream")
+                        .withBody(readSkillEvents(RECONCILIATION_SKILL, true, firstCallId)
+                                + readSkillEvents(RECONCILIATION_SKILL, true, secondCallId) + completeEvent())));
+        assertThatThrownBy(() -> adapter().prepareReconciliationSession(reconciliationInvocation("核对提示")))
+                .isInstanceOf(KnowledgeAgentSkillPreparationException.class)
+                .hasMessageContaining("only once");
     }
 
     @Test
