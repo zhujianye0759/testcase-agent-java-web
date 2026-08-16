@@ -36,6 +36,8 @@
 
 - [x] 3.3e 联合验收发现模型会将中间坐标与证据正文用 `<br>` 粘连或把证据塞入分类列后，固定每个非空扫描行的四列边界：第三列仅为问题分类，第四列必须以 `documentId=<exact>; unitId=<exact>; ` 开头，第二个坐标 token 后用分号接证据正文；不得放宽 parser、SSE 或坐标门禁。更新功能清单/需求两遍扫描 RED→GREEN。验证：`./backend/mvnw.cmd -f backend/pom.xml -Dtest=FeatureCandidateScannerTest,RequirementCandidateScannerTest,FeatureAuditServiceTest,GenerationWorkflowAllModeTest test`。 `[Req-ID]: REQ-BFA-001~004`
 
+- [x] 3.3f 为同一材料扫描工作第 2/3 次重领补充安全格式纠错反馈：在认领事务中读取该 work 最近一次已持久化 `failure_summary`，仅把白名单内的严格 Markdown 错误映射为固定提示；首次无反馈，未知摘要只给通用提示，绝不注入原始异常、URL、路径、凭据或机器标识。保持最多三次、失败关闭、扫描器/最终核对严格合同和不可变台账不变。验证：先运行 `FeatureAuditServiceTest#retriesTheSameAuditWorkWithSafeMarkdownCorrectionFeedbackOnlyAfterTheFirstAttempt` RED，再运行 `FeatureAuditServiceTest,MaterialInventoryPersistenceIntegrationTest,FeatureCandidateScannerTest,RequirementCandidateScannerTest`。 `[Req-ID]: REQ-BFA-006`
+
 - [x] 3.4 在 `FeatureAuditService` 与 `GenerationTaskRepository` 实现每个候选项恰好一个可追溯结论：匹配、`功能清单遗漏`、`需求未覆盖该功能点`、冲突、拆分、合并、重复或证据不足；正式事实只用 document/chunk 证据。直接调用方为冻结服务；前置：3.3。验证：`./backend/mvnw.cmd -f backend/pom.xml -Dtest=FeatureAuditServiceTest test`。 `[Req-ID]: REQ-BFA-003, REQ-BFA-004`
 
 - [x] 3.5 新建 `backend/src/main/java/com/testcaseagent/featureaudit/FrozenFeatureService.java` 与 `FrozenFeatureServiceTest`，仅在所有单元/候选/关系已终态时原子冻结稳定 ID、顺序、来源和可生成性，且重试复用冻结结果。直接调用方为 `GenerationWorkflow.freezeAllFeatures`；前置：3.4。验证：`./backend/mvnw.cmd -f backend/pom.xml -Dtest=FrozenFeatureServiceTest,MaterialInventoryPersistenceIntegrationTest test`。 `[Req-ID]: REQ-BFA-005`

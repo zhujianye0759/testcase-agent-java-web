@@ -261,6 +261,14 @@ public final class GenerationTaskRepository {
             int attemptNumber = jdbcTemplate.queryForObject(
                     "SELECT COALESCE(MAX(attempt_number), 0) + 1 FROM material_audit_attempt WHERE work_id = ?",
                     Integer.class, work.id());
+            String previousFailureSummary = jdbcTemplate.query("""
+                            SELECT failure_summary
+                            FROM material_audit_attempt
+                            WHERE work_id = ? AND status = 'FAILED'
+                            ORDER BY attempt_number DESC
+                            LIMIT 1
+                            """, (resultSet, ignoredRow) -> resultSet.getString("failure_summary"), work.id())
+                    .stream().findFirst().orElse(null);
             String attemptId = UUID.randomUUID().toString();
             jdbcTemplate.update("""
                             INSERT INTO material_audit_attempt (id, work_id, attempt_number, status)
@@ -270,7 +278,7 @@ public final class GenerationTaskRepository {
                     "SELECT lease_expires_at FROM material_audit_work WHERE id = ?",
                     (resultSet, ignoredRow) -> resultSet.getTimestamp("lease_expires_at").toInstant(), work.id());
             return new AuditWorkClaim(work.id(), attemptId, attemptNumber, work.taskId(), work.documentId(), work.unitId(),
-                    work.passNumber(), work.stage(), expiresAt);
+                    work.passNumber(), work.stage(), expiresAt, previousFailureSummary);
         }));
     }
 

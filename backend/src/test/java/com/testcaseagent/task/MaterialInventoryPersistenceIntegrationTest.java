@@ -40,7 +40,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 /**
  * Proves task-owned material inventory and reclaimable MySQL audit work through repository seams.
  *
- * [Req-ID]: REQ-BFA-001, REQ-BFA-005
+ * [Req-ID]: REQ-BFA-001, REQ-BFA-005, REQ-BFA-006
  */
 @Testcontainers
 @SpringBootTest(classes = TestCaseAgentApplication.class, properties = "app.knowledge-agent.enabled=false")
@@ -122,6 +122,27 @@ class MaterialInventoryPersistenceIntegrationTest {
         repository.completeAuditWork(secondClaim);
 
         assertThat(repository.claimNextAuditWork("worker-four", Duration.ofSeconds(30))).isEmpty();
+    }
+
+    @Test
+    void restoresTheMostRecentFailedAttemptSummaryWhenDurablyReclaimingTheSameWork() {
+        String taskId = createTask();
+        MaterialInventoryUnit unit = unit("unit-1", "content one");
+        repository.persistMaterialInventory(taskId, List.of(unit));
+        repository.createAuditWorkIfAbsent("work-one", taskId, unit, 1, "FEATURE_LIST_SCAN");
+
+        AuditWorkClaim first = repository.claimNextAuditWork("worker-one", Duration.ofSeconds(30)).orElseThrow();
+        repository.failAuditWork(first, "Expected strict scan Markdown with heading ## 需求与功能清单审查发现");
+        AuditWorkClaim second = repository.claimNextAuditWork("worker-two", Duration.ofSeconds(30)).orElseThrow();
+        repository.failAuditWork(second, "Expected strict scan Markdown with only <br> HTML in table cells");
+        AuditWorkClaim third = repository.claimNextAuditWork("worker-three", Duration.ofSeconds(30)).orElseThrow();
+
+        assertThat(second.attemptNumber()).isEqualTo(2);
+        assertThat(second.previousFailureSummary())
+                .isEqualTo("Expected strict scan Markdown with heading ## 需求与功能清单审查发现");
+        assertThat(third.attemptNumber()).isEqualTo(3);
+        assertThat(third.previousFailureSummary())
+                .isEqualTo("Expected strict scan Markdown with only <br> HTML in table cells");
     }
 
     @Test

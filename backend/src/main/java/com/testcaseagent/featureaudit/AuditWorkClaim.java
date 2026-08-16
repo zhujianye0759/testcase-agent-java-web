@@ -16,5 +16,6 @@ public record AuditWorkClaim(
         String unitId,
         int passNumber,
         String stage,
-        Instant leaseExpiresAt) {
+        Instant leaseExpiresAt,
+        String previousFailureSummary) {
 }

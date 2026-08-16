@@ -23,6 +23,40 @@ import java.util.concurrent.CancellationException;
  */
 public final class FeatureAuditService {
     private static final Duration AUDIT_LEASE = Duration.ofMinutes(5);
+    private static final String SAFE_RETRY_PREFIX = "上一轮未通过固定 Markdown 格式校验：";
+    private static final String GENERIC_RETRY_FEEDBACK = SAFE_RETRY_PREFIX + "请严格按本次给出的两张 Markdown 表、表头、列数和证据格式重新输出。";
+    private static final Map<String, String> SAFE_MARKDOWN_RETRY_FEEDBACK = Map.ofEntries(
+            Map.entry("Expected strict scan Markdown with two Markdown tables", SAFE_RETRY_PREFIX + "必须返回精确两张 Markdown 表。"),
+            Map.entry("Expected strict scan Markdown with Markdown tables instead of JSON or code fences",
+                    SAFE_RETRY_PREFIX + "不得返回 JSON 或代码围栏，必须返回 Markdown 表。"),
+            Map.entry("Expected strict scan Markdown with only <br> HTML in table cells",
+                    SAFE_RETRY_PREFIX + "表格单元格中只允许使用 <br>，不得输出其他 HTML 标签。"),
+            Map.entry("Expected strict scan Markdown with heading ## 需求与功能清单审查发现",
+                    SAFE_RETRY_PREFIX + "必须使用本次给出的两张精确表标题。"),
+            Map.entry("Expected strict scan Markdown with exact table header",
+                    SAFE_RETRY_PREFIX + "必须使用本次给出的精确表头。"),
+            Map.entry("Expected strict scan Markdown with table separator",
+                    SAFE_RETRY_PREFIX + "每张表必须使用完整的 Markdown 分隔行。"),
+            Map.entry("Expected strict scan Markdown with Markdown table row",
+                    SAFE_RETRY_PREFIX + "每一行必须是完整的 Markdown 表格行。"),
+            Map.entry("Expected strict scan Markdown with exact table column count",
+                    SAFE_RETRY_PREFIX + "第一张表的每个非空数据行必须恰好四列。"),
+            Map.entry("Expected strict scan Markdown with zero test-case rows and no trailing content",
+                    SAFE_RETRY_PREFIX + "第二张表必须为零数据行，表后不得附加内容。"),
+            Map.entry("Expected strict scan Markdown with positive visible sequence",
+                    SAFE_RETRY_PREFIX + "第一列必须是正整数的可见序号。"),
+            Map.entry("Expected strict scan Markdown with numeric visible sequence",
+                    SAFE_RETRY_PREFIX + "第一列必须只填写数字序号。"),
+            Map.entry("Expected strict scan Markdown with non-blank 对象/功能点",
+                    SAFE_RETRY_PREFIX + "对象/功能点列不得为空。"),
+            Map.entry("Expected strict scan Markdown with non-blank 问题分类",
+                    SAFE_RETRY_PREFIX + "问题分类列不得为空。"),
+            Map.entry("Expected strict scan Markdown with non-blank 证据对照",
+                    SAFE_RETRY_PREFIX + "证据对照列不得为空。"),
+            Map.entry("Candidate evidence has duplicate or malformed coordinate tokens",
+                    SAFE_RETRY_PREFIX + "证据列中的两个坐标标记必须各出现一次且格式正确。"),
+            Map.entry("Candidate evidence must bind the exact documentId and unitId",
+                    SAFE_RETRY_PREFIX + "证据列必须绑定本次提示给出的两个精确坐标标记。"));
 
     private final GenerationTaskRepository repository;
     private final KnowledgeAgentPort knowledgeAgentPort;
@@ -91,7 +125,7 @@ public final class FeatureAuditService {
                 throw new IllegalStateException("Function-list audit work has an invalid pass or stage");
             }
             FeatureCandidateScanResult accepted = featureScanner.accept(unit, claim.passNumber(),
-                    reconcile(request, featureScanner.promptFor(unit)));
+                    reconcile(request, withRetryFeedback(featureScanner.promptFor(unit), claim)));
             repository.persistScanAndCompleteAuditWork(claim, accepted.candidates(), List.of(), accepted.converged());
             return;
         }
@@ -102,7 +136,8 @@ public final class FeatureAuditService {
         List<FeatureSourceCandidate> acceptedFirstPass = claim.passNumber() == 1 ? List.of()
                 : repository.featureSourceCandidates(claim.taskId(), claim.documentId(), claim.unitId(), 1);
         RequirementCandidateScanResult accepted = requirementScanner.accept(unit, claim.passNumber(), acceptedFirstPass,
-                reconcile(request, requirementScanner.promptFor(unit, claim.passNumber(), acceptedFirstPass)));
+                reconcile(request, withRetryFeedback(
+                        requirementScanner.promptFor(unit, claim.passNumber(), acceptedFirstPass), claim)));
         repository.persistScanAndCompleteAuditWork(claim, accepted.candidates(), accepted.duplicateOccurrences(), accepted.converged());
     }
 
@@ -215,5 +250,15 @@ public final class FeatureAuditService {
 
     private static String oneLine(String value) {
         return value.replace('\r', ' ').replace('\n', ' ').replace('|', '¦');
+    }
+
+    /** Adds only a fixed, non-sensitive format correction to a reclaimed scan work item. [Req-ID]: REQ-BFA-006 */
+    private static String withRetryFeedback(String prompt, AuditWorkClaim claim) {
+        if (claim.attemptNumber() <= 1) return prompt;
+        String previousFailureSummary = claim.previousFailureSummary();
+        String feedback = previousFailureSummary == null || previousFailureSummary.isBlank()
+                ? GENERIC_RETRY_FEEDBACK
+                : SAFE_MARKDOWN_RETRY_FEEDBACK.getOrDefault(previousFailureSummary, GENERIC_RETRY_FEEDBACK);
+        return prompt + "\n重领纠正要求：" + feedback + "\n";
     }
 }

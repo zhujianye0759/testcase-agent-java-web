@@ -32,7 +32,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 /**
- * [Req-ID]: REQ-KSI-001, REQ-KSI-002, REQ-KSI-003, REQ-BFA-001, REQ-BFA-002, REQ-BFA-003, REQ-BFA-004
+ * [Req-ID]: REQ-KSI-001, REQ-KSI-002, REQ-KSI-003, REQ-BFA-001, REQ-BFA-002, REQ-BFA-003, REQ-BFA-004, REQ-BFA-006
  */
 class FeatureAuditServiceTest {
 
@@ -122,6 +122,107 @@ class FeatureAuditServiceTest {
         verify(knowledgeAgentPort).closePreparedSession();
         assertThat(result.complete()).isFalse();
         assertThat(result.permanentlyFailedAuditWork()).isOne();
+    }
+
+    @Test
+    void retriesTheSameAuditWorkWithSafeMarkdownCorrectionFeedbackOnlyAfterTheFirstAttempt() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        KnowledgeAgentPort knowledgeAgentPort = mock(KnowledgeAgentPort.class);
+        FeatureAuditService service = new FeatureAuditService(repository, knowledgeAgentPort);
+        CreateGenerationTaskRequest request = request();
+        MaterialInventoryUnit unit = new MaterialInventoryUnit("function-doc", "FUNCTION_LIST", "function-unit", 0, 1,
+                "功能", 0, 2);
+        AuditWorkClaim firstAttempt = claim("function-work", "function-doc", "function-unit", 1, "FEATURE_LIST_SCAN", 1);
+        AuditWorkClaim secondAttempt = claim("function-work", "function-doc", "function-unit", 1, "FEATURE_LIST_SCAN", 2,
+                "Expected strict scan Markdown with heading ## 需求与功能清单审查发现");
+        AuditWorkClaim thirdAttempt = claim("function-work", "function-doc", "function-unit", 1, "FEATURE_LIST_SCAN", 3,
+                "Expected strict scan Markdown with only <br> HTML in table cells");
+        GenerationTaskRepository.FeatureAuditCounts completeCounts =
+                new GenerationTaskRepository.FeatureAuditCounts(1, 1, 0, 1, 1, 1);
+
+        when(repository.hasCompleteMaterialInventory("task-1", request.requirementScope())).thenReturn(true);
+        when(repository.materialInventory("task-1")).thenReturn(List.of(unit));
+        when(repository.claimNextAuditWork(eq("task-1"), any(), any())).thenReturn(Optional.of(firstAttempt),
+                Optional.of(secondAttempt), Optional.of(thirdAttempt), Optional.empty());
+        when(repository.featureAuditCounts("task-1")).thenReturn(completeCounts);
+        when(knowledgeAgentPort.reconcileFeatures(any())).thenReturn(
+                result("错误标题"),
+                result("<div>不允许的 HTML</div>"),
+                result(scanResponse("""
+                        | 1 | 订单查询 | 功能项 | documentId=function-doc; unitId=function-unit; 来源文字 |
+                        """)));
+
+        service.audit("task-1", request);
+
+        ArgumentCaptor<FeatureReconciliationInvocation> invocations = ArgumentCaptor.forClass(FeatureReconciliationInvocation.class);
+        verify(knowledgeAgentPort, times(3)).reconcileFeatures(invocations.capture());
+        assertThat(invocations.getAllValues().get(0).prompt()).doesNotContain("上一轮未通过固定 Markdown 格式校验");
+        assertThat(invocations.getAllValues().get(1).prompt()).contains("上一轮未通过固定 Markdown 格式校验", "两张精确表标题");
+        assertThat(invocations.getAllValues().get(2).prompt()).contains("上一轮未通过固定 Markdown 格式校验", "只允许使用 <br>");
+    }
+
+    @Test
+    void replacesUnknownPriorFailureWithGenericFeedbackWithoutLeakingItsRawText() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        KnowledgeAgentPort knowledgeAgentPort = mock(KnowledgeAgentPort.class);
+        FeatureAuditService service = new FeatureAuditService(repository, knowledgeAgentPort);
+        CreateGenerationTaskRequest request = request();
+        MaterialInventoryUnit unit = new MaterialInventoryUnit("function-doc", "FUNCTION_LIST", "function-unit", 0, 1,
+                "功能", 0, 2);
+        String unsafeFailure = "https://internal.example/a?api_key=not-for-model C:\\private\\file documentId=raw-document unitId=raw-unit candidateIds=raw";
+        AuditWorkClaim secondAttempt = claim("function-work", "function-doc", "function-unit", 1, "FEATURE_LIST_SCAN", 2,
+                unsafeFailure);
+        GenerationTaskRepository.FeatureAuditCounts completeCounts =
+                new GenerationTaskRepository.FeatureAuditCounts(1, 1, 0, 1, 1, 1);
+
+        when(repository.hasCompleteMaterialInventory("task-1", request.requirementScope())).thenReturn(true);
+        when(repository.materialInventory("task-1")).thenReturn(List.of(unit));
+        when(repository.claimNextAuditWork(eq("task-1"), any(), any())).thenReturn(Optional.of(secondAttempt), Optional.empty());
+        when(repository.featureAuditCounts("task-1")).thenReturn(completeCounts);
+        when(knowledgeAgentPort.reconcileFeatures(any())).thenReturn(result(scanResponse("""
+                | 1 | 订单查询 | 功能项 | documentId=function-doc; unitId=function-unit; 来源文字 |
+                """)));
+
+        service.audit("task-1", request);
+
+        ArgumentCaptor<FeatureReconciliationInvocation> invocation = ArgumentCaptor.forClass(FeatureReconciliationInvocation.class);
+        verify(knowledgeAgentPort).reconcileFeatures(invocation.capture());
+        assertThat(invocation.getValue().prompt()).contains("上一轮未通过固定 Markdown 格式校验", "请严格按本次给出的两张 Markdown 表")
+                .doesNotContain(unsafeFailure, "https://internal.example", "not-for-model", "C:\\private\\file", "raw-document", "raw-unit", "candidateIds=raw");
+    }
+
+    @Test
+    void usesGenericFeedbackWhenAReclaimedAttemptHasNullOrBlankFailureSummary() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        KnowledgeAgentPort knowledgeAgentPort = mock(KnowledgeAgentPort.class);
+        FeatureAuditService service = new FeatureAuditService(repository, knowledgeAgentPort);
+        CreateGenerationTaskRequest request = request();
+        MaterialInventoryUnit unit = new MaterialInventoryUnit("function-doc", "FUNCTION_LIST", "function-unit", 0, 1,
+                "功能", 0, 2);
+        AuditWorkClaim nullSummaryAttempt = claim("function-work-null", "function-doc", "function-unit", 1, "FEATURE_LIST_SCAN", 2, null);
+        AuditWorkClaim blankSummaryAttempt = claim("function-work-blank", "function-doc", "function-unit", 1, "FEATURE_LIST_SCAN", 2, "  ");
+        GenerationTaskRepository.FeatureAuditCounts completeCounts =
+                new GenerationTaskRepository.FeatureAuditCounts(2, 2, 0, 2, 2, 2);
+
+        when(repository.hasCompleteMaterialInventory("task-1", request.requirementScope())).thenReturn(true);
+        when(repository.materialInventory("task-1")).thenReturn(List.of(unit));
+        when(repository.claimNextAuditWork(eq("task-1"), any(), any())).thenReturn(Optional.of(nullSummaryAttempt),
+                Optional.of(blankSummaryAttempt), Optional.empty());
+        when(repository.featureAuditCounts("task-1")).thenReturn(completeCounts);
+        when(knowledgeAgentPort.reconcileFeatures(any())).thenReturn(
+                result(scanResponse("""
+                        | 1 | 订单查询 | 功能项 | documentId=function-doc; unitId=function-unit; 来源文字 |
+                        """)),
+                result(scanResponse("""
+                        | 1 | 订单查询 | 功能项 | documentId=function-doc; unitId=function-unit; 来源文字 |
+                        """)));
+
+        service.audit("task-1", request);
+
+        ArgumentCaptor<FeatureReconciliationInvocation> invocations = ArgumentCaptor.forClass(FeatureReconciliationInvocation.class);
+        verify(knowledgeAgentPort, times(2)).reconcileFeatures(invocations.capture());
+        assertThat(invocations.getAllValues()).allSatisfy(invocation -> assertThat(invocation.prompt())
+                .contains("上一轮未通过固定 Markdown 格式校验", "请严格按本次给出的两张 Markdown 表"));
     }
 
     @Test
@@ -228,7 +329,17 @@ class FeatureAuditServiceTest {
     }
 
     private static AuditWorkClaim claim(String workId, String documentId, String unitId, int pass, String stage) {
-        return new AuditWorkClaim(workId, workId + "-attempt", 1, "task-1", documentId, unitId, pass, stage, Instant.now().plusSeconds(30));
+        return claim(workId, documentId, unitId, pass, stage, 1);
+    }
+
+    private static AuditWorkClaim claim(String workId, String documentId, String unitId, int pass, String stage, int attemptNumber) {
+        return claim(workId, documentId, unitId, pass, stage, attemptNumber, null);
+    }
+
+    private static AuditWorkClaim claim(
+            String workId, String documentId, String unitId, int pass, String stage, int attemptNumber, String previousFailureSummary) {
+        return new AuditWorkClaim(workId, workId + "-attempt-" + attemptNumber, attemptNumber, "task-1", documentId, unitId,
+                pass, stage, Instant.now().plusSeconds(30), previousFailureSummary);
     }
 
     private static KnowledgeAgentInvocationResult result(String markdown) {
