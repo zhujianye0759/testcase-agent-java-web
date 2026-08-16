@@ -162,6 +162,55 @@ class FeatureAuditServiceTest {
     }
 
     @Test
+    void retainsTheCompleteFormatBaselineAcrossAlternatingStrictMarkdownFailures() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        KnowledgeAgentPort knowledgeAgentPort = mock(KnowledgeAgentPort.class);
+        FeatureAuditService service = new FeatureAuditService(repository, knowledgeAgentPort);
+        CreateGenerationTaskRequest request = request();
+        MaterialInventoryUnit unit = new MaterialInventoryUnit("function-doc", "FUNCTION_LIST", "function-unit", 0, 1,
+                "功能", 0, 2);
+        AuditWorkClaim firstAttempt = claim("alternating-work", "function-doc", "function-unit", 1, "FEATURE_LIST_SCAN", 1);
+        AuditWorkClaim secondAttempt = claim("alternating-work", "function-doc", "function-unit", 1, "FEATURE_LIST_SCAN", 2,
+                "Candidate evidence has duplicate or malformed coordinate tokens");
+        AuditWorkClaim thirdAttempt = claim("alternating-work", "function-doc", "function-unit", 1, "FEATURE_LIST_SCAN", 3,
+                "Expected strict scan Markdown with Markdown tables instead of JSON or code fences");
+        GenerationTaskRepository.FeatureAuditCounts completeCounts =
+                new GenerationTaskRepository.FeatureAuditCounts(1, 1, 0, 1, 1, 1);
+
+        when(repository.hasCompleteMaterialInventory("task-1", request.requirementScope())).thenReturn(true);
+        when(repository.materialInventory("task-1")).thenReturn(List.of(unit));
+        when(repository.claimNextAuditWork(eq("task-1"), any(), any())).thenReturn(Optional.of(firstAttempt),
+                Optional.of(secondAttempt), Optional.of(thirdAttempt), Optional.empty());
+        when(repository.featureAuditCounts("task-1")).thenReturn(completeCounts);
+        when(knowledgeAgentPort.reconcileFeatures(any())).thenReturn(
+                result(scanResponse("""
+                        | 1 | 订单查询 | 功能项 | documentId=function-doc; documentId=function-doc; unitId=function-unit; 来源文字 |
+                        """)),
+                result("```markdown\n" + scanResponse("""
+                        | 1 | 订单查询 | 功能项 | documentId=function-doc; unitId=function-unit; 来源文字 |
+                        """) + "\n```"),
+                result(scanResponse("""
+                        | 1 | 订单查询 | 功能项 | documentId=function-doc; unitId=function-unit; 来源文字 |
+                        """)));
+
+        service.audit("task-1", request);
+
+        ArgumentCaptor<FeatureReconciliationInvocation> invocations = ArgumentCaptor.forClass(FeatureReconciliationInvocation.class);
+        verify(knowledgeAgentPort, times(3)).reconcileFeatures(invocations.capture());
+        assertThat(invocations.getAllValues().get(0).prompt()).doesNotContain("固定格式基线");
+        String secondFeedback = retryFeedback(invocations.getAllValues().get(1).prompt());
+        String thirdFeedback = retryFeedback(invocations.getAllValues().get(2).prompt());
+        assertThat(secondFeedback).contains("固定格式基线", "精确两张 Markdown 表", "标题、表头和分隔行必须与本次提示完全一致",
+                "每个非空数据行必须恰好四列", "不得返回 JSON 或代码围栏", "仅允许 <br>", "第二张表必须为零数据行",
+                "documentId 坐标标记", "unitId 坐标标记", "各出现一次", "第二个坐标后必须以分号接证据正文", "两个坐标标记必须各出现一次且格式正确")
+                .doesNotContain("<exact>", "function-doc", "function-unit", "Candidate evidence has duplicate or malformed coordinate tokens");
+        assertThat(thirdFeedback).contains("固定格式基线", "精确两张 Markdown 表", "标题、表头和分隔行必须与本次提示完全一致",
+                "每个非空数据行必须恰好四列", "不得返回 JSON 或代码围栏", "仅允许 <br>", "第二张表必须为零数据行",
+                "documentId 坐标标记", "unitId 坐标标记", "各出现一次", "第二个坐标后必须以分号接证据正文", "不得返回 JSON 或代码围栏")
+                .doesNotContain("<exact>", "function-doc", "function-unit", "Expected strict scan Markdown", "Candidate evidence has duplicate or malformed coordinate tokens");
+    }
+
+    @Test
     void replacesUnknownPriorFailureWithGenericFeedbackWithoutLeakingItsRawText() {
         GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
         KnowledgeAgentPort knowledgeAgentPort = mock(KnowledgeAgentPort.class);
@@ -187,8 +236,8 @@ class FeatureAuditServiceTest {
 
         ArgumentCaptor<FeatureReconciliationInvocation> invocation = ArgumentCaptor.forClass(FeatureReconciliationInvocation.class);
         verify(knowledgeAgentPort).reconcileFeatures(invocation.capture());
-        assertThat(invocation.getValue().prompt()).contains("上一轮未通过固定 Markdown 格式校验", "请严格按本次给出的两张 Markdown 表")
-                .doesNotContain(unsafeFailure, "https://internal.example", "not-for-model", "C:\\private\\file", "raw-document", "raw-unit", "candidateIds=raw");
+        assertThat(invocation.getValue().prompt()).contains("固定格式基线", "精确两张 Markdown 表")
+                .doesNotContain("本次重点", unsafeFailure, "https://internal.example", "not-for-model", "C:\\private\\file", "raw-document", "raw-unit", "candidateIds=raw");
     }
 
     @Test
@@ -222,7 +271,7 @@ class FeatureAuditServiceTest {
         ArgumentCaptor<FeatureReconciliationInvocation> invocations = ArgumentCaptor.forClass(FeatureReconciliationInvocation.class);
         verify(knowledgeAgentPort, times(2)).reconcileFeatures(invocations.capture());
         assertThat(invocations.getAllValues()).allSatisfy(invocation -> assertThat(invocation.prompt())
-                .contains("上一轮未通过固定 Markdown 格式校验", "请严格按本次给出的两张 Markdown 表"));
+                .contains("固定格式基线", "精确两张 Markdown 表").doesNotContain("本次重点"));
     }
 
     @Test
@@ -344,6 +393,13 @@ class FeatureAuditServiceTest {
 
     private static KnowledgeAgentInvocationResult result(String markdown) {
         return new KnowledgeAgentInvocationResult("session", List.of(), markdown);
+    }
+
+    private static String retryFeedback(String prompt) {
+        String marker = "重领纠正要求：";
+        int start = prompt.lastIndexOf(marker);
+        assertThat(start).isGreaterThanOrEqualTo(0);
+        return prompt.substring(start + marker.length());
     }
 
     private static String scanResponse(String rows) {

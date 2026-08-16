@@ -24,7 +24,10 @@ import java.util.concurrent.CancellationException;
 public final class FeatureAuditService {
     private static final Duration AUDIT_LEASE = Duration.ofMinutes(5);
     private static final String SAFE_RETRY_PREFIX = "上一轮未通过固定 Markdown 格式校验：";
-    private static final String GENERIC_RETRY_FEEDBACK = SAFE_RETRY_PREFIX + "请严格按本次给出的两张 Markdown 表、表头、列数和证据格式重新输出。";
+    private static final String COMPREHENSIVE_RETRY_BASELINE = "固定格式基线：必须返回精确两张 Markdown 表；标题、表头和分隔行必须与本次提示完全一致；"
+            + "第一张表每个非空数据行必须恰好四列；不得返回 JSON 或代码围栏；表格单元格中仅允许 <br>；"
+            + "第二张表必须为零数据行且不得有尾随内容；每个非空第一表行的证据对照必须先使用本次提示已提供的精确 documentId 坐标标记，"
+            + "再使用精确 unitId 坐标标记；两个坐标各出现一次且不得变形，第二个坐标后必须以分号接证据正文；不得输出任何占位符。";
     private static final Map<String, String> SAFE_MARKDOWN_RETRY_FEEDBACK = Map.ofEntries(
             Map.entry("Expected strict scan Markdown with two Markdown tables", SAFE_RETRY_PREFIX + "必须返回精确两张 Markdown 表。"),
             Map.entry("Expected strict scan Markdown with Markdown tables instead of JSON or code fences",
@@ -256,9 +259,11 @@ public final class FeatureAuditService {
     private static String withRetryFeedback(String prompt, AuditWorkClaim claim) {
         if (claim.attemptNumber() <= 1) return prompt;
         String previousFailureSummary = claim.previousFailureSummary();
-        String feedback = previousFailureSummary == null || previousFailureSummary.isBlank()
-                ? GENERIC_RETRY_FEEDBACK
-                : SAFE_MARKDOWN_RETRY_FEEDBACK.getOrDefault(previousFailureSummary, GENERIC_RETRY_FEEDBACK);
+        String feedback = COMPREHENSIVE_RETRY_BASELINE;
+        if (previousFailureSummary != null && !previousFailureSummary.isBlank()) {
+            String focus = SAFE_MARKDOWN_RETRY_FEEDBACK.get(previousFailureSummary);
+            if (focus != null) feedback += "\n本次重点：" + focus;
+        }
         return prompt + "\n重领纠正要求：" + feedback + "\n";
     }
 }
