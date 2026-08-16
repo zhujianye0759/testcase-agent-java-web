@@ -29,6 +29,8 @@
 ### Requirement: [REQ-BFA-003] 对功能清单和需求候选项执行双向交叉审查
 系统 SHALL 为每个功能清单和需求候选项给出恰好一个可追溯的终态结论，并 SHALL 保留全部支撑性的既有 KEE 文档/Chunk 证据引用。
 
+最终结论每行的机器 token SHALL 为独立分号段，至少遵循 `documentId=<exact>; unitId=<exact>; candidateIds=id1,id2; <reader evidence>`；`candidateIds` 不得与 `<br>` 或说明文字粘连。
+
 #### Scenario: 需求功能未出现在功能清单中
 - **WHEN** 一个有证据支持的需求候选项未匹配任何功能清单候选项
 - **THEN** 主审查记录 `功能清单遗漏`

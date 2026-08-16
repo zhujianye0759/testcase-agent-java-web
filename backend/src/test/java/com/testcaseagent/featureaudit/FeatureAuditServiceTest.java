@@ -93,7 +93,8 @@ class FeatureAuditServiceTest {
         verify(knowledgeAgentPort, times(4)).prepareReconciliationSession(any());
         verify(knowledgeAgentPort, times(4)).closePreparedSession();
         FeatureReconciliationInvocation finalInvocation = invocation.getAllValues().get(3);
-        assertThat(finalInvocation.prompt()).contains(functionId, requirementId, "documentId=function-doc", "unitId=requirement-unit")
+        assertThat(finalInvocation.prompt()).contains(functionId, requirementId, "documentId=function-doc", "unitId=requirement-unit",
+                "机器 token 必须是独立分号段", "candidateIds=id1,id2; <reader evidence>", "不得与 `<br>` 或说明文字粘连")
                 .doesNotContain("example-kb", "example-doc");
         inOrder(repository).verify(repository).persistScanAndCompleteAuditWork(eq(functionClaim), any(), any(), eq(true));
     }

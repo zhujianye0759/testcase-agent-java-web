@@ -131,8 +131,8 @@ public final class FeatureAuditService {
                 .append("只返回精确两张 Markdown 表。第一张必须为 `## 需求与功能清单审查发现`，表头必须为")
                 .append(" `| 序号 | 对象/功能点 | 问题分类 | 证据对照 |`；第二张必须为 `## 测试用例` 且零数据行。\n")
                 .append("问题分类仅可为：未发现问题、匹配、功能清单遗漏、需求未覆盖该功能点、冲突、拆分、合并、重复、证据不足。\n")
-                .append("每个候选项必须且只能出现在一条第一表结论的证据对照中，使用精确 `candidateIds=id1,id2` token；")
-                .append("每条结论还必须保留所覆盖候选项的精确 `documentId=` 与 `unitId=` 证据引用。\n候选项：\n");
+                .append("每行证据对照中的机器 token 必须是独立分号段：至少 `documentId=<exact>; unitId=<exact>; candidateIds=id1,id2; <reader evidence>`。")
+                .append("candidateIds 不得与 `<br>` 或说明文字粘连；每个候选项必须且只能出现在一条第一表结论中。\n候选项：\n");
         for (FeatureSourceCandidate candidate : candidates) {
             prompt.append("candidateId=").append(candidate.occurrenceId())
                     .append("; kind=").append(candidate.kind())
