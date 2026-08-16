@@ -157,7 +157,8 @@ class FeatureAuditServiceTest {
         ArgumentCaptor<FeatureReconciliationInvocation> invocations = ArgumentCaptor.forClass(FeatureReconciliationInvocation.class);
         verify(knowledgeAgentPort, times(3)).reconcileFeatures(invocations.capture());
         assertThat(invocations.getAllValues().get(0).prompt()).doesNotContain("上一轮未通过固定 Markdown 格式校验");
-        assertThat(invocations.getAllValues().get(1).prompt()).contains("上一轮未通过固定 Markdown 格式校验", "两张精确表标题");
+        assertThat(invocations.getAllValues().get(1).prompt()).contains("上一轮未通过固定 Markdown 格式校验",
+                "删除标题前的任何分析、说明、结论或引导语", "第一行必须精确为 ## 需求与功能清单审查发现");
         assertThat(invocations.getAllValues().get(2).prompt()).contains("上一轮未通过固定 Markdown 格式校验", "只允许使用 <br>");
     }
 
@@ -208,6 +209,44 @@ class FeatureAuditServiceTest {
                 "每个非空数据行必须恰好四列", "不得返回 JSON 或代码围栏", "仅允许 <br>", "第二张表必须为零数据行",
                 "documentId 坐标标记", "unitId 坐标标记", "各出现一次", "第二个坐标后必须以分号接证据正文", "不得返回 JSON 或代码围栏")
                 .doesNotContain("<exact>", "function-doc", "function-unit", "Expected strict scan Markdown", "Candidate evidence has duplicate or malformed coordinate tokens");
+    }
+
+    @Test
+    void tellsAReclaimedHeadingFailureToRemoveAllLeadingProseBeforeTheExactFirstHeading() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        KnowledgeAgentPort knowledgeAgentPort = mock(KnowledgeAgentPort.class);
+        FeatureAuditService service = new FeatureAuditService(repository, knowledgeAgentPort);
+        CreateGenerationTaskRequest request = request();
+        MaterialInventoryUnit unit = new MaterialInventoryUnit("function-doc", "FUNCTION_LIST", "function-unit", 0, 1,
+                "功能", 0, 2);
+        String leadingProse = "根据技能指令和材料单元内容分析：";
+        AuditWorkClaim firstAttempt = claim("heading-work", "function-doc", "function-unit", 1, "FEATURE_LIST_SCAN", 1);
+        AuditWorkClaim secondAttempt = claim("heading-work", "function-doc", "function-unit", 1, "FEATURE_LIST_SCAN", 2,
+                "Expected strict scan Markdown with heading ## 需求与功能清单审查发现");
+        GenerationTaskRepository.FeatureAuditCounts completeCounts =
+                new GenerationTaskRepository.FeatureAuditCounts(1, 1, 0, 1, 1, 1);
+
+        when(repository.hasCompleteMaterialInventory("task-1", request.requirementScope())).thenReturn(true);
+        when(repository.materialInventory("task-1")).thenReturn(List.of(unit));
+        when(repository.claimNextAuditWork(eq("task-1"), any(), any())).thenReturn(Optional.of(firstAttempt),
+                Optional.of(secondAttempt), Optional.empty());
+        when(repository.featureAuditCounts("task-1")).thenReturn(completeCounts);
+        when(knowledgeAgentPort.reconcileFeatures(any())).thenReturn(
+                result(leadingProse + "\n" + scanResponse("""
+                        | 1 | 订单查询 | 功能项 | documentId=function-doc; unitId=function-unit; 来源文字 |
+                        """)),
+                result(scanResponse("""
+                        | 1 | 订单查询 | 功能项 | documentId=function-doc; unitId=function-unit; 来源文字 |
+                        """)));
+
+        service.audit("task-1", request);
+
+        ArgumentCaptor<FeatureReconciliationInvocation> invocations = ArgumentCaptor.forClass(FeatureReconciliationInvocation.class);
+        verify(knowledgeAgentPort, times(2)).reconcileFeatures(invocations.capture());
+        String secondFeedback = retryFeedback(invocations.getAllValues().get(1).prompt());
+        assertThat(secondFeedback).contains("输出第一个字符必须是 #", "第一行必须精确为 ## 需求与功能清单审查发现",
+                "第一标题前不得有分析、说明、结论或引导语", "删除标题前的任何分析、说明、结论或引导语")
+                .doesNotContain(leadingProse, "function-doc", "function-unit", "Expected strict scan Markdown");
     }
 
     @Test

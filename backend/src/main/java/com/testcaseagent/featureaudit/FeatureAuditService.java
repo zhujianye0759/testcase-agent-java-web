@@ -24,7 +24,8 @@ import java.util.concurrent.CancellationException;
 public final class FeatureAuditService {
     private static final Duration AUDIT_LEASE = Duration.ofMinutes(5);
     private static final String SAFE_RETRY_PREFIX = "上一轮未通过固定 Markdown 格式校验：";
-    private static final String COMPREHENSIVE_RETRY_BASELINE = "固定格式基线：必须返回精确两张 Markdown 表；标题、表头和分隔行必须与本次提示完全一致；"
+    private static final String COMPREHENSIVE_RETRY_BASELINE = "固定格式基线：输出第一个字符必须是 #，第一行必须精确为 ## 需求与功能清单审查发现，"
+            + "第一标题前不得有分析、说明、结论或引导语；必须返回精确两张 Markdown 表；标题、表头和分隔行必须与本次提示完全一致；"
             + "第一张表每个非空数据行必须恰好四列；不得返回 JSON 或代码围栏；表格单元格中仅允许 <br>；"
             + "第二张表必须为零数据行且不得有尾随内容；每个非空第一表行的证据对照必须先使用本次提示已提供的精确 documentId 坐标标记，"
             + "再使用精确 unitId 坐标标记；两个坐标各出现一次且不得变形，第二个坐标后必须以分号接证据正文；不得输出任何占位符。";
@@ -35,7 +36,7 @@ public final class FeatureAuditService {
             Map.entry("Expected strict scan Markdown with only <br> HTML in table cells",
                     SAFE_RETRY_PREFIX + "表格单元格中只允许使用 <br>，不得输出其他 HTML 标签。"),
             Map.entry("Expected strict scan Markdown with heading ## 需求与功能清单审查发现",
-                    SAFE_RETRY_PREFIX + "必须使用本次给出的两张精确表标题。"),
+                    SAFE_RETRY_PREFIX + "删除标题前的任何分析、说明、结论或引导语；输出第一个字符必须是 #，第一行必须精确为 ## 需求与功能清单审查发现。"),
             Map.entry("Expected strict scan Markdown with exact table header",
                     SAFE_RETRY_PREFIX + "必须使用本次给出的精确表头。"),
             Map.entry("Expected strict scan Markdown with table separator",
