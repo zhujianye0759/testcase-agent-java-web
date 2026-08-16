@@ -97,6 +97,10 @@ class FeatureAuditServiceTest {
         FeatureReconciliationInvocation finalInvocation = invocation.getAllValues().get(3);
         assertThat(finalInvocation.prompt()).contains(functionId, requirementId, "documentId=function-doc", "unitId=requirement-unit",
                 "机器 token 必须是独立分号段", "groupAnchorId=<全量 candidateId>", "不得与 `<br>` 或说明文字粘连",
+                "默认每个目标 candidateId 都必须令 groupAnchorId 等于自身 candidateId",
+                "仅当对象/功能点和问题分类与既有 anchor 行逐字完全相同时，才允许复用更早的 groupAnchorId",
+                "只要任一不同，必须 self-anchor",
+                "不得因为同一 unitId、documentId、大模块或问题分类而批量复用 groupAnchorId",
                 "至少两个互异纯文本业务路径", "其他分类必须为单一纯文本且不得含 `<br>`", "不同层级值不是冲突", "同一层级或同一语义字段互斥", "归为证据不足")
                 .doesNotContain("example-kb", "example-doc");
         inOrder(repository).verify(repository).persistScanAndCompleteAuditWork(eq(functionClaim), any(), any(), eq(true));
@@ -162,7 +166,14 @@ class FeatureAuditServiceTest {
 
         ArgumentCaptor<FeatureReconciliationInvocation> invocations = ArgumentCaptor.forClass(FeatureReconciliationInvocation.class);
         verify(knowledgeAgentPort, times(3)).reconcileFeatures(invocations.capture());
-        assertThat(invocations.getAllValues().get(1).prompt()).contains("重试纠正要求：", "固定格式基线", "groupAnchorId");
+        assertThat(invocations.getAllValues().get(1).prompt()).contains(
+                "重试纠正要求：",
+                "固定格式基线",
+                "groupAnchorId",
+                "默认每个目标 candidateId 都必须令 groupAnchorId 等于自身 candidateId",
+                "仅当对象/功能点和问题分类与既有 anchor 行逐字完全相同时，才允许复用更早的 groupAnchorId",
+                "只要任一不同，必须 self-anchor",
+                "不得因为同一 unitId、documentId、大模块或问题分类而批量复用 groupAnchorId");
         verify(repository).persistFeatureReviewConclusions(eq("task-1"), any());
     }
 

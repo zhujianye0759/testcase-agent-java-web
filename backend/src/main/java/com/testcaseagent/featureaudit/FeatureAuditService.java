@@ -81,7 +81,9 @@ public final class FeatureAuditService {
             Map.entry("candidateIds= token", SAFE_RETRY_PREFIX + "每行证据对照必须有一个独立的 candidateIds= 机器 token。"),
             Map.entry("known terminal conclusion type", SAFE_RETRY_PREFIX + "问题分类只能使用本次提示列出的中文分类。"),
             Map.entry("groupAnchorId", SAFE_RETRY_PREFIX + "每行必须有一个独立且有效的 groupAnchorId= 机器 token。"),
-            Map.entry("Every anchored group", SAFE_RETRY_PREFIX + "同一 groupAnchorId 的问题分类和对象/功能点必须完全一致。"));
+            Map.entry("Every anchored group", SAFE_RETRY_PREFIX + "默认每个目标 candidateId 都必须令 groupAnchorId 等于自身 candidateId；"
+                    + "仅当对象/功能点和问题分类与既有 anchor 行逐字完全相同时，才允许复用更早的 groupAnchorId；"
+                    + "只要任一不同，必须 self-anchor；不得因为同一 unitId、documentId、大模块或问题分类而批量复用 groupAnchorId。"));
 
     private final GenerationTaskRepository repository;
     private final KnowledgeAgentPort knowledgeAgentPort;
@@ -218,6 +220,9 @@ public final class FeatureAuditService {
         StringBuilder prompt = new StringBuilder("仅基于以下已持久化的正式材料候选项进行双向核对；不得使用示例、不得引入材料外事实。\n")
                 .append("全量候选项仅作比较上下文；本页只对下列目标候选输出结论。每个目标候选必须且只能占一条第一表结论，")
                 .append("candidateIds 必须只包含该目标候选自身。跨页的同一业务结论必须使用同一个 groupAnchorId；")
+                .append("默认每个目标 candidateId 都必须令 groupAnchorId 等于自身 candidateId；")
+                .append("仅当对象/功能点和问题分类与既有 anchor 行逐字完全相同时，才允许复用更早的 groupAnchorId；")
+                .append("只要任一不同，必须 self-anchor；不得因为同一 unitId、documentId、大模块或问题分类而批量复用 groupAnchorId。")
                 .append("同组必须按全量候选项给出的顺序选择最早的 candidateId 作为 groupAnchorId，且该 anchor 自身行必须令 groupAnchorId 等于自身 candidateId；")
                 .append("同一 groupAnchorId 的问题分类和对象/功能点业务路径必须逐字完全一致。\n")
                 .append("只返回精确两张 Markdown 表。第一张必须为 `## 需求与功能清单审查发现`，表头必须为")
