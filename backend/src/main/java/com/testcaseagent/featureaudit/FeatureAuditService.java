@@ -132,7 +132,8 @@ public final class FeatureAuditService {
                 .append(" `| 序号 | 对象/功能点 | 问题分类 | 证据对照 |`；第二张必须为 `## 测试用例` 且零数据行。\n")
                 .append("问题分类仅可为：未发现问题、匹配、功能清单遗漏、需求未覆盖该功能点、冲突、拆分、合并、重复、证据不足。\n")
                 .append("每行证据对照中的机器 token 必须是独立分号段：至少 `documentId=<exact>; unitId=<exact>; candidateIds=id1,id2; <reader evidence>`。")
-                .append("candidateIds 不得与 `<br>` 或说明文字粘连；每个候选项必须且只能出现在一条第一表结论中。\n候选项：\n");
+                .append("candidateIds 不得与 `<br>` 或说明文字粘连。分类为“拆分”时，对象/功能点必须以 literal `<br>` 分隔至少两个互异纯文本业务路径；其他分类必须为单一纯文本且不得含 `<br>`。")
+                .append("每个候选项必须且只能出现在一条第一表结论中。\n候选项：\n");
         for (FeatureSourceCandidate candidate : candidates) {
             prompt.append("candidateId=").append(candidate.occurrenceId())
                     .append("; kind=").append(candidate.kind())

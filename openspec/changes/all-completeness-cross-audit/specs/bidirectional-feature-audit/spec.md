@@ -31,6 +31,8 @@
 
 最终结论每行的机器 token SHALL 为独立分号段，至少遵循 `documentId=<exact>; unitId=<exact>; candidateIds=id1,id2; <reader evidence>`；`candidateIds` 不得与 `<br>` 或说明文字粘连。
 
+分类为“拆分”时，对象/功能点 SHALL 以 literal `<br>` 分隔至少两个互异纯文本业务路径；其他分类 SHALL 为单一纯文本业务路径且不得含 `<br>`。
+
 #### Scenario: 需求功能未出现在功能清单中
 - **WHEN** 一个有证据支持的需求候选项未匹配任何功能清单候选项
 - **THEN** 主审查记录 `功能清单遗漏`
