@@ -84,7 +84,7 @@
 - **THEN** 系统不得将原始失败文本作为模型上下文
 
 ### Requirement: [REQ-BFA-007] 有界最终核对保持全局语义并原子归并
-系统 SHALL 将最终双向核对拆为每页最多 16 个目标候选的严格 Markdown 响应，但每一页 SHALL 同时接收全量稳定候选作为比较上下文。每页第一表 SHALL 令每个目标候选恰好占一行，`candidateIds` SHALL 只含该目标自身，并 SHALL 有一个独立的 `groupAnchorId=<candidateId>` 内部 token。一个语义组 SHALL 选择全量候选顺序中最早的 candidateId 作为 anchor，anchor 自身 SHALL 自指；同一 anchor 的问题分类和对象/功能点路径 SHALL 逐字完全一致。分页阶段 SHALL 使用与冻结层完全相同的业务路径身份（NFKC、首尾 strip、连续空白折叠为一个空格并转为小写）：同一归一化路径 SHALL 映射到同一最早 anchor 和同一分类，且单个“拆分”结论内的归一化路径 SHALL 互异。Java SHALL 在既有严格 parser 验证每页目标集合后验证 anchor、全局 union 和每个候选坐标，并按全量稳定候选顺序归并最终结论的序号、candidateIds 和证据。
+系统 SHALL 将最终双向核对拆为每页最多 16 个目标候选的严格 Markdown 响应，但每一页 SHALL 同时接收全量稳定候选作为比较上下文。每页第一表 SHALL 令每个目标候选恰好占一行，`candidateIds` SHALL 只含该目标自身，并 SHALL 有一个独立的 `groupAnchorId=<candidateId>` 内部 token。一个语义组 SHALL 选择全量候选顺序中最早的 candidateId 作为 anchor，anchor 自身 SHALL 自指；同一 anchor 的问题分类和对象/功能点路径 SHALL 逐字完全一致。分页阶段 SHALL 使用与冻结层完全相同的业务路径身份（NFKC、首尾 strip、连续空白折叠为一个空格并转为小写）：同一归一化路径 SHALL 映射到同一最早 anchor 和同一分类，且单个“拆分”结论内的归一化路径 SHALL 互异。分页阶段在持久化前 SHALL 复用冻结层完整路径结构校验：非拆分不得含 literal `<br>`；拆分必须由 literal `<br>` 分隔至少两项，每项非空纯文本且归一化互异。Java SHALL 在既有严格 parser 验证每页目标集合后验证 anchor、全局 union 和每个候选坐标，并按全量稳定候选顺序归并最终结论的序号、candidateIds 和证据。
 
 每页最多 SHALL 尝试三次；严格 Markdown、目标覆盖、anchor、归一化路径或组一致性错误仅可追加固定且不含原始异常/URL/路径/凭据/机器标识值的全面反馈和白名单重点。任何一页耗尽、全局归并失败或坐标缺失 SHALL 失败关闭，且在所有页面和全局验证成功前 SHALL NOT 持久化任何最终结论。该页化 SHALL NOT 将候选隔离为独立语义判断，也 SHALL NOT 放宽既有严格 parser、遗漏/冲突/重复/拆分/合并的全局处置或冻结门禁。
 

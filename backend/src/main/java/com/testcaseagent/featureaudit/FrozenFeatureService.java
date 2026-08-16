@@ -136,36 +136,7 @@ public final class FrozenFeatureService {
     }
 
     private static List<String> featurePaths(FeatureReviewConclusion conclusion) {
-        String explanation = conclusion.explanation();
-        if (conclusion.type() != FeatureReviewConclusionType.SPLIT) {
-            if (explanation.contains("<br>")) {
-                throw new IllegalArgumentException("Only SPLIT conclusions may contain multiple business paths");
-            }
-            return List.of(requiredPath(explanation));
-        }
-        String[] rawPaths = explanation.split("<br>", -1);
-        if (rawPaths.length < 2) {
-            throw new IllegalArgumentException("SPLIT conclusions require explicit <br> separated business paths");
-        }
-        List<String> paths = new ArrayList<>(rawPaths.length);
-        Set<String> normalized = new LinkedHashSet<>();
-        for (String rawPath : rawPaths) {
-            String path = requiredPath(rawPath);
-            if (!normalized.add(BusinessPathNormalizer.normalize(path))) {
-                throw new IllegalArgumentException("SPLIT conclusions require distinct business paths");
-            }
-            paths.add(path);
-        }
-        return List.copyOf(paths);
-    }
-
-    private static String requiredPath(String value) {
-        if (value == null || value.isBlank()) throw new IllegalArgumentException("Business path must not be blank");
-        String path = value.strip();
-        if (path.indexOf('<') >= 0 || path.indexOf('>') >= 0) {
-            throw new IllegalArgumentException("Business paths must be plain text");
-        }
-        return path;
+        return BusinessPathNormalizer.parseAndValidate(conclusion.type(), conclusion.explanation());
     }
 
     private static String stableId(List<String> sortedSourceCandidateIds, String normalizedPath) {

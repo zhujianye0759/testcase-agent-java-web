@@ -222,8 +222,38 @@ class FeatureAuditServiceTest {
         ArgumentCaptor<FeatureReconciliationInvocation> invocations = ArgumentCaptor.forClass(FeatureReconciliationInvocation.class);
         verify(knowledgeAgentPort, times(3)).reconcileFeatures(invocations.capture());
         assertThat(invocations.getAllValues().get(1).prompt()).contains(
-                "重试纠正要求：", "拆分结论内归一化后的业务路径必须互异");
+                "重试纠正要求：", "业务路径结构必须符合拆分和非拆分结论的固定要求");
         verify(repository, never()).persistFeatureReviewConclusions(any(), any());
+    }
+
+    @Test
+    void rejectsSplitWithOneBusinessPathBeforePersistence() {
+        assertRejectedFinalReconciliation(
+                List.of(candidate(1)),
+                scanResponse("""
+                        | 1 | 订单查询 | 拆分 | candidateIds=candidate-01; groupAnchorId=candidate-01; documentId=requirement-doc; unitId=requirement-unit |
+                        """),
+                "业务路径结构必须符合拆分和非拆分结论的固定要求");
+    }
+
+    @Test
+    void rejectsSplitWithBlankBusinessPathBeforePersistence() {
+        assertRejectedFinalReconciliation(
+                List.of(candidate(1)),
+                scanResponse("""
+                        | 1 | 订单查询<br>  | 拆分 | candidateIds=candidate-01; groupAnchorId=candidate-01; documentId=requirement-doc; unitId=requirement-unit |
+                        """),
+                "业务路径结构必须符合拆分和非拆分结论的固定要求");
+    }
+
+    @Test
+    void rejectsNonSplitPathContainingBreakBeforePersistence() {
+        assertRejectedFinalReconciliation(
+                List.of(candidate(1)),
+                scanResponse("""
+                        | 1 | 订单查询<br>提交订单 | 匹配 | candidateIds=candidate-01; groupAnchorId=candidate-01; documentId=requirement-doc; unitId=requirement-unit |
+                        """),
+                "业务路径结构必须符合拆分和非拆分结论的固定要求");
     }
 
     @Test
@@ -772,6 +802,11 @@ class FeatureAuditServiceTest {
     }
 
     private static void assertRejectedFinalReconciliation(List<FeatureSourceCandidate> candidates, String invalidResponse) {
+        assertRejectedFinalReconciliation(candidates, invalidResponse, null);
+    }
+
+    private static void assertRejectedFinalReconciliation(
+            List<FeatureSourceCandidate> candidates, String invalidResponse, String expectedRetryFeedback) {
         GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
         KnowledgeAgentPort knowledgeAgentPort = mock(KnowledgeAgentPort.class);
         FeatureAuditService service = new FeatureAuditService(repository, knowledgeAgentPort);
@@ -787,7 +822,13 @@ class FeatureAuditServiceTest {
         assertThatThrownBy(() -> service.audit("task-1", request))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("Final reconciliation page did not meet the strict contract after three attempts");
-        verify(knowledgeAgentPort, times(3)).reconcileFeatures(any());
+        if (expectedRetryFeedback == null) {
+            verify(knowledgeAgentPort, times(3)).reconcileFeatures(any());
+        } else {
+            ArgumentCaptor<FeatureReconciliationInvocation> invocations = ArgumentCaptor.forClass(FeatureReconciliationInvocation.class);
+            verify(knowledgeAgentPort, times(3)).reconcileFeatures(invocations.capture());
+            assertThat(invocations.getAllValues().get(1).prompt()).contains("重试纠正要求：", expectedRetryFeedback);
+        }
         verify(repository, never()).persistFeatureReviewConclusions(any(), any());
     }
 
