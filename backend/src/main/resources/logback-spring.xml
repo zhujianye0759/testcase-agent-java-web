@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/base.xml"/>
+
+    <appender name="WORKFLOW_DIAGNOSTICS" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${TESTCASE_DIAGNOSTIC_LOG_FILE:-./var/logs/testcase-agent-diagnostics.log}</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${TESTCASE_DIAGNOSTIC_LOG_FILE:-./var/logs/testcase-agent-diagnostics}.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>${TESTCASE_DIAGNOSTIC_LOG_MAX_FILE_SIZE:-100MB}</maxFileSize>
+            <maxHistory>${TESTCASE_DIAGNOSTIC_LOG_MAX_HISTORY:-30}</maxHistory>
+            <totalSizeCap>${TESTCASE_DIAGNOSTIC_LOG_TOTAL_SIZE_CAP:-2GB}</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <charset>UTF-8</charset>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level %msg%n</pattern>
+        </encoder>
+        <immediateFlush>true</immediateFlush>
+    </appender>
+
+    <logger name="workflow.diagnostics" level="INFO" additivity="false">
+        <appender-ref ref="WORKFLOW_DIAGNOSTICS"/>
+    </logger>
+</configuration>

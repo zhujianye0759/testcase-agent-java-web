@@ -46,7 +46,9 @@ final class BusinessPathNormalizer {
     private static String requiredPath(String value) {
         if (value == null || value.isBlank()) throw new IllegalArgumentException("Business path must not be blank");
         String path = value.strip();
-        if (path.indexOf('<') >= 0 || path.indexOf('>') >= 0) {
+        // '>' is a readable hierarchy separator emitted by the configured Skill. It cannot begin HTML markup;
+        // a '<' remains forbidden so rendered markup and unsafe tags cannot become frozen business paths.
+        if (path.indexOf('<') >= 0) {
             throw new IllegalArgumentException("Business paths must be plain text");
         }
         return path;

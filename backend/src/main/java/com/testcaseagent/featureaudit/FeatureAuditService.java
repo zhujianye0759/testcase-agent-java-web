@@ -1,5 +1,6 @@
 package com.testcaseagent.featureaudit;
 
+import com.testcaseagent.diagnostics.WorkflowDiagnostics;
 import com.testcaseagent.knowledgeagent.FeatureReconciliationInvocation;
 import com.testcaseagent.knowledgeagent.KnowledgeAgentPort;
 import com.testcaseagent.knowledgeagent.KnowledgeAgentSkillPreparationException;
@@ -30,7 +31,7 @@ import java.util.concurrent.CancellationException;
  */
 public final class FeatureAuditService {
     private static final Duration AUDIT_LEASE = Duration.ofMinutes(5);
-    private static final int RECONCILIATION_TARGET_PAGE_SIZE = 16;
+    private static final int RECONCILIATION_TARGET_PAGE_SIZE = 8;
     private static final int RECONCILIATION_PAGE_ATTEMPTS = 3;
     private static final String SAFE_RETRY_PREFIX = "上一轮未通过固定 Markdown 格式校验：";
     private static final String NORMALIZED_PATH_CONFLICT = "Each normalized business path must retain one groupAnchorId and conclusion type";
@@ -46,6 +47,12 @@ public final class FeatureAuditService {
     private static final String BUSINESS_PATH_CONTRACT_RETRY_FEEDBACK = SAFE_RETRY_PREFIX
             + "业务路径结构必须符合拆分和非拆分结论的固定要求：非拆分不得含 <br>；拆分必须使用 literal <br> 分隔至少两项；"
             + "每项必须为非空纯文本，且归一化后必须互异。";
+    private static final String NON_SPLIT_CHAPTER_NUMBER_RETRY_FEEDBACK = SAFE_RETRY_PREFIX
+            + "对象/功能点列只能保留单一业务功能名。章节号、条款号和目录编号只能写在证据对照列，绝不能写入对象/功能点；"
+            + "非拆分结论必须删除且不得复制证据中 <br> 后的章节号或条款号，不能在业务功能名后追加 <br> 加编号。";
+    private static final String REPRESENTATIVE_BINDING_RETRY_FEEDBACK = SAFE_RETRY_PREFIX
+            + "本页每个代表目标的 candidateId、documentId 和 unitId 必须逐字复制该代表目标绑定行；"
+            + "禁止从全量候选上下文中同名或同路径的邻居复制 documentId 或 unitId。";
     private static final String COMPREHENSIVE_RETRY_BASELINE = "固定格式基线：输出第一个字符必须是 #，第一行必须精确为 ## 需求与功能清单审查发现，"
             + "第一标题前不得有分析、说明、结论或引导语；必须返回精确两张 Markdown 表；标题、表头和分隔行必须与本次提示完全一致；"
             + "第一张表每个非空数据行必须恰好四列；不得返回 JSON 或代码围栏；表格单元格中仅允许 <br>；"
@@ -187,10 +194,12 @@ public final class FeatureAuditService {
         Set<String> ids = candidateIds(candidates);
         List<FeatureReviewConclusion> pageConclusions = new ArrayList<>();
         Map<String, FeatureReviewConclusion> acceptedByCandidate = new LinkedHashMap<>();
+        int totalPages = (candidates.size() + RECONCILIATION_TARGET_PAGE_SIZE - 1) / RECONCILIATION_TARGET_PAGE_SIZE;
         for (int start = 0; start < candidates.size(); start += RECONCILIATION_TARGET_PAGE_SIZE) {
             List<FeatureSourceCandidate> targets = candidates.subList(start,
                     Math.min(start + RECONCILIATION_TARGET_PAGE_SIZE, candidates.size()));
-            List<FeatureReviewConclusion> accepted = reconcilePage(request, candidates, ids, targets, acceptedByCandidate);
+            List<FeatureReviewConclusion> accepted = reconcilePage(taskId, request, candidates, ids, targets, acceptedByCandidate,
+                    start / RECONCILIATION_TARGET_PAGE_SIZE + 1, totalPages);
             for (FeatureReviewConclusion conclusion : accepted) {
                 acceptedByCandidate.put(conclusion.candidateIds().get(0), conclusion);
             }
@@ -202,21 +211,257 @@ public final class FeatureAuditService {
     }
 
     private List<FeatureReviewConclusion> reconcilePage(
+            String taskId,
             CreateGenerationTaskRequest request, List<FeatureSourceCandidate> candidates, Set<String> allCandidateIds,
-            List<FeatureSourceCandidate> targets, Map<String, FeatureReviewConclusion> acceptedByCandidate) {
-        Set<String> targetIds = candidateIds(targets);
-        String prompt = reconciliationPrompt(candidates, targets);
+            List<FeatureSourceCandidate> targets, Map<String, FeatureReviewConclusion> acceptedByCandidate,
+            int pageNumber, int totalPages) {
+        List<TargetGroup> groups = targetGroups(targets, acceptedByCandidate);
+        List<FeatureSourceCandidate> representatives = groups.stream().filter(group -> group.acceptedConclusion() == null)
+                .map(TargetGroup::representative).toList();
+        if (representatives.isEmpty()) {
+            List<FeatureReviewConclusion> projected = projectGroupedConclusions(groups, Map.of(), candidates, targets, allCandidateIds);
+            validatePageConclusions(projected, candidates, targets, allCandidateIds, acceptedByCandidate);
+            return projected;
+        }
+        try {
+            return reconcileRepresentatives(taskId, request, candidates, allCandidateIds, targets, acceptedByCandidate,
+                    groups, representatives, pageNumber, totalPages, "");
+        } catch (FinalReconciliationPageException failure) {
+            if (!failure.approvedIsolatedRecheckCategoriesOnly()) {
+                throw failure;
+            }
+            return reconcileRepresentativesIndividually(taskId, request, candidates, allCandidateIds, targets,
+                    acceptedByCandidate, groups, pageNumber, totalPages);
+        }
+    }
+
+    /**
+     * Uses the normal bounded page request and keeps its result entirely unaccepted until all requested
+     * representatives pass the existing parser, binding and cross-page invariants. [Req-ID]: REQ-BFA-007
+     */
+    private List<FeatureReviewConclusion> reconcileRepresentatives(
+            String taskId, CreateGenerationTaskRequest request, List<FeatureSourceCandidate> candidates,
+            Set<String> allCandidateIds, List<FeatureSourceCandidate> targets,
+            Map<String, FeatureReviewConclusion> acceptedByCandidate, List<TargetGroup> groups,
+            List<FeatureSourceCandidate> representatives, int pageNumber, int totalPages, String eventPrefix) {
+        String prompt = reconciliationPrompt(candidates, representatives, acceptedByCandidate, allCandidateIds);
+        String lastContractFailure = null;
+        boolean approvedIsolatedRecheckCategoriesOnly = true;
         for (int attempt = 1; attempt <= RECONCILIATION_PAGE_ATTEMPTS; attempt++) {
+            List<ExplicitBinding> bindings = List.of();
+            List<FeatureReviewConclusion> parsed = List.of();
+            List<FeatureReviewConclusion> projected = List.of();
+            String markdown = null;
             try {
-                List<FeatureReviewConclusion> parsed = conclusionParser.parse(reconcile(request, prompt), targetIds);
-                validatePageConclusions(parsed, candidates, targets, allCandidateIds, acceptedByCandidate);
-                return parsed;
+                WorkflowDiagnostics.reconciliation(taskId, pageNumber, totalPages, attempt, eventPrefix + "request", prompt);
+                markdown = reconcile(request, prompt);
+                WorkflowDiagnostics.reconciliation(taskId, pageNumber, totalPages, attempt, eventPrefix + "response", markdown);
+                parsed = conclusionParser.parse(markdown, candidateIds(representatives));
+                bindings = conflictingAcceptedBindings(parsed, acceptedByCandidate, allCandidateIds);
+                Map<String, FeatureReviewConclusion> byRepresentative = conclusionsByCandidate(parsed);
+                projected = projectGroupedConclusions(
+                        groups, byRepresentative, candidates, targets, allCandidateIds);
+                validatePageConclusions(projected, candidates, targets, allCandidateIds, acceptedByCandidate);
+                return projected;
             } catch (IllegalArgumentException exception) {
+                lastContractFailure = exception.getMessage();
+                if (!FinalReconciliationPageException.Category.isApprovedIsolatedRecheckCategory(
+                        FinalReconciliationPageException.Category.fromFixedContractFailure(lastContractFailure))) {
+                    approvedIsolatedRecheckCategoriesOnly = false;
+                }
+                WorkflowDiagnostics.reconciliation(taskId, pageNumber, totalPages, attempt, eventPrefix + "rejected",
+                        "failure=" + exception.getMessage() + "\nmodelMarkdown:\n" + markdown);
                 if (attempt == RECONCILIATION_PAGE_ATTEMPTS) break;
-                prompt = prompt + "\n重试纠正要求：" + finalReconciliationRetryFeedback(exception.getMessage()) + "\n";
+                prompt = prompt + "\n重试纠正要求：" + finalReconciliationRetryFeedback(exception.getMessage())
+                        + explicitBindingInstructions(bindings) + currentBatchConflictInstructions(parsed, exception.getMessage(), candidates)
+                        + misusedAcceptedAnchorInstructions(projected, exception.getMessage(), acceptedByCandidate, allCandidateIds)
+                        + "\n";
+            } catch (RuntimeException exception) {
+                WorkflowDiagnostics.reconciliation(taskId, pageNumber, totalPages, attempt, eventPrefix + "failed",
+                        "failure=" + exception.getMessage() + "\nmodelMarkdown:\n" + markdown);
+                throw exception;
             }
         }
-        throw new IllegalStateException("Final reconciliation page did not meet the strict contract after three attempts");
+        throw FinalReconciliationPageException.exhausted(
+                pageNumber, totalPages, RECONCILIATION_PAGE_ATTEMPTS, lastContractFailure,
+                approvedIsolatedRecheckCategoriesOnly);
+    }
+
+    /**
+     * Rechecks only a batch exhausted exclusively by approved categories. Each representative gets a fresh isolated
+     * request; no partial batch result is persisted or reused, and any singleton failure closes the entire batch.
+     * [Req-ID]: REQ-BFA-007
+     */
+    private List<FeatureReviewConclusion> reconcileRepresentativesIndividually(
+            String taskId, CreateGenerationTaskRequest request, List<FeatureSourceCandidate> candidates,
+            Set<String> allCandidateIds, List<FeatureSourceCandidate> targets,
+            Map<String, FeatureReviewConclusion> acceptedByCandidate, List<TargetGroup> groups,
+            int pageNumber, int totalPages) {
+        Map<String, FeatureReviewConclusion> byRepresentative = new LinkedHashMap<>();
+        int representativeNumber = 0;
+        int representativeCount = (int) groups.stream().filter(group -> group.acceptedConclusion() == null).count();
+        for (TargetGroup group : groups) {
+            if (group.acceptedConclusion() != null) continue;
+            representativeNumber++;
+            FeatureSourceCandidate representative = group.representative();
+            TargetGroup singletonGroup = new TargetGroup(group.normalizedPath(), List.of(representative), null);
+            try {
+                List<FeatureReviewConclusion> singleton = reconcileRepresentatives(taskId, request, candidates,
+                        allCandidateIds, List.of(representative), acceptedByCandidate, List.of(singletonGroup),
+                        List.of(representative), pageNumber, totalPages, "compensation-");
+                byRepresentative.put(representative.occurrenceId(), singleton.get(0));
+            } catch (FinalReconciliationPageException failure) {
+                throw FinalReconciliationPageException.singletonExhausted(pageNumber, totalPages, representativeNumber,
+                        representativeCount, failure.attempts(), failure.category());
+            }
+        }
+        List<FeatureReviewConclusion> projected = projectGroupedConclusions(groups, byRepresentative, candidates, targets,
+                allCandidateIds);
+        validatePageConclusions(projected, candidates, targets, allCandidateIds, acceptedByCandidate);
+        return projected;
+    }
+
+    /**
+     * Uses a model conclusion once per stable, normalized source feature path and deterministically rebinds it to every
+     * same-path material occurrence. This prevents a model omitting a duplicate occurrence from weakening the exact
+     * candidate coverage gate. [Req-ID]: REQ-BFA-003, REQ-BFA-007
+     */
+    private static List<TargetGroup> targetGroups(
+            List<FeatureSourceCandidate> targets, Map<String, FeatureReviewConclusion> acceptedByCandidate) {
+        Map<String, List<FeatureSourceCandidate>> membersByPath = new LinkedHashMap<>();
+        for (FeatureSourceCandidate target : targets) {
+            String normalizedPath = target.featureText() == null || target.featureText().isBlank()
+                    ? "\u0000" + target.occurrenceId() : BusinessPathNormalizer.normalize(target.featureText());
+            membersByPath.computeIfAbsent(normalizedPath, ignored -> new ArrayList<>()).add(target);
+        }
+        List<TargetGroup> groups = new ArrayList<>();
+        for (Map.Entry<String, List<FeatureSourceCandidate>> entry : membersByPath.entrySet()) {
+            FeatureReviewConclusion accepted = acceptedConclusionForPath(entry.getKey(), acceptedByCandidate);
+            groups.add(new TargetGroup(entry.getKey(), List.copyOf(entry.getValue()), accepted));
+        }
+        return List.copyOf(groups);
+    }
+
+    private static FeatureReviewConclusion acceptedConclusionForPath(
+            String normalizedPath, Map<String, FeatureReviewConclusion> acceptedByCandidate) {
+        for (FeatureReviewConclusion conclusion : acceptedByCandidate.values()) {
+            if (retainsSingleGroupedPath(conclusion, normalizedPath)) return conclusion;
+        }
+        return null;
+    }
+
+    private static Map<String, FeatureReviewConclusion> conclusionsByCandidate(List<FeatureReviewConclusion> conclusions) {
+        Map<String, FeatureReviewConclusion> byCandidate = new LinkedHashMap<>();
+        for (FeatureReviewConclusion conclusion : conclusions) {
+            if (conclusion.candidateIds().size() != 1
+                    || byCandidate.put(conclusion.candidateIds().get(0), conclusion) != null) {
+                throw new IllegalArgumentException("Each page representative candidateId must have exactly one conclusion");
+            }
+        }
+        return Map.copyOf(byCandidate);
+    }
+
+    private static List<FeatureReviewConclusion> projectGroupedConclusions(
+            List<TargetGroup> groups, Map<String, FeatureReviewConclusion> byRepresentative,
+            List<FeatureSourceCandidate> allCandidates, List<FeatureSourceCandidate> targets, Set<String> allCandidateIds) {
+        Map<String, FeatureSourceCandidate> candidateById = new HashMap<>();
+        for (FeatureSourceCandidate candidate : allCandidates) candidateById.put(candidate.occurrenceId(), candidate);
+        Map<String, FeatureReviewConclusion> projectedByCandidate = new LinkedHashMap<>();
+        for (TargetGroup group : groups) {
+            FeatureReviewConclusion source = group.acceptedConclusion() == null
+                    ? byRepresentative.get(group.representative().occurrenceId()) : group.acceptedConclusion();
+            if (source == null) throw new IllegalArgumentException("Each page representative candidateId must have exactly one conclusion");
+            if ((group.members().size() > 1 || group.acceptedConclusion() != null)
+                    && !retainsSingleGroupedPath(source, group.normalizedPath())) {
+                throw new IllegalArgumentException("Each grouped representative must retain its normalized business path");
+            }
+            for (FeatureSourceCandidate member : group.members()) {
+                if (projectedByCandidate.put(member.occurrenceId(), source) != null) {
+                    throw new IllegalArgumentException("Each page target candidateId must have exactly one conclusion");
+                }
+            }
+        }
+        List<FeatureReviewConclusion> projected = new ArrayList<>();
+        int sequence = 1;
+        for (FeatureSourceCandidate target : targets) {
+            FeatureReviewConclusion source = projectedByCandidate.get(target.occurrenceId());
+            if (source == null) throw new IllegalArgumentException("Each page target candidateId must have exactly one conclusion");
+            FeatureSourceCandidate sourceCandidate = candidateById.get(source.candidateIds().get(0));
+            String evidence = rebindEvidence(source, sourceCandidate, target, allCandidateIds);
+            projected.add(new FeatureReviewConclusion(conclusionId(sequence, source.type(), source.explanation(), evidence,
+                    List.of(target.occurrenceId())), sequence, source.type(), source.explanation(), evidence,
+                    List.of(target.occurrenceId())));
+            sequence++;
+        }
+        return List.copyOf(projected);
+    }
+
+    private static boolean retainsSingleGroupedPath(FeatureReviewConclusion conclusion, String normalizedPath) {
+        return conclusion.type() != FeatureReviewConclusionType.SPLIT
+                && normalizedPath.equals(BusinessPathNormalizer.normalize(conclusion.explanation()));
+    }
+
+    private static String rebindEvidence(
+            FeatureReviewConclusion source, FeatureSourceCandidate sourceCandidate, FeatureSourceCandidate target,
+            Set<String> allCandidateIds) {
+        if (sourceCandidate == null) {
+            throw new IllegalArgumentException("Each page representative candidateId must reference a retained candidate");
+        }
+        Map<String, String> machineTokens = new HashMap<>();
+        for (String rawToken : source.evidenceText().split(";", -1)) {
+            String token = rawToken.trim();
+            int separator = token.indexOf('=');
+            String name = separator > 0 && separator == token.lastIndexOf('=') ? token.substring(0, separator) : "";
+            if (isMachineBindingToken(name)) {
+                String value = token.substring(separator + 1);
+                if (value.isBlank() || machineTokens.put(name, value) != null) {
+                    throw new IllegalArgumentException("Grouped representative evidence must contain one exact binding token");
+                }
+            }
+        }
+        if (!sourceCandidate.documentId().equals(machineTokens.get("documentId"))
+                || !sourceCandidate.unitId().equals(machineTokens.get("unitId"))) {
+            throw new IllegalArgumentException("Grouped representative evidence must bind its exact documentId and unitId");
+        }
+        String boundCandidateId = machineTokens.get("candidateIds");
+        if (boundCandidateId == null || !source.candidateIds().equals(List.of(boundCandidateId))) {
+            throw new IllegalArgumentException("Grouped representative evidence must bind its exact candidateId");
+        }
+        String anchor = machineTokens.get("groupAnchorId");
+        if (anchor == null || !allCandidateIds.contains(anchor)) {
+            throw new IllegalArgumentException("Each groupAnchorId must reference a retained global candidate");
+        }
+        String evidence = "documentId=" + target.documentId() + "; unitId=" + target.unitId() + "; candidateIds="
+                + target.occurrenceId() + "; groupAnchorId=" + anchor;
+        List<String> readerEvidence = readerEvidence(target);
+        return readerEvidence.isEmpty() ? evidence : evidence + "; " + String.join("; ", readerEvidence);
+    }
+
+    /**
+     * Retains reader-facing evidence from the member's persisted candidate only. A representative model response may
+     * establish its classification, but it must never relabel that representative's wording as another document/unit.
+     */
+    private static List<String> readerEvidence(FeatureSourceCandidate candidate) {
+        List<String> readerEvidence = new ArrayList<>();
+        for (String rawToken : candidate.evidenceText().split(";", -1)) {
+            String token = rawToken.trim();
+            int separator = token.indexOf('=');
+            String name = separator > 0 && separator == token.lastIndexOf('=') ? token.substring(0, separator) : "";
+            if (!token.isBlank() && !isMachineBindingToken(name)) {
+                readerEvidence.add(token);
+            }
+        }
+        return List.copyOf(readerEvidence);
+    }
+
+    private static boolean isMachineBindingToken(String name) {
+        return "documentId".equals(name) || "unitId".equals(name) || "candidateIds".equals(name)
+                || "groupAnchorId".equals(name);
+    }
+
+    private record TargetGroup(
+            String normalizedPath, List<FeatureSourceCandidate> members, FeatureReviewConclusion acceptedConclusion) {
+        FeatureSourceCandidate representative() { return members.get(0); }
     }
 
     private String reconcile(CreateGenerationTaskRequest request, String prompt) {
@@ -230,10 +475,15 @@ public final class FeatureAuditService {
         }
     }
 
-    private static String reconciliationPrompt(List<FeatureSourceCandidate> candidates, List<FeatureSourceCandidate> targets) {
+    private static String reconciliationPrompt(
+            List<FeatureSourceCandidate> candidates, List<FeatureSourceCandidate> targets,
+            Map<String, FeatureReviewConclusion> acceptedByCandidate, Set<String> allCandidateIds) {
         StringBuilder prompt = new StringBuilder("仅基于以下已持久化的正式材料候选项进行双向核对；不得使用示例、不得引入材料外事实。\n")
-                .append("全量候选项仅作比较上下文；本页只对下列目标候选输出结论。每个目标候选必须且只能占一条第一表结论，")
+                .append("全量候选项仅作比较上下文；本页目标已按归一化后的相同功能名称预分组，只列出每组最早的代表候选。")
+                .append("本页只对下列代表目标输出结论。每个代表目标必须且只能占一条第一表结论，")
                 .append("candidateIds 必须只包含该目标候选自身。跨页的同一业务结论必须使用同一个 groupAnchorId；")
+                .append("每个本页代表目标绑定行中的 candidateId、documentId 和 unitId 必须逐字复制到其自身结论；")
+                .append("禁止从全量候选上下文中同名或同路径的邻居复制 documentId 或 unitId。")
                 .append("默认每个目标 candidateId 都必须令 groupAnchorId 等于自身 candidateId；")
                 .append("仅当对象/功能点和问题分类与既有 anchor 行逐字完全相同时，才允许复用更早的 groupAnchorId；")
                 .append("只要任一不同，必须 self-anchor；不得因为同一 unitId、documentId、大模块或问题分类而批量复用 groupAnchorId。")
@@ -245,7 +495,8 @@ public final class FeatureAuditService {
                 .append(" `| 序号 | 对象/功能点 | 问题分类 | 证据对照 |`；第二张必须为 `## 测试用例` 且零数据行。\n")
                 .append("问题分类仅可为：未发现问题、匹配、功能清单遗漏、需求未覆盖该功能点、冲突、拆分、合并、重复、证据不足。\n")
                 .append("每行证据对照中的机器 token 必须是独立分号段：至少 `documentId=<exact>; unitId=<exact>; candidateIds=<本页目标 candidateId>; groupAnchorId=<全量 candidateId>; <reader evidence>`。")
-                .append("candidateIds 不得与 `<br>` 或说明文字粘连。分类为“拆分”时，对象/功能点必须以 literal `<br>` 分隔至少两个互异纯文本业务路径；其他分类必须为单一纯文本且不得含 `<br>`。")
+                .append("candidateIds 不得与 `<br>` 或说明文字粘连。对象/功能点列只能写业务功能名或业务路径；章节号、条款号和目录编号只能留在证据对照列，绝不能进入对象/功能点。")
+                .append("分类为“拆分”时，对象/功能点必须以 literal `<br>` 分隔至少两个互异纯文本业务路径；其他分类必须为单一纯文本且不得含 `<br>`，不得复制证据中 `<br>` 后的章节号或条款号，也不得在功能名后追加 `<br>` 加编号。")
                 .append("同一行不同层级列的非空值按列顺序构成业务路径，不同层级值不是冲突；冲突仅限同一层级或同一语义字段互斥，或跨正式材料对同一路径不兼容。无表头或层级语义不足时归为证据不足。")
                 .append("\n全量候选项：\n");
         for (FeatureSourceCandidate candidate : candidates) {
@@ -261,11 +512,140 @@ public final class FeatureAuditService {
                     .append("; category=").append(oneLine(candidate.category()))
                     .append("; evidence=").append(oneLine(candidate.evidenceText())).append('\n');
         }
+        if (!acceptedByCandidate.isEmpty()) {
+            prompt.append("已接受的跨页结论：以下 self-anchor 行已通过严格校验。若本页目标与其中任一 businessPath 归一化后相同，"
+                    + "必须逐字复制其 issueCategory 与 businessPath，并沿用其 groupAnchorId；不得自行改判、改写路径或 self-anchor。\n");
+            for (Map.Entry<String, FeatureReviewConclusion> entry : acceptedByCandidate.entrySet()) {
+                FeatureReviewConclusion conclusion = entry.getValue();
+                String anchorId = groupAnchorId(conclusion.evidenceText(), allCandidateIds);
+                if (!entry.getKey().equals(anchorId)) continue;
+                prompt.append("candidateId=").append(anchorId)
+                        .append("; groupAnchorId=").append(anchorId)
+                        .append("; issueCategory=").append(chineseCategory(conclusion.type()))
+                        .append("; businessPath=").append(oneLine(conclusion.explanation())).append('\n');
+            }
+        }
         prompt.append("本页目标候选：\n");
         for (FeatureSourceCandidate target : targets) {
-            prompt.append("candidateId=").append(target.occurrenceId()).append('\n');
+            prompt.append("candidateId=").append(target.occurrenceId())
+                    .append("; documentId=").append(target.documentId())
+                    .append("; unitId=").append(target.unitId())
+                    .append("; featureText=").append(oneLine(target.featureText())).append('\n');
         }
         return prompt.toString();
+    }
+
+    private static String chineseCategory(FeatureReviewConclusionType type) {
+        return switch (type) {
+            case MATCHED -> "匹配";
+            case FUNCTION_LIST_MISSING -> "功能清单遗漏";
+            case REQUIREMENT_MISSING -> "需求未覆盖该功能点";
+            case CONFLICT -> "冲突";
+            case SPLIT -> "拆分";
+            case MERGE -> "合并";
+            case DUPLICATE -> "重复";
+            case INSUFFICIENT_EVIDENCE -> "证据不足";
+        };
+    }
+
+    private static List<ExplicitBinding> conflictingAcceptedBindings(
+            List<FeatureReviewConclusion> parsed, Map<String, FeatureReviewConclusion> accepted, Set<String> ids) {
+        Map<String, ExplicitBinding> known = new HashMap<>();
+        for (Map.Entry<String, FeatureReviewConclusion> entry : accepted.entrySet()) {
+            FeatureReviewConclusion conclusion = entry.getValue();
+            for (String path : businessPaths(conclusion)) {
+                known.putIfAbsent(BusinessPathNormalizer.normalize(path), new ExplicitBinding(entry.getKey(),
+                        groupAnchorId(conclusion.evidenceText(), ids), chineseCategory(conclusion.type()), conclusion.explanation()));
+            }
+        }
+        List<ExplicitBinding> bindings = new ArrayList<>();
+        for (FeatureReviewConclusion conclusion : parsed) {
+            for (String path : businessPaths(conclusion)) {
+                ExplicitBinding prior = known.get(BusinessPathNormalizer.normalize(path));
+                if (prior != null && (!prior.category().equals(chineseCategory(conclusion.type()))
+                        || !prior.path().equals(conclusion.explanation())
+                        || !prior.anchorId().equals(groupAnchorId(conclusion.evidenceText(), ids)))) bindings.add(prior.forTarget(conclusion.candidateIds().get(0)));
+            }
+        }
+        return List.copyOf(bindings);
+    }
+
+    private static String explicitBindingInstructions(List<ExplicitBinding> bindings) {
+        if (bindings.isEmpty()) return "";
+        StringBuilder text = new StringBuilder("\n本页强制先例：下列目标必须逐字按指定结论重写，不得改分类、路径或 anchor。\n");
+        for (ExplicitBinding binding : bindings) text.append("targetCandidateId=").append(binding.targetId())
+                .append("; issueCategory=").append(binding.category()).append("; businessPath=").append(binding.path())
+                .append("; groupAnchorId=").append(binding.anchorId()).append('\n');
+        return text.toString();
+    }
+
+    /** Provides only current-batch target IDs and correction constraints; it never chooses a semantic outcome. */
+    private static String currentBatchConflictInstructions(
+            List<FeatureReviewConclusion> conclusions, String failure, List<FeatureSourceCandidate> candidates) {
+        if (!NORMALIZED_PATH_CONFLICT.equals(failure)) return "";
+        Set<String> ids = candidateIds(candidates);
+        Map<String, List<FeatureReviewConclusion>> byPath = new LinkedHashMap<>();
+        for (FeatureReviewConclusion conclusion : conclusions) {
+            for (String path : businessPaths(conclusion)) {
+                byPath.computeIfAbsent(BusinessPathNormalizer.normalize(path), ignored -> new ArrayList<>()).add(conclusion);
+            }
+        }
+        StringBuilder text = new StringBuilder("\n本批次归一化路径冲突目标：\n");
+        boolean found = false;
+        int groupNumber = 0;
+        for (List<FeatureReviewConclusion> samePath : byPath.values()) {
+            if (samePath.size() < 2) continue;
+            Set<String> categoryAndAnchor = new LinkedHashSet<>();
+            for (FeatureReviewConclusion conclusion : samePath) {
+                categoryAndAnchor.add(chineseCategory(conclusion.type()) + "\u0000" + groupAnchorId(conclusion.evidenceText(), ids));
+            }
+            if (categoryAndAnchor.size() < 2) continue;
+            Set<String> conflictingTargetIds = new LinkedHashSet<>();
+            for (FeatureReviewConclusion conclusion : samePath) conflictingTargetIds.addAll(conclusion.candidateIds());
+            List<String> targetIds = candidates.stream().map(FeatureSourceCandidate::occurrenceId)
+                    .filter(conflictingTargetIds::contains).toList();
+            if (targetIds.size() < 2) continue;
+            groupNumber++;
+            text.append("冲突组 ").append(groupNumber).append("：");
+            for (String targetId : targetIds) text.append("targetCandidateId=").append(targetId).append("; ");
+            String earliestTargetId = targetIds.get(0);
+            text.append("earliestTargetCandidateId=").append(earliestTargetId)
+                    .append("; requiredGroupAnchorId=").append(earliestTargetId).append('\n')
+                    .append("固定规则：若仍判断为同一路径，每行 groupAnchorId 必须逐字复制该组 requiredGroupAnchorId 的实际值，")
+                    .append("且分类和完整路径一致；")
+                    .append("若不同，必须基于正式证据给出真实可区分的业务路径和各自合法 anchor。")
+                    .append("不得由 Java 自动裁决、改写分类、业务路径或 anchor。\n");
+            found = true;
+        }
+        return found ? text.toString() : "";
+    }
+
+    /** Adds only machine bindings after a projected current row misuses an accepted preceding-batch anchor. */
+    private static String misusedAcceptedAnchorInstructions(
+            List<FeatureReviewConclusion> projected, String failure,
+            Map<String, FeatureReviewConclusion> acceptedByCandidate, Set<String> allCandidateIds) {
+        if (!"Every anchored group must have one exact type and business path".equals(failure)) return "";
+        StringBuilder text = new StringBuilder("\n本批次跨批 anchor 误用目标：\n");
+        boolean found = false;
+        for (FeatureReviewConclusion current : projected) {
+            String currentId = current.candidateIds().get(0);
+            String anchorId = groupAnchorId(current.evidenceText(), allCandidateIds);
+            FeatureReviewConclusion acceptedAnchor = acceptedByCandidate.get(anchorId);
+            if (acceptedAnchor == null || (current.type() == acceptedAnchor.type()
+                    && current.explanation().equals(acceptedAnchor.explanation()))) continue;
+            text.append("targetCandidateId=").append(currentId)
+                    .append("; rejectedGroupAnchorId=").append(anchorId)
+                    .append("; requiredSelfAnchorId=").append(currentId).append('\n');
+            found = true;
+        }
+        if (!found) return "";
+        return text.append("固定规则：若不逐字复用已接受先例区的 issueCategory 与完整 businessPath，groupAnchorId 必须逐字复制 ")
+                .append("requiredSelfAnchorId 的实际值；若确属旧语义组，必须逐字复用分类、完整路径和旧 anchor。")
+                .append("不得由 Java 自动裁决、改写分类、业务路径或 anchor。\n").toString();
+    }
+
+    private record ExplicitBinding(String targetId, String anchorId, String category, String path) {
+        ExplicitBinding forTarget(String target) { return new ExplicitBinding(target, anchorId, category, path); }
     }
 
     private static Set<String> candidateIds(List<FeatureSourceCandidate> candidates) {
@@ -416,8 +796,14 @@ public final class FeatureAuditService {
     }
 
     private static String finalReconciliationRetryFeedback(String failure) {
+        if ("Grouped representative evidence must bind its exact documentId and unitId".equals(failure)) {
+            return COMPREHENSIVE_RETRY_BASELINE + "\n" + REPRESENTATIVE_BINDING_RETRY_FEEDBACK;
+        }
         if (NORMALIZED_PATH_CONFLICT.equals(failure)) {
             return COMPREHENSIVE_RETRY_BASELINE + "\n" + NORMALIZED_PATH_RETRY_FEEDBACK;
+        }
+        if ("Only SPLIT conclusions may contain multiple business paths".equals(failure)) {
+            return COMPREHENSIVE_RETRY_BASELINE + "\n" + NON_SPLIT_CHAPTER_NUMBER_RETRY_FEEDBACK;
         }
         if (BUSINESS_PATH_CONTRACT_FAILURES.contains(failure)) {
             return COMPREHENSIVE_RETRY_BASELINE + "\n" + BUSINESS_PATH_CONTRACT_RETRY_FEEDBACK;

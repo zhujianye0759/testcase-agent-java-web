@@ -541,9 +541,16 @@ public final class GenerationTaskRepository {
         });
     }
 
-    /** Records a discovery failure without fabricating a feature batch. */
+    /** Records an audit-stage failure without fabricating a feature batch. [Req-ID]: REQ-CWR-002 */
     public void failAuditingTask(String taskId) {
+        failAuditingTask(taskId, null);
+    }
+
+    /** Stores only a browser-safe audit failure summary; raw model content never crosses this boundary. */
+    public void failAuditingTask(String taskId, String failureSummary) {
         requireTaskStatus(taskId, GenerationTaskStatus.AUDITING);
+        jdbcTemplate.update("UPDATE generation_task SET result_snapshot = ? WHERE id = ?",
+                asJson(new TaskFailureSnapshot(safeTaskFailureSummary(failureSummary))), taskId);
         transitionTask(taskId, GenerationTaskStatus.FAILED);
         clearArtifactMetadata(taskId);
     }
@@ -649,38 +656,55 @@ public final class GenerationTaskRepository {
                         """);
     }
 
+    /**
+     * Atomically requeues only still-eligible failed batches, creates their next attempts, and removes an obsolete
+     * terminal artifact before the task returns to the durable queue. Conditional batch updates prevent repeated
+     * callers from creating duplicate attempts; an attempt-insert failure rolls back every retry mutation.
+     *
+     * [Req-ID]: REQ-CAG-007
+     */
     public int retryFailedBatches(String taskId) {
-        List<String> failedBatchIds = jdbcTemplate.query("""
-                        SELECT b.id FROM generation_batch b
-                        JOIN generation_attempt a ON a.batch_id = b.id
-                        WHERE b.task_id = ? AND b.status = 'FAILED'
-                          AND a.attempt_number = (SELECT MAX(latest.attempt_number)
-                              FROM generation_attempt latest WHERE latest.batch_id = b.id)
-                          AND a.retryable = TRUE AND a.attempt_number < ?
-                        ORDER BY b.batch_sequence
-                        """, (resultSet, ignored) -> resultSet.getString("id"), taskId, MAX_ATTEMPTS);
-        int retried = 0;
-        for (String batchId : failedBatchIds) {
-            int batchChanged = jdbcTemplate.update("UPDATE generation_batch SET status = 'QUEUED' WHERE id = ? AND status = 'FAILED'", batchId);
-            if (batchChanged != 1) {
-                continue;
+        int retried = transactionTemplate.execute(ignored -> {
+            List<String> failedBatchIds = jdbcTemplate.query("""
+                            SELECT b.id FROM generation_batch b
+                            JOIN generation_attempt a ON a.batch_id = b.id
+                            WHERE b.task_id = ? AND b.status = 'FAILED'
+                              AND a.attempt_number = (SELECT MAX(latest.attempt_number)
+                                  FROM generation_attempt latest WHERE latest.batch_id = b.id)
+                              AND a.retryable = TRUE AND a.attempt_number < ?
+                            ORDER BY b.batch_sequence
+                            """, (resultSet, ignoredResult) -> resultSet.getString("id"), taskId, MAX_ATTEMPTS);
+            int retriedBatches = 0;
+            for (String batchId : failedBatchIds) {
+                int batchChanged = jdbcTemplate.update(
+                        "UPDATE generation_batch SET status = 'QUEUED' WHERE id = ? AND status = 'FAILED'", batchId);
+                if (batchChanged != 1) {
+                    continue;
+                }
+                jdbcTemplate.update("""
+                                INSERT INTO generation_attempt (id, batch_id, attempt_number, status)
+                                VALUES (UUID(), ?, (SELECT COALESCE(MAX(attempt_number), 0) + 1 FROM generation_attempt existing WHERE existing.batch_id = ?), 'QUEUED')
+                                """, batchId, batchId);
+                retriedBatches++;
             }
-            jdbcTemplate.update("""
-                            INSERT INTO generation_attempt (id, batch_id, attempt_number, status)
-                            VALUES (UUID(), ?, (SELECT COALESCE(MAX(attempt_number), 0) + 1 FROM generation_attempt existing WHERE existing.batch_id = ?), 'QUEUED')
-                            """, batchId, batchId);
-            retried++;
-        }
-        if (retried > 0) {
-            GenerationTaskStatus current = taskStatus(taskId);
-            if (current == GenerationTaskStatus.PARTIAL || current == GenerationTaskStatus.FAILED) {
-                clearArtifactMetadata(taskId);
+            if (retriedBatches > 0) {
+                GenerationTaskStatus current = taskStatus(taskId);
+                if (current == GenerationTaskStatus.PARTIAL || current == GenerationTaskStatus.FAILED) {
+                    clearArtifactMetadata(taskId);
+                    transitionTask(taskId, GenerationTaskStatus.QUEUED);
+                }
+            }
+            return retriedBatches;
+        });
+        if (retried == 0) {
+            return transactionTemplate.execute(status -> {
+                if (taskStatus(taskId) != GenerationTaskStatus.FAILED || !isUnbatchedAllTask(taskId)) {
+                    return 0;
+                }
+                jdbcTemplate.update("UPDATE generation_task SET result_snapshot = NULL WHERE id = ? AND status = 'FAILED'", taskId);
                 transitionTask(taskId, GenerationTaskStatus.QUEUED);
-            }
-        }
-        if (retried == 0 && taskStatus(taskId) == GenerationTaskStatus.FAILED && isUnbatchedAllTask(taskId)) {
-            transitionTask(taskId, GenerationTaskStatus.QUEUED);
-            return 1;
+                return 1;
+            });
         }
         return retried;
     }
@@ -843,6 +867,25 @@ public final class GenerationTaskRepository {
         """, (resultSet, ignored) -> new TaskExecutionWork(
                 taskId, resultSet.getString("batch_id"), resultSet.getString("attempt_id"), resultSet.getString("feature_id"), request), taskId)
                 .stream().findFirst();
+    }
+
+    /**
+     * Returns only the immediately preceding failed attempt reason for a retry attempt. The caller must map this
+     * persisted diagnostic to fixed safe guidance before it can influence an agent prompt.
+     *
+     * [Req-ID]: REQ-CAG-007
+     */
+    public Optional<String> previousFailureReason(String batchId, String attemptId) {
+        return jdbcTemplate.query("""
+                        SELECT previous.failure_reason
+                        FROM generation_attempt current_attempt
+                        JOIN generation_attempt previous ON previous.batch_id = current_attempt.batch_id
+                            AND previous.attempt_number = current_attempt.attempt_number - 1
+                        WHERE current_attempt.id = ? AND current_attempt.batch_id = ?
+                          AND current_attempt.attempt_number BETWEEN 2 AND ?
+                          AND previous.status = 'FAILED' AND previous.failure_reason IS NOT NULL
+                        """, (resultSet, ignored) -> resultSet.getString("failure_reason"),
+                attemptId, batchId, MAX_ATTEMPTS).stream().findFirst();
     }
 
     public CreateGenerationTaskRequest request(String taskId) {
@@ -1060,7 +1103,8 @@ public final class GenerationTaskRepository {
                 resultSet.getString("artifact_sha256"),
                 resultSet.getString("failure_summary")), taskId).stream().findFirst().map(row -> {
             BatchCounts counts = batchCounts(taskId);
-            String failureSummary = row.failureSummary();
+            String failureSummary = row.failureSummary() != null ? row.failureSummary()
+                    : taskFailureSummary(row.resultSnapshot());
             CreateGenerationTaskRequest request = fromJson(row.requestSnapshot(), CreateGenerationTaskRequest.class);
             return new GenerationTaskDetail(
                     row.id(), row.taskMode(), row.status(), counts.total(), counts.completed(),
@@ -1229,7 +1273,7 @@ public final class GenerationTaskRepository {
         long totalItems = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM generation_task WHERE LOWER(id) LIKE ?", Long.class, likeQuery);
         List<GenerationTaskListItem> items = jdbcTemplate.query("""
-                        SELECT t.id, t.task_mode, t.status, t.created_at, t.artifact_id,
+                        SELECT t.id, t.task_mode, t.status, t.created_at, t.artifact_id, t.result_snapshot,
                                (SELECT COUNT(*) FROM generation_batch b WHERE b.task_id = t.id) AS total_batches,
                                (SELECT COUNT(*) FROM generation_batch b WHERE b.task_id = t.id
                                    AND b.status IN ('ACCEPTED', 'FAILED', 'CANCELLED')) AS completed_batches,
@@ -1250,9 +1294,10 @@ public final class GenerationTaskRepository {
                 GenerationTaskStatus.valueOf(resultSet.getString("status")),
                 resultSet.getTimestamp("created_at").toInstant(),
                 resultSet.getInt("total_batches"),
-                resultSet.getInt("completed_batches"),
-                resultSet.getString("failure_summary"),
-                resultSet.getString("artifact_id") != null), likeQuery, size, page * size);
+                                resultSet.getInt("completed_batches"),
+                                resultSet.getString("failure_summary") != null ? resultSet.getString("failure_summary")
+                                        : taskFailureSummary(resultSet.getString("result_snapshot")),
+                                resultSet.getString("artifact_id") != null), likeQuery, size, page * size);
         return new GenerationTaskPage(items, page, size, totalItems);
     }
 
@@ -1777,6 +1822,20 @@ public final class GenerationTaskRepository {
         }
     }
 
+    private String taskFailureSummary(String resultSnapshot) {
+        if (resultSnapshot == null || resultSnapshot.isBlank()) return null;
+        try {
+            return safeTaskFailureSummary(objectMapper.readValue(resultSnapshot, TaskFailureSnapshot.class).failureSummary());
+        } catch (JsonProcessingException exception) {
+            return null;
+        }
+    }
+
+    private static String safeTaskFailureSummary(String failureSummary) {
+        if (failureSummary == null || failureSummary.isBlank()) return null;
+        return SensitiveValueRedactor.redact(failureSummary.strip());
+    }
+
     private record TaskRow(
             String id,
             GenerationTaskMode taskMode,
@@ -1786,6 +1845,9 @@ public final class GenerationTaskRepository {
             String artifactId,
             String artifactSha256,
             String failureSummary) {
+    }
+
+    private record TaskFailureSnapshot(String failureSummary) {
     }
 
     private record BusinessProgressCounts(

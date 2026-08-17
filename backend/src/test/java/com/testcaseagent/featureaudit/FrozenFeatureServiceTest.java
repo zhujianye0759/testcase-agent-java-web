@@ -170,6 +170,23 @@ class FrozenFeatureServiceTest {
     }
 
     @Test
+    // [Req-ID]: REQ-BFA-003, REQ-BFA-005, REQ-BFA-007
+    void acceptsGreaterThanAsAPlainTextHierarchySeparator() {
+        GenerationTaskRepository repository = readyRepository(1, 1);
+        FeatureSourceCandidate candidate = candidate("candidate-1", "订单处理");
+        FeatureReviewConclusion matched = conclusion("conclusion-1", 1, FeatureReviewConclusionType.MATCHED,
+                "信息中心 > 月度例会 > 查看", "candidate-1");
+        when(repository.featureSourceCandidates(TASK_ID)).thenReturn(List.of(candidate));
+        when(repository.featureReviewConclusions(TASK_ID)).thenReturn(List.of(matched));
+
+        FrozenFeatureResult result = new FrozenFeatureService(repository).freeze(TASK_ID, scope());
+
+        assertThat(result.targets()).singleElement()
+                .extracting(FrozenFeatureTarget::featureName)
+                .isEqualTo("信息中心 > 月度例会 > 查看");
+    }
+
+    @Test
     void rejectsARepeatedNormalizedBusinessPathAcrossSeparateConclusions() {
         GenerationTaskRepository repository = readyRepository(2, 2);
         FeatureSourceCandidate first = candidate("candidate-1", "订单查询");

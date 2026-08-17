@@ -1,5 +1,6 @@
 package com.testcaseagent.task;
 
+import com.testcaseagent.diagnostics.WorkflowDiagnostics;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.testcaseagent.export.MarkdownWorkbookExportRequest;
@@ -7,6 +8,7 @@ import com.testcaseagent.export.WorkbookArtifact;
 import com.testcaseagent.export.WorkbookExporter;
 import com.testcaseagent.featureaudit.FeatureAuditResult;
 import com.testcaseagent.featureaudit.FeatureAuditService;
+import com.testcaseagent.featureaudit.FinalReconciliationPageException;
 import com.testcaseagent.featureaudit.FrozenFeatureResult;
 import com.testcaseagent.featureaudit.FrozenFeatureService;
 import com.testcaseagent.featureaudit.FrozenFeatureTarget;
@@ -22,10 +24,13 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import org.springframework.core.task.TaskExecutor;
 import org.springframework.core.task.TaskRejectedException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Runs durable material-bounded audit and Markdown generation work.
@@ -38,6 +43,7 @@ import org.springframework.core.task.TaskRejectedException;
  * REQ-KAG-004, REQ-ANA-007
  */
 public final class GenerationWorkflow {
+    private static final Logger LOGGER = LoggerFactory.getLogger(GenerationWorkflow.class);
     private final GenerationTaskRepository repository;
     private final KnowledgeAgentPort knowledgeAgentPort;
     private final WorkbookExporter workbookExporter;
@@ -117,7 +123,11 @@ public final class GenerationWorkflow {
             }
             throw exception;
         } catch (RuntimeException exception) {
-            if (repository.taskStatus(claim.taskId()) == GenerationTaskStatus.AUDITING) repository.failAuditingTask(claim.taskId());
+            if (repository.taskStatus(claim.taskId()) == GenerationTaskStatus.AUDITING) {
+                String failureSummary = auditingFailureSummary(exception);
+                LOGGER.warn("Audit-stage task failed: {}", failureSummary);
+                repository.failAuditingTask(claim.taskId(), failureSummary);
+            }
             else throw exception;
         }
     }
@@ -155,24 +165,32 @@ public final class GenerationWorkflow {
                 if (repository.cancelAtCheckpoint(work.taskId(), work.batchId(), work.attemptId())) return;
                 String feature = requireFeaturePath(work);
                 FrozenFeatureTarget frozenFeature = frozenFeatureFor(work);
+                String prompt = generationPrompt(work.request(), feature, frozenFeature,
+                        frozenFeature == null ? ""
+                                : retryCorrectionFeedback(repository.previousFailureReason(work.batchId(), work.attemptId())));
                 KnowledgeAgentInvocation invocation = new KnowledgeAgentInvocation(work.request().agentId(),
                         work.request().requirementScope(), work.request().exampleScope(), work.request().requirementAdmissionTypeKeys(),
-                        generationPrompt(work.request(), feature, frozenFeature), work.request().fewShotPolicy());
+                        prompt, work.request().fewShotPolicy());
+                WorkflowDiagnostics.generation(work.taskId(), work.batchId(), work.attemptId(), "request", prompt);
                 knowledgeAgentPort.prepareGenerationSession(invocation);
                 try {
                     String markdown = knowledgeAgentPort.invoke(invocation).terminalMarkdown();
+                    WorkflowDiagnostics.generation(work.taskId(), work.batchId(), work.attemptId(), "response", markdown);
                     MarkdownGenerationResult accepted = markdownParser.parse(markdown);
                     if (frozenFeature != null) {
                         frozenFeatureBatchAcceptanceValidator.validate(frozenFeature, accepted);
                     }
                     repository.acceptMarkdownBatch(work.batchId(), work.attemptId(), accepted);
+                    WorkflowDiagnostics.generation(work.taskId(), work.batchId(), work.attemptId(), "accepted", "two-case batch accepted");
                 } finally {
                     knowledgeAgentPort.closePreparedSession();
                 }
             } catch (KnowledgeAgentSkillPreparationException exception) {
+                WorkflowDiagnostics.generation(work.taskId(), work.batchId(), work.attemptId(), "preparation-failed", exception.getMessage());
                 repository.failTask(work.taskId(), work.batchId(), work.attemptId(), safeFailureMessage(exception));
                 return;
             } catch (RuntimeException exception) {
+                WorkflowDiagnostics.generation(work.taskId(), work.batchId(), work.attemptId(), "failed", exception.getMessage());
                 repository.failBatch(work.batchId(), work.attemptId(), safeFailureMessage(exception), true);
             }
         }
@@ -204,16 +222,17 @@ public final class GenerationWorkflow {
     }
 
     private static String generationPrompt(
-            CreateGenerationTaskRequest request, String featurePath, FrozenFeatureTarget frozenFeature) {
+            CreateGenerationTaskRequest request, String featurePath, FrozenFeatureTarget frozenFeature, String retryCorrection) {
         if (frozenFeature == null) {
-            return request.prompt() + "\n本批次功能点：" + featurePath;
+            String prompt = request.prompt() + "\n本批次功能点：" + featurePath;
+            return retryCorrection.isEmpty() ? prompt : prompt + "\n\n" + retryCorrection;
         }
         if (!featurePath.equals(frozenFeature.featureName())) {
             throw new IllegalStateException("Queued ALL batch feature path conflicts with its frozen feature target");
         }
         String candidateIds = String.join(",", frozenFeature.source().candidateIds());
         String leaf = featurePath.substring(featurePath.lastIndexOf('/') + 1).strip();
-        return request.prompt() + "\n\n"
+        String prompt = request.prompt() + "\n\n"
                 + "仅生成当前功能路径：" + featurePath + "。不得生成其他功能。\n"
                 + "只输出两个 H2 和两张 Markdown 表：## 需求与功能清单审查发现、## 测试用例；表头必须分别为"
                 + "序号|对象/功能点|问题分类|证据对照" + "和"
@@ -223,6 +242,35 @@ public final class GenerationWorkflow {
                 + "正式需求内容必须是可读摘要加 <br>candidateIds=" + candidateIds
                 + "；candidateIds 只能使用该允许集合。仅基于通用经验时，对应需求内容必须精确为：依据通用经验，待确认。\n"
                 + "审查表如有行，对象只能是当前功能路径或其叶子名，证据对照同样只能回显 candidateIds=" + candidateIds + "。";
+        return retryCorrection.isEmpty() ? prompt : prompt + "\n\n" + retryCorrection;
+    }
+
+    private static String retryCorrectionFeedback(Optional<String> previousFailureReason) {
+        return previousFailureReason.map(GenerationWorkflow::fixedRetryCorrection)
+                .orElse("");
+    }
+
+    private static String fixedRetryCorrection(String failureReason) {
+        return switch (failureReason) {
+            case "General-experience content must exactly equal '依据通用经验，待确认'" ->
+                    "上一轮校验未通过：对应需求内容只能二选一：\n"
+                            + "正式材料：可读摘要+<br>candidateIds\n"
+                            + "通用经验：依据通用经验，待确认\n"
+                            + "若选择通用经验，冒号后到行尾的全部内容必须到此结束；严禁追加 <br>、candidateIds、引号、句号或任何其他文字，不得混合两种写法。";
+            case "Execution steps and expected results must have the same numbered items" ->
+                    "上一轮校验未通过：执行步骤和预期结果必须都从 1 连续编号，并保持编号逐项一一对应。";
+            case "Audit evidence must retain candidateIds for the frozen target" ->
+                    "上一轮校验未通过：审查证据对照必须保留当前冻结目标允许的 candidateIds。";
+            case "Markdown contract invalid: expected no content after the final test-case table" ->
+                    "上一轮校验未通过：测试用例表结束后不得再输出任何内容。";
+            case "Markdown contract invalid: expected text-only table cells with only <br> line separators" ->
+                    "上一轮校验未通过：表格单元格只能包含文本，换行只能使用 <br>。";
+            case "Requirement content must retain candidateIds for the frozen target" ->
+                    "上一轮校验未通过：正式需求内容必须保留当前冻结目标允许的 candidateIds。";
+            case "Requirement content must reference only candidates of the frozen target" ->
+                    "上一轮校验未通过：正式需求内容只能引用当前冻结目标允许的 candidateIds。";
+            default -> "上一轮未通过固定输出合同校验。请严格遵守本提示中的两张表、表后无内容、文本单元格、编号、通用经验和冻结 candidateIds 约束。";
+        };
     }
 
     private void finishAndExport(String taskId) {
@@ -259,6 +307,11 @@ public final class GenerationWorkflow {
     private static String safeFailureMessage(RuntimeException exception) {
         String message = exception.getMessage();
         return SensitiveValueRedactor.redact(message == null || message.isBlank() ? exception.getClass().getSimpleName() : message);
+    }
+
+    private static String auditingFailureSummary(RuntimeException exception) {
+        if (exception instanceof FinalReconciliationPageException pageFailure) return pageFailure.safeSummary();
+        return "材料或审查处理未完成，未冻结功能范围";
     }
 
     private String idempotencyKey(CreateGenerationTaskRequest request) {

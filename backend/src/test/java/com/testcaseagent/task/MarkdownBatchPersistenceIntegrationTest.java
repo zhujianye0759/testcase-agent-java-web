@@ -9,6 +9,7 @@ import com.testcaseagent.export.MarkdownWorkbookExportRequest;
 import com.testcaseagent.export.WorkbookArtifact;
 import com.testcaseagent.fewshot.ExampleScope;
 import com.testcaseagent.featureaudit.FeatureCandidateKind;
+import com.testcaseagent.featureaudit.FinalReconciliationPageException;
 import com.testcaseagent.featureaudit.FeatureReviewConclusion;
 import com.testcaseagent.featureaudit.FeatureReviewConclusionType;
 import com.testcaseagent.featureaudit.FeatureSourceCandidate;
@@ -28,6 +29,12 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -375,7 +382,7 @@ class MarkdownBatchPersistenceIntegrationTest {
     }
 
     @Test
-    void requeuesAnUnbatchedAllDiscoveryFailureForAnotherBackgroundDiscoveryAttempt() {
+    void requeuesAnUnbatchedAllDiscoveryFailureWithoutRetainingItsHistoricalFailureSummary() {
         String taskId = taskId();
         CreateGenerationTaskRequest pendingAll = new CreateGenerationTaskRequest(GenerationTaskMode.ALL, "all-pending",
                 List.of(), java.util.Map.of(), FewShotPolicy.AUTO, "markdown-1.0", "1.0", "markdown-agent",
@@ -384,11 +391,62 @@ class MarkdownBatchPersistenceIntegrationTest {
                 new ExampleScope("example-kb", List.of("example-1")), List.of("function_list"), "发现全部功能");
         repository.createTask(taskId, pendingAll);
         repository.transitionTask(taskId, GenerationTaskStatus.AUDITING);
-        repository.failAuditingTask(taskId);
+        repository.failAuditingTask(taskId, "最终双向核对未满足完整性约定，未冻结功能范围");
+
+        assertThat(repository.findDetail(taskId).orElseThrow().failureSummary())
+                .isEqualTo("最终双向核对未满足完整性约定，未冻结功能范围");
 
         assertThat(repository.retryFailedBatches(taskId)).isEqualTo(1);
         assertThat(repository.taskStatus(taskId)).isEqualTo(GenerationTaskStatus.QUEUED);
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM generation_batch WHERE task_id = ?", Integer.class, taskId)).isZero();
+        assertThat(repository.findDetail(taskId).orElseThrow().failureSummary()).isNull();
+        assertThat(repository.findPage(0, 1, taskId).items()).singleElement()
+                .extracting(GenerationTaskListItem::failureSummary).isNull();
+
+        repository.transitionTask(taskId, GenerationTaskStatus.AUDITING);
+
+        assertThat(repository.findDetail(taskId).orElseThrow().failureSummary()).isNull();
+        assertThat(repository.findPage(0, 1, taskId).items()).singleElement()
+                .extracting(GenerationTaskListItem::failureSummary).isNull();
+    }
+
+    @Test
+    // [Req-ID]: REQ-CWR-002
+    void exposesASafeAuditingFailureSummaryWhenNoGenerationBatchExists() {
+        String taskId = taskId();
+        repository.createTask(taskId, request());
+        repository.transitionTask(taskId, GenerationTaskStatus.AUDITING);
+
+        repository.failAuditingTask(taskId, "最终双向核对未满足完整性约定，未冻结功能范围");
+
+        GenerationTaskDetail detail = repository.findDetail(taskId).orElseThrow();
+        assertThat(detail.status()).isEqualTo(GenerationTaskStatus.FAILED);
+        assertThat(detail.failureSummary()).isEqualTo("最终双向核对未满足完整性约定，未冻结功能范围");
+        assertThat(detail.batches()).isEmpty();
+        assertThat(repository.findPage(0, 1, taskId).items()).singleElement()
+                .extracting(GenerationTaskListItem::failureSummary)
+                .isEqualTo("最终双向核对未满足完整性约定，未冻结功能范围");
+    }
+
+    @Test
+    // [Req-ID]: REQ-CWR-004
+    void projectsOnlyTheSafeFinalReconciliationPageSummaryToTaskDetailAndList() {
+        String taskId = taskId();
+        repository.createTask(taskId, request());
+        repository.transitionTask(taskId, GenerationTaskStatus.AUDITING);
+        FinalReconciliationPageException pageFailure = FinalReconciliationPageException.exhausted(2, 9, 3,
+                "https://internal.invalid?secret=red-team-only; documentId=hidden; unitId=hidden");
+
+        repository.failAuditingTask(taskId, pageFailure.safeSummary());
+
+        String expected = "最终双向核对第 2/9 个功能审核批次连续 3 次未通过：固定合同未满足";
+        assertThat(repository.findDetail(taskId).orElseThrow().failureSummary()).isEqualTo(expected)
+                .doesNotContain("internal.invalid", "red-team-only", "documentId", "unitId");
+        assertThat(repository.findPage(0, 1, taskId).items()).singleElement()
+                .extracting(GenerationTaskListItem::failureSummary).isEqualTo(expected);
+        assertThat(jdbcTemplate.queryForObject("SELECT result_snapshot FROM generation_task WHERE id = ?", String.class, taskId))
+                .isEqualTo("{\"failureSummary\":\"" + expected + "\"}")
+                .doesNotContain("internal.invalid", "red-team-only", "documentId", "unitId");
     }
 
     @Test
@@ -457,8 +515,115 @@ class MarkdownBatchPersistenceIntegrationTest {
         assertThat(repository.findReadyArtifact("artifact-before-retry")).isEmpty();
         assertThat(repository.acceptedMarkdownRows(taskId).testCaseRows()).extracting(MarkdownTestCaseRow::caseName)
                 .containsExactly("case-accepted");
+        assertThat(jdbcTemplate.queryForObject("SELECT status FROM generation_batch WHERE id = ?", String.class,
+                "batch-accepted")).isEqualTo("ACCEPTED");
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM generation_attempt WHERE batch_id = ?", Integer.class,
+                "batch-accepted")).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM generation_attempt WHERE batch_id = ?", Integer.class,
+                "batch-retry")).isEqualTo(2);
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM generation_test_case_row WHERE batch_id = ?", Integer.class,
                 "batch-accepted")).isEqualTo(1);
+    }
+
+    /** [Req-ID]: REQ-CAG-007 */
+    @Test
+    void repeatedRetriesNeverCreateMoreThanTheThreeAllowedAttempts() {
+        String taskId = taskId();
+        repository.createTask(taskId, request());
+        repository.createBatch("batch-retry-limit", taskId, "feature-retry", 1);
+        repository.createAttempt("attempt-retry-one", "batch-retry-limit");
+        repository.startBatch("batch-retry-limit", "attempt-retry-one");
+        repository.failBatch("batch-retry-limit", "attempt-retry-one", "first failure", true);
+
+        assertThat(repository.retryFailedBatches(taskId)).isEqualTo(1);
+        assertThat(repository.retryFailedBatches(taskId)).isZero();
+        String attemptTwo = jdbcTemplate.queryForObject(
+                "SELECT id FROM generation_attempt WHERE batch_id = ? AND attempt_number = 2", String.class, "batch-retry-limit");
+        repository.startBatch("batch-retry-limit", attemptTwo);
+        repository.failBatch("batch-retry-limit", attemptTwo, "second failure", true);
+
+        assertThat(repository.retryFailedBatches(taskId)).isEqualTo(1);
+        String attemptThree = jdbcTemplate.queryForObject(
+                "SELECT id FROM generation_attempt WHERE batch_id = ? AND attempt_number = 3", String.class, "batch-retry-limit");
+        repository.startBatch("batch-retry-limit", attemptThree);
+        repository.failBatch("batch-retry-limit", attemptThree, "third failure", true);
+
+        assertThat(repository.retryFailedBatches(taskId)).isZero();
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM generation_attempt WHERE batch_id = ?", Integer.class,
+                "batch-retry-limit")).isEqualTo(3);
+        assertThat(jdbcTemplate.queryForObject("SELECT status FROM generation_batch WHERE id = ?", String.class,
+                "batch-retry-limit")).isEqualTo("FAILED");
+    }
+
+    /** [Req-ID]: REQ-CAG-007 */
+    @Test
+    void concurrentRetriesCreateOnlyOneReplacementAttemptAndLeaveAcceptedWorkUntouched() throws Exception {
+        String taskId = taskId();
+        repository.createTask(taskId, request());
+        accept(taskId, "batch-concurrent-accepted", "attempt-concurrent-accepted", "feature-accepted", 1,
+                markdownResult("concurrent-accepted"));
+        repository.createBatch("batch-concurrent-retry", taskId, "feature-retry", 2);
+        repository.createAttempt("attempt-concurrent-retry", "batch-concurrent-retry");
+        repository.startBatch("batch-concurrent-retry", "attempt-concurrent-retry");
+        repository.failBatch("batch-concurrent-retry", "attempt-concurrent-retry", "temporary failure", true);
+        transitionToValidating(taskId);
+        repository.completeMarkdownTask(taskId, GenerationTaskStatus.PARTIAL,
+                new WorkbookArtifact("artifact-concurrent-retry", "sha256-concurrent-retry",
+                        Path.of("artifacts", "concurrent-retry.xlsx")));
+
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Callable<Integer> retry = () -> {
+                ready.countDown();
+                if (!start.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("Concurrent retry did not start");
+                return repository.retryFailedBatches(taskId);
+            };
+            Future<Integer> first = executor.submit(retry);
+            Future<Integer> second = executor.submit(retry);
+
+            assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            assertThat(first.get(10, TimeUnit.SECONDS) + second.get(10, TimeUnit.SECONDS)).isEqualTo(1);
+        } finally {
+            executor.shutdownNow();
+        }
+
+        assertThat(repository.taskStatus(taskId)).isEqualTo(GenerationTaskStatus.QUEUED);
+        assertThat(jdbcTemplate.queryForObject("SELECT status FROM generation_batch WHERE id = ?", String.class,
+                "batch-concurrent-retry")).isEqualTo("QUEUED");
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM generation_attempt WHERE batch_id = ?", Integer.class,
+                "batch-concurrent-retry")).isEqualTo(2);
+        assertThat(jdbcTemplate.queryForObject("SELECT status FROM generation_batch WHERE id = ?", String.class,
+                "batch-concurrent-accepted")).isEqualTo("ACCEPTED");
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM generation_attempt WHERE batch_id = ?", Integer.class,
+                "batch-concurrent-accepted")).isEqualTo(1);
+    }
+
+    /** [Req-ID]: REQ-CAG-007 */
+    @Test
+    void returnsOnlyTheAdjacentFailedReasonForSecondAndThirdAttempts() {
+        String taskId = taskId();
+        repository.createTask(taskId, allRequest());
+        repository.createBatch("batch-retry-reason", taskId, "feature-retry", 1);
+        repository.createAttempt("attempt-reason-one", "batch-retry-reason");
+        repository.startBatch("batch-retry-reason", "attempt-reason-one");
+        repository.failBatch("batch-retry-reason", "attempt-reason-one", "first failure", true);
+
+        assertThat(repository.previousFailureReason("batch-retry-reason", "attempt-reason-one")).isEmpty();
+        assertThat(repository.retryFailedBatches(taskId)).isEqualTo(1);
+        String attemptTwo = jdbcTemplate.queryForObject(
+                "SELECT id FROM generation_attempt WHERE batch_id = ? AND attempt_number = 2", String.class, "batch-retry-reason");
+        assertThat(repository.previousFailureReason("batch-retry-reason", attemptTwo)).contains("first failure");
+        repository.startBatch("batch-retry-reason", attemptTwo);
+        repository.failBatch("batch-retry-reason", attemptTwo, "second failure", true);
+
+        assertThat(repository.retryFailedBatches(taskId)).isEqualTo(1);
+        String attemptThree = jdbcTemplate.queryForObject(
+                "SELECT id FROM generation_attempt WHERE batch_id = ? AND attempt_number = 3", String.class, "batch-retry-reason");
+        assertThat(repository.previousFailureReason("batch-retry-reason", attemptThree)).contains("second failure");
     }
 
     private void accept(
