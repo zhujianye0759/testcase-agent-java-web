@@ -61,6 +61,20 @@ class FunctionListExtractionValidatorTest {
         assertEquals("item-2", merged.get(1).itemKey());
     }
 
+    @Test
+    void lengthPrefixesPreventNulFromMovingAcrossStableKeyFieldBoundaries() {
+        List<FunctionListExtractionValidator.ValidatedItem> rows = validator.validate(workItem(),
+                new FunctionListExtractionValidator.Result(List.of(
+                        new FunctionListExtractionValidator.ModelItem("a", "b\u0000c", List.of("evidence-33")),
+                        new FunctionListExtractionValidator.ModelItem("a\u0000b", "c", List.of("evidence-33")))));
+
+        assertEquals(2, rows.stream().map(FunctionListExtractionValidator.ValidatedItem::itemKey).distinct().count());
+        assertEquals(rows.get(0).itemKey(), validator.validate(workItem(),
+                new FunctionListExtractionValidator.Result(List.of(
+                        new FunctionListExtractionValidator.ModelItem("a", "b\u0000c", List.of("evidence-33")))))
+                .get(0).itemKey());
+    }
+
     private static FunctionListExtractionValidator.WorkItem workItem() {
         StructuredValidationRegistry registry = StructuredValidationRegistry.forTask("task-1")
                 .register(StructuredKeyType.MATERIAL, "material-function-list")

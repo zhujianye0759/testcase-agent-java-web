@@ -83,4 +83,28 @@ class GenerationWorkflowStructuredTestcaseTest {
                 "补充边界", List.of("evidence-1"), List.of()))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    void lengthPrefixesPreventNulFromMovingAcrossTestPointIdentityFields() {
+        var planner = new StructuredTestPointPlanner();
+        var firstFact = new StructuredTestPointPlanner.FormalFact(
+                "a", "创建订单", List.of("b\u0000c"), List.of(), List.of(), List.of(), List.of(), List.of(),
+                List.of("evidence-1"));
+        var secondFact = new StructuredTestPointPlanner.FormalFact(
+                "a\u0000b", "创建订单", List.of("c"), List.of(), List.of(), List.of(), List.of(), List.of(),
+                List.of("evidence-2"));
+        var definition = new StructuredTestPointPlanner.FunctionDefinition(
+                "function-1", "创建订单", List.of(firstFact, secondFact), List.of());
+
+        var first = planner.plan(definition).stream()
+                .filter(input -> input.testPoint().type() == FunctionalTestcaseDesignInput.TestPointType.INPUT_VALIDATION)
+                .toList();
+        var repeated = planner.plan(definition).stream()
+                .filter(input -> input.testPoint().type() == FunctionalTestcaseDesignInput.TestPointType.INPUT_VALIDATION)
+                .toList();
+
+        assertThat(first).extracting(input -> input.testPoint().testPointKey()).doesNotHaveDuplicates();
+        assertThat(first).extracting(input -> input.testPoint().testPointKey())
+                .containsExactlyElementsOf(repeated.stream().map(input -> input.testPoint().testPointKey()).toList());
+    }
 }

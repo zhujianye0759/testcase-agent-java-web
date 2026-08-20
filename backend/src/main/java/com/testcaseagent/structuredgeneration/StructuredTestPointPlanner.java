@@ -1,9 +1,7 @@
 package com.testcaseagent.structuredgeneration;
 
 import com.testcaseagent.knowledgeagent.FunctionalTestcaseDesignInput;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
+import com.testcaseagent.identity.LengthPrefixedSha256;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.HexFormat;
@@ -38,7 +36,7 @@ public final class StructuredTestPointPlanner {
         }
         for (int index = 0; index < function.experienceGaps().size(); index++) {
             ExperienceGap gap = function.experienceGaps().get(index);
-            String key = pointKey(function.functionKey(), "experience-" + (index + 1), gap.type());
+            String key = pointKey(function.functionKey(), "experience-" + (index + 1), gap.type(), gap.description());
             points.add(new FunctionalTestcaseDesignInput(function.functionKey(), function.functionName(),
                     new FunctionalTestcaseDesignInput.TestPoint(key, gap.type(), gap.description(), List.of(),
                             gap.evidenceKeys(), FunctionalTestcaseDesignInput.Basis.GENERAL_EXPERIENCE,
@@ -56,20 +54,15 @@ public final class StructuredTestPointPlanner {
             FunctionalTestcaseDesignInput.TestPointType type, String description) {
         return new FunctionalTestcaseDesignInput(function.functionKey(), function.functionName(),
                 new FunctionalTestcaseDesignInput.TestPoint(pointKey(
-                        function.functionKey(), fact.factKey() + "\u0000" + description, type),
+                        function.functionKey(), fact.factKey(), type, description),
                         type, description, List.of(fact.factKey()), fact.evidenceKeys(),
                         FunctionalTestcaseDesignInput.Basis.FORMAL_REQUIREMENT, List.of()));
     }
 
     private static String pointKey(String functionKey, String sourceKey,
-            FunctionalTestcaseDesignInput.TestPointType type) {
-        try {
-            byte[] digest = MessageDigest.getInstance("SHA-256").digest(
-                    (functionKey + "\u0000" + sourceKey + "\u0000" + type.name()).getBytes(StandardCharsets.UTF_8));
-            return "point-" + HexFormat.of().formatHex(digest, 0, 16);
-        } catch (NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("SHA-256 is required", exception);
-        }
+            FunctionalTestcaseDesignInput.TestPointType type, String description) {
+        byte[] digest = LengthPrefixedSha256.digest(functionKey, sourceKey, type.name(), description);
+        return "point-" + HexFormat.of().formatHex(digest, 0, 16);
     }
 
     /** One frozen function and all accepted facts/gaps used to derive its points. */

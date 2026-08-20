@@ -1,8 +1,6 @@
 package com.testcaseagent.validation;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
+import com.testcaseagent.identity.LengthPrefixedSha256;
 import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.HexFormat;
@@ -85,17 +83,8 @@ public final class FunctionListExtractionValidator {
     }
 
     private static String stableKey(String taskId, String path, String description) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            digest.update(required(taskId, "taskId").getBytes(StandardCharsets.UTF_8));
-            digest.update((byte) 0);
-            digest.update(canonical(path).getBytes(StandardCharsets.UTF_8));
-            digest.update((byte) 0);
-            digest.update(canonical(description).getBytes(StandardCharsets.UTF_8));
-            return "fli-" + HexFormat.of().formatHex(digest.digest());
-        } catch (NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("SHA-256 is required by Java", exception);
-        }
+        return "fli-" + HexFormat.of().formatHex(LengthPrefixedSha256.digest(
+                required(taskId, "taskId"), canonical(path), canonical(description)));
     }
 
     private static String canonical(String value) {

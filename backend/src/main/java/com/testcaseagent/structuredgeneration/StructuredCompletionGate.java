@@ -1,7 +1,5 @@
 package com.testcaseagent.structuredgeneration;
 
-import com.testcaseagent.task.GenerationTaskStatus;
-
 /** Computes truthful terminal processing and formal coverage on independent axes. [Req-ID]: REQ-STG-007 */
 public final class StructuredCompletionGate {
 
@@ -14,10 +12,12 @@ public final class StructuredCompletionGate {
                 ? StructuredCoverageStatus.PENDING
                 : snapshot.formalTestPointTotal() > 0
                         && snapshot.coveredFormalTestPointCount() == snapshot.formalTestPointTotal()
-                                ? StructuredCoverageStatus.SATISFIED
-                                : StructuredCoverageStatus.INSUFFICIENT;
+                                ? StructuredCoverageStatus.COMPLETE
+                                : snapshot.coveredFormalTestPointCount() > 0
+                                        ? StructuredCoverageStatus.PARTIAL
+                                        : StructuredCoverageStatus.UNABLE_TO_GENERATE;
         if (snapshot.cancelled()) {
-            return new Outcome(GenerationTaskStatus.CANCELLED, coverage, false);
+            return new Outcome(StructuredProcessingStatus.CANCELLED, coverage, false);
         }
         boolean completed = snapshot.allWorkTerminal()
                 && snapshot.parsedUnitsComplete()
@@ -26,17 +26,9 @@ public final class StructuredCompletionGate {
                 && snapshot.scopeFrozen()
                 && snapshot.artifactValidated()
                 && snapshot.failedWorkCount() == 0;
-        if (completed) return new Outcome(GenerationTaskStatus.COMPLETED, coverage, true);
-        if (!snapshot.allWorkTerminal()) return new Outcome(GenerationTaskStatus.GENERATING, coverage, false);
-        if (snapshot.acceptedWorkCount() > 0) {
-            boolean partialArtifactPublishable = snapshot.parsedUnitsComplete()
-                    && snapshot.completedReviewWork() == snapshot.totalReviewWork()
-                    && snapshot.reconciliationComplete()
-                    && snapshot.scopeFrozen()
-                    && snapshot.artifactValidated();
-            return new Outcome(GenerationTaskStatus.PARTIAL, coverage, partialArtifactPublishable);
-        }
-        return new Outcome(GenerationTaskStatus.FAILED, coverage, false);
+        if (completed) return new Outcome(StructuredProcessingStatus.COMPLETED, coverage, true);
+        if (!snapshot.allWorkTerminal()) return new Outcome(StructuredProcessingStatus.RUNNING, coverage, false);
+        return new Outcome(StructuredProcessingStatus.FAILED, coverage, false);
     }
 
     /** Durable aggregate inputs; counts are independent of any fixed testcase multiplier. */
@@ -66,7 +58,7 @@ public final class StructuredCompletionGate {
 
     /** Browser/export-safe outcome with a separate artifact publication decision. */
     public record Outcome(
-            GenerationTaskStatus processingStatus,
+            StructuredProcessingStatus processingStatus,
             StructuredCoverageStatus coverageStatus,
             boolean artifactPublishable) { }
 }
