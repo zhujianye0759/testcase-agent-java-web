@@ -71,6 +71,16 @@ class GenerationTaskDetailTest {
 
     @BeforeEach
     void cleanDatabase() {
+        jdbcTemplate.update("DELETE FROM structured_reference_binding");
+        jdbcTemplate.update("DELETE FROM structured_test_case_step");
+        jdbcTemplate.update("DELETE FROM structured_test_case");
+        jdbcTemplate.update("DELETE FROM structured_test_point");
+        jdbcTemplate.update("DELETE FROM structured_function_list_item");
+        jdbcTemplate.update("DELETE FROM structured_feature_reconciliation");
+        jdbcTemplate.update("DELETE FROM structured_review_finding");
+        jdbcTemplate.update("DELETE FROM structured_requirement_fact");
+        jdbcTemplate.update("DELETE FROM structured_generation_attempt");
+        jdbcTemplate.update("DELETE FROM structured_generation_work_item");
         jdbcTemplate.update("DELETE FROM feature_review_conclusion_candidate");
         jdbcTemplate.update("DELETE FROM feature_review_conclusion");
         jdbcTemplate.update("DELETE FROM frozen_feature_target");
@@ -150,6 +160,123 @@ class GenerationTaskDetailTest {
         assertThat(jsonProgress.path("expectedTestCaseTotal").asInt()).isEqualTo(8);
         assertThat(response.toString()).doesNotContain("knowledge-", "documentId", "unitId", "cursor", "prompt",
                 "rawMarkdown", "candidate-");
+        assertThat(response.has("structuredResult")).isFalse();
+    }
+
+    @Test
+    void returnsOnlyReaderSafeValidatedStructuredProjectionWithExactWireEnums() throws Exception {
+        String taskId = createAllTask();
+        jdbcTemplate.update("""
+                UPDATE generation_task
+                SET structured_processing_status = 'COMPLETED', structured_coverage_status = 'PARTIAL'
+                WHERE id = ?
+                """, taskId);
+
+        String factWorkId = completedWork(taskId, "requirement-material-quality-review", "REQUIREMENT_MATERIAL_REVIEW", "需求来源");
+        jdbcTemplate.update("""
+                INSERT INTO structured_requirement_fact
+                (work_item_id, fact_key, function_name, roles_json, trigger_conditions_json, inputs_json, business_rules_json,
+                 outputs_json, permissions_json, state_changes_json, exception_handling_json, external_dependencies_json)
+                VALUES (?, 'fact-internal-key', '订单提交', CAST('[\"用户\"]' AS JSON), CAST('[]' AS JSON), CAST('[]' AS JSON),
+                        CAST('[]' AS JSON), CAST('[]' AS JSON), CAST('[]' AS JSON), CAST('[]' AS JSON), CAST('[]' AS JSON), CAST('[]' AS JSON))
+                """, factWorkId);
+
+        String reviewWorkId = completedWork(taskId, "requirement-material-quality-review", "REQUIREMENT_MATERIAL_REVIEW",
+                "需求来源 https://private.example/secret");
+        jdbcTemplate.update("""
+                INSERT INTO structured_review_finding
+                (work_item_id, finding_key, issue_type, description, test_design_impact, current_project_recommendation,
+                 design_center_guideline_recommendation, handling_level)
+                VALUES (?, 'finding-internal-key', '完整性', 'java.lang.IllegalStateException: secret\n    at com.example.Secret.run(Secret.java:1)',
+                        '补充异常场景', '补齐需求说明', '建立审查准则', 'BLOCKING')
+                """, reviewWorkId);
+
+        String functionListWorkId = completedWork(taskId, "feature-scope-reconciliation", "FEATURE_SCOPE_EXTRACT", "功能清单");
+        jdbcTemplate.update("""
+                INSERT INTO structured_function_list_item (work_item_id, item_key, path_text, description)
+                VALUES (?, 'function-list-internal-key', '订单/提交', '提交订单')
+                """, functionListWorkId);
+        String reconciliationWorkId = completedWork(taskId, "feature-scope-reconciliation", "FEATURE_SCOPE_RECONCILIATION", "核对");
+        jdbcTemplate.update("""
+                INSERT INTO structured_feature_reconciliation
+                (work_item_id, reconciliation_key, classification, scope_recommendation, confirmation_status)
+                VALUES (?, 'reconciliation-internal-key', 'EXACT_MATCH', '保持范围', 'CONFIRMED')
+                """, reconciliationWorkId);
+        bind(reconciliationWorkId, "reconciliation-internal-key", "RECONCILIATION", "FUNCTION_LIST_ITEM", "function-list-internal-key");
+        bind(reconciliationWorkId, "reconciliation-internal-key", "RECONCILIATION", "REQUIREMENT_FACT", "fact-internal-key");
+
+        String testcaseWorkId = completedWork(taskId, "functional-testcase-design", "FUNCTIONAL_TESTCASE_DESIGN", "测试点");
+        jdbcTemplate.update("""
+                INSERT INTO structured_test_point
+                (work_item_id, test_point_key, function_key, function_name, test_point_type, basis, description, missing_information_json,
+                 formal_coverage_satisfied)
+                VALUES (?, 'test-point-internal-key', 'function-internal-key', '订单提交', 'NORMAL_BEHAVIOR', 'FORMAL_REQUIREMENT', '提交成功',
+                        CAST('[\"无\"]' AS JSON), TRUE)
+                """, testcaseWorkId);
+        jdbcTemplate.update("""
+                INSERT INTO structured_test_case
+                (work_item_id, case_key, title, preconditions_json, case_status, missing_information_json)
+                VALUES (?, 'case-internal-key', '正常提交订单', CAST('[\"用户已登录\"]' AS JSON), 'PENDING_CONFIRMATION',
+                        CAST('[\"接口超时阈值\"]' AS JSON))
+                """, testcaseWorkId);
+        jdbcTemplate.update("""
+                INSERT INTO structured_test_case_step (work_item_id, case_key, step_no, action_text, expected_text)
+                VALUES (?, 'case-internal-key', 1, '提交订单', '订单创建成功')
+                """, testcaseWorkId);
+        bind(testcaseWorkId, "test-point-internal-key", "TEST_POINT", "REQUIREMENT_FACT", "fact-internal-key");
+        bind(testcaseWorkId, "case-internal-key", "TEST_CASE", "REQUIREMENT_FACT", "fact-internal-key");
+
+        String otherTaskId = createAllTask();
+        String otherFactWorkId = completedWork(otherTaskId, "requirement-material-quality-review",
+                "REQUIREMENT_MATERIAL_REVIEW", "其他任务需求");
+        jdbcTemplate.update("""
+                INSERT INTO structured_requirement_fact
+                (work_item_id, fact_key, function_name, roles_json, trigger_conditions_json, inputs_json, business_rules_json,
+                 outputs_json, permissions_json, state_changes_json, exception_handling_json, external_dependencies_json)
+                VALUES (?, 'fact-internal-key', '恶意跨任务需求', CAST('[]' AS JSON), CAST('[]' AS JSON), CAST('[]' AS JSON),
+                        CAST('[]' AS JSON), CAST('[]' AS JSON), CAST('[]' AS JSON), CAST('[]' AS JSON), CAST('[]' AS JSON), CAST('[]' AS JSON))
+                """, otherFactWorkId);
+        String otherFunctionWorkId = completedWork(otherTaskId, "feature-scope-reconciliation",
+                "FEATURE_SCOPE_EXTRACT", "其他任务功能清单");
+        jdbcTemplate.update("""
+                INSERT INTO structured_function_list_item (work_item_id, item_key, path_text, description)
+                VALUES (?, 'function-list-internal-key', '恶意跨任务功能', '不得进入当前任务投影')
+                """, otherFunctionWorkId);
+
+        JsonNode response = objectMapper.readTree(objectMapper.writeValueAsString(
+                GenerationTaskDetailResponse.from(repository.findDetail(taskId).orElseThrow())));
+        JsonNode structured = response.path("structuredResult");
+        assertThat(structured.path("processingStatus").asText()).isEqualTo("COMPLETED");
+        assertThat(structured.path("coverageStatus").asText()).isEqualTo("PARTIAL");
+        assertThat(structured.path("pendingCandidateCaseCount").asInt()).isEqualTo(1);
+        assertThat(structured.path("reviewFindings").get(0).path("handlingLevel").asText()).isEqualTo("BLOCKING");
+        assertThat(structured.path("reconciliations").get(0).path("confirmationStatus").asText()).isEqualTo("CONFIRMED");
+        assertThat(structured.path("testPoints").get(0).path("basis").asText()).isEqualTo("FORMAL_REQUIREMENT");
+        assertThat(structured.path("testPoints").get(0).path("testcases").get(0).path("status").asText())
+                .isEqualTo("PENDING_CONFIRMATION");
+        assertThat(response.toString()).contains("订单/提交", "订单提交", "<external-url>", "<internal-stack>");
+        assertThat(response.toString()).doesNotContain("fact-internal-key", "finding-internal-key", "reconciliation-internal-key",
+                "test-point-internal-key", "function-internal-key", "case-internal-key", "private.example", "Secret.java",
+                "accepted_result_sha256", "reference_key", "raw_json", "恶意跨任务需求", "恶意跨任务功能");
+    }
+
+    private String completedWork(String taskId, String skillName, String operationName, String sourceLabel) {
+        String workItemId = UUID.randomUUID().toString();
+        jdbcTemplate.update("""
+                INSERT INTO structured_generation_work_item
+                (id, task_id, identity_key, skill_name, operation_name, status, source_label, accepted_result_sha256)
+                VALUES (?, ?, ?, ?, ?, 'COMPLETED', ?, ?)
+                """, workItemId, taskId, UUID.randomUUID().toString().replace("-", "")
+                + UUID.randomUUID().toString().replace("-", "").substring(0, 32), skillName, operationName, sourceLabel,
+                "a".repeat(64));
+        return workItemId;
+    }
+
+    private void bind(String workItemId, String subjectKey, String subjectType, String referenceType, String referenceKey) {
+        jdbcTemplate.update("""
+                INSERT INTO structured_reference_binding (work_item_id, subject_key, subject_type, reference_type, reference_key)
+                VALUES (?, ?, ?, ?, ?)
+                """, workItemId, subjectKey, subjectType, referenceType, referenceKey);
     }
 
     private String createAllTask() {

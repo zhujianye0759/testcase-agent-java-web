@@ -1,5 +1,6 @@
 package com.testcaseagent.task;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.testcaseagent.markdown.MarkdownAuditRow;
 import com.testcaseagent.markdown.MarkdownTestCaseRow;
 import java.util.List;
@@ -18,14 +19,16 @@ public record GenerationTaskDetailResponse(
         List<Batch> batches,
         List<AuditRow> auditRows,
         List<TestCaseRow> testCaseRows,
-        GenerationTaskBusinessProgress businessProgress) {
+        GenerationTaskBusinessProgress businessProgress,
+        @JsonInclude(JsonInclude.Include.NON_NULL) StructuredGenerationTaskDetail structuredResult) {
 
     public static GenerationTaskDetailResponse from(GenerationTaskDetail detail) {
         return new GenerationTaskDetailResponse(detail.id(), detail.taskMode().name(), detail.status().name(),
                 detail.totalBatches(), detail.completedBatches(), detail.artifactReady(), detail.artifactId(), detail.failureSummary(),
                 FrozenScope.from(detail.request()), detail.batches().stream().map(Batch::from).toList(),
                 detail.acceptedRows().auditRows().stream().map(AuditRow::from).toList(),
-                detail.acceptedRows().testCaseRows().stream().map(TestCaseRow::from).toList(), detail.businessProgress());
+                detail.acceptedRows().testCaseRows().stream().map(TestCaseRow::from).toList(), detail.businessProgress(),
+                detail.structuredResult());
     }
 
     public record FrozenScope(String state, String materialCategory, String admissionType, int documentCount) {

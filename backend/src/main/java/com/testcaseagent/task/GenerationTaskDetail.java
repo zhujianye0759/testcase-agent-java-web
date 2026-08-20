@@ -22,5 +22,6 @@ public record GenerationTaskDetail(
         List<GenerationBatchDetail> batches,
         MarkdownTaskRows acceptedRows,
         CreateGenerationTaskRequest request,
-        GenerationTaskBusinessProgress businessProgress) {
+        GenerationTaskBusinessProgress businessProgress,
+        StructuredGenerationTaskDetail structuredResult) {
 }

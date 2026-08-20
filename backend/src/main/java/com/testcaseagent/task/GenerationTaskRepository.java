@@ -1,6 +1,7 @@
 package com.testcaseagent.task;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.testcaseagent.export.WorkbookArtifact;
 import com.testcaseagent.featureaudit.AuditWorkClaim;
@@ -15,6 +16,12 @@ import com.testcaseagent.markdown.MarkdownAuditRow;
 import com.testcaseagent.markdown.MarkdownGenerationResult;
 import com.testcaseagent.markdown.MarkdownTestCaseRow;
 import com.testcaseagent.testcase.GenerationTaskMode;
+import com.testcaseagent.structuredgeneration.StructuredCoverageStatus;
+import com.testcaseagent.structuredgeneration.StructuredProcessingStatus;
+import com.testcaseagent.validation.FeatureReconciliationValidator.ConfirmationStatus;
+import com.testcaseagent.validation.FunctionalTestcaseResultValidator.Basis;
+import com.testcaseagent.validation.FunctionalTestcaseResultValidator.CaseStatus;
+import com.testcaseagent.validation.RequirementMaterialReviewValidator.HandlingLevel;
 import com.testcaseagent.scope.RequirementScope;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
@@ -28,6 +35,7 @@ import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -42,6 +50,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 public final class GenerationTaskRepository {
 
     private static final int MAX_ATTEMPTS = 3;
+    private static final Pattern STACK_EXCEPTION = Pattern.compile("(?m)^[\\w.$]+(?:Exception|Error)(?::[^\\r\\n]*)?$");
+    private static final Pattern STACK_FRAME = Pattern.compile("(?m)^\\s*at\\s+[\\w.$]+\\([^\\r\\n]*\\)\\s*$");
 
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
@@ -1083,7 +1093,8 @@ public final class GenerationTaskRepository {
 
     public Optional<GenerationTaskDetail> findDetail(String taskId) {
         return jdbcTemplate.query("""
-                        SELECT t.id, t.task_mode, t.status, t.request_snapshot, t.result_snapshot,
+                        SELECT t.id, t.task_mode, t.status, t.structured_processing_status, t.structured_coverage_status,
+                               t.request_snapshot, t.result_snapshot,
                                t.artifact_id, t.artifact_sha256,
                                (SELECT a.failure_reason FROM generation_attempt a
                                 JOIN generation_batch b ON b.id = a.batch_id
@@ -1097,6 +1108,8 @@ public final class GenerationTaskRepository {
                 resultSet.getString("id"),
                 GenerationTaskMode.valueOf(resultSet.getString("task_mode")),
                 GenerationTaskStatus.valueOf(resultSet.getString("status")),
+                resultSet.getString("structured_processing_status"),
+                resultSet.getString("structured_coverage_status"),
                 resultSet.getString("request_snapshot"),
                 resultSet.getString("result_snapshot"),
                 resultSet.getString("artifact_id"),
@@ -1110,8 +1123,142 @@ public final class GenerationTaskRepository {
                     row.id(), row.taskMode(), row.status(), counts.total(), counts.completed(),
                     row.artifactId() != null, row.artifactId(), row.artifactSha256(), failureSummary, failureSummary, batches(taskId),
                     acceptedMarkdownRows(taskId),
-                    request, businessProgress(taskId, row.taskMode(), row.status(), request));
+                    request, businessProgress(taskId, row.taskMode(), row.status(), request),
+                    structuredResult(taskId, row.structuredProcessingStatus(), row.structuredCoverageStatus()));
         });
+    }
+
+    /**
+     * Projects only committed structured rows. Internal keys remain inside the join predicates and never cross the
+     * browser boundary; a task without structured state retains its legacy detail response.
+     *
+     * [Req-ID]: REQ-STG-006
+     */
+    private StructuredGenerationTaskDetail structuredResult(String taskId, String processingValue, String coverageValue) {
+        if (processingValue == null || coverageValue == null) return null;
+        StructuredProcessingStatus processing = StructuredProcessingStatus.valueOf(processingValue);
+        StructuredCoverageStatus coverage = StructuredCoverageStatus.valueOf(coverageValue);
+        return new StructuredGenerationTaskDetail(processing, coverage, pendingCandidateCaseCount(taskId),
+                structuredReviewFindings(taskId), structuredReconciliations(taskId), structuredTestPoints(taskId));
+    }
+
+    private int pendingCandidateCaseCount(String taskId) {
+        Integer count = jdbcTemplate.queryForObject("""
+                        SELECT COUNT(*) FROM structured_test_case c
+                        JOIN structured_generation_work_item w ON w.id = c.work_item_id
+                        WHERE w.task_id = ? AND w.status = 'COMPLETED' AND w.accepted_result_sha256 IS NOT NULL
+                          AND c.case_status = 'PENDING_CONFIRMATION'
+                        """, Integer.class, taskId);
+        return count == null ? 0 : count;
+    }
+
+    private List<StructuredGenerationTaskDetail.ReviewFinding> structuredReviewFindings(String taskId) {
+        return jdbcTemplate.query("""
+                        SELECT w.source_label, f.issue_type, f.description, f.handling_level, f.test_design_impact,
+                               f.current_project_recommendation, f.design_center_guideline_recommendation
+                        FROM structured_review_finding f
+                        JOIN structured_generation_work_item w ON w.id = f.work_item_id
+                        WHERE w.task_id = ? AND w.status = 'COMPLETED' AND w.accepted_result_sha256 IS NOT NULL
+                        ORDER BY w.created_at, f.finding_key
+                        """, (row, ignored) -> new StructuredGenerationTaskDetail.ReviewFinding(
+                readerSafeText(orDefault(row.getString("source_label"), "需求材料")), "需求材料审查",
+                readerSafeText(row.getString("issue_type")), readerSafeText(row.getString("description")),
+                HandlingLevel.valueOf(row.getString("handling_level")), readerSafeText(row.getString("test_design_impact")),
+                readerSafeText(row.getString("current_project_recommendation")),
+                readerSafeText(row.getString("design_center_guideline_recommendation"))), taskId);
+    }
+
+    private List<StructuredGenerationTaskDetail.Reconciliation> structuredReconciliations(String taskId) {
+        return jdbcTemplate.query("""
+                        SELECT r.work_item_id, r.reconciliation_key, r.classification, r.scope_recommendation,
+                               r.confirmation_status
+                        FROM structured_feature_reconciliation r
+                        JOIN structured_generation_work_item w ON w.id = r.work_item_id
+                        WHERE w.task_id = ? AND w.status = 'COMPLETED' AND w.accepted_result_sha256 IS NOT NULL
+                        ORDER BY w.created_at, r.reconciliation_key
+                        """, (row, ignored) -> new StructuredGenerationTaskDetail.Reconciliation(
+                reconciliationFunctionListPaths(taskId, row.getString("work_item_id"), row.getString("reconciliation_key")),
+                reconciliationRequirementFunctions(taskId, row.getString("work_item_id"), row.getString("reconciliation_key")),
+                readerSafeText(row.getString("classification")), readerSafeText(row.getString("scope_recommendation")),
+                ConfirmationStatus.valueOf(row.getString("confirmation_status"))), taskId);
+    }
+
+    private List<String> reconciliationFunctionListPaths(String taskId, String workItemId, String reconciliationKey) {
+        return jdbcTemplate.query("""
+                        SELECT DISTINCT item.path_text
+                        FROM structured_reference_binding b
+                        JOIN structured_function_list_item item ON item.item_key = b.reference_key
+                        JOIN structured_generation_work_item source ON source.id = item.work_item_id
+                        WHERE b.work_item_id = ? AND b.subject_key = ? AND b.subject_type = 'RECONCILIATION'
+                          AND b.reference_type = 'FUNCTION_LIST_ITEM' AND source.status = 'COMPLETED'
+                          AND source.accepted_result_sha256 IS NOT NULL AND source.task_id = ?
+                        ORDER BY item.path_text
+                        """, (row, ignored) -> readerSafeText(row.getString(1)), workItemId, reconciliationKey, taskId);
+    }
+
+    private List<String> reconciliationRequirementFunctions(String taskId, String workItemId, String reconciliationKey) {
+        return jdbcTemplate.query("""
+                        SELECT DISTINCT fact.function_name
+                        FROM structured_reference_binding b
+                        JOIN structured_requirement_fact fact ON fact.fact_key = b.reference_key
+                        JOIN structured_generation_work_item source ON source.id = fact.work_item_id
+                        WHERE b.work_item_id = ? AND b.subject_key = ? AND b.subject_type = 'RECONCILIATION'
+                          AND b.reference_type = 'REQUIREMENT_FACT' AND source.status = 'COMPLETED'
+                          AND source.accepted_result_sha256 IS NOT NULL AND source.task_id = ?
+                        ORDER BY fact.function_name
+                        """, (row, ignored) -> readerSafeText(row.getString(1)), workItemId, reconciliationKey, taskId);
+    }
+
+    private List<StructuredGenerationTaskDetail.TestPoint> structuredTestPoints(String taskId) {
+        return jdbcTemplate.query("""
+                        SELECT point.work_item_id, point.function_name, point.test_point_type, point.basis, point.description,
+                               point.missing_information_json, point.formal_coverage_satisfied
+                        FROM structured_test_point point
+                        JOIN structured_generation_work_item w ON w.id = point.work_item_id
+                        WHERE w.task_id = ? AND w.status = 'COMPLETED' AND w.accepted_result_sha256 IS NOT NULL
+                        ORDER BY w.created_at, point.test_point_key
+                        """, (row, ignored) -> {
+            String workItemId = row.getString("work_item_id");
+            return new StructuredGenerationTaskDetail.TestPoint(
+                    readerSafeText(row.getString("function_name")), readerSafeText(row.getString("test_point_type")),
+                    readerSafeText(row.getString("description")), Basis.valueOf(row.getString("basis")),
+                    readerSafeList(row.getString("missing_information_json")), row.getBoolean("formal_coverage_satisfied"),
+                    structuredTestcases(taskId, workItemId));
+        }, taskId);
+    }
+
+    private List<StructuredGenerationTaskDetail.Testcase> structuredTestcases(String taskId, String workItemId) {
+        return jdbcTemplate.query("""
+                        SELECT case_key, title, case_status, preconditions_json, missing_information_json
+                        FROM structured_test_case WHERE work_item_id = ? ORDER BY case_key
+                        """, (row, ignored) -> {
+            String caseKey = row.getString("case_key");
+            return new StructuredGenerationTaskDetail.Testcase(readerSafeText(row.getString("title")),
+                    CaseStatus.valueOf(row.getString("case_status")), readerSafeList(row.getString("preconditions_json")),
+                    structuredTestcaseSteps(workItemId, caseKey), testcaseRequirementSummaries(taskId, workItemId, caseKey),
+                    readerSafeList(row.getString("missing_information_json")));
+        }, workItemId);
+    }
+
+    private List<StructuredGenerationTaskDetail.Step> structuredTestcaseSteps(String workItemId, String caseKey) {
+        return jdbcTemplate.query("""
+                        SELECT step_no, action_text, expected_text FROM structured_test_case_step
+                        WHERE work_item_id = ? AND case_key = ? ORDER BY step_no
+                        """, (row, ignored) -> new StructuredGenerationTaskDetail.Step(row.getInt("step_no"),
+                readerSafeText(row.getString("action_text")), readerSafeText(row.getString("expected_text"))), workItemId, caseKey);
+    }
+
+    private List<String> testcaseRequirementSummaries(String taskId, String workItemId, String caseKey) {
+        return jdbcTemplate.query("""
+                        SELECT DISTINCT fact.function_name
+                        FROM structured_reference_binding b
+                        JOIN structured_requirement_fact fact ON fact.fact_key = b.reference_key
+                        JOIN structured_generation_work_item source ON source.id = fact.work_item_id
+                        WHERE b.work_item_id = ? AND b.subject_key = ? AND b.subject_type = 'TEST_CASE'
+                          AND b.reference_type = 'REQUIREMENT_FACT' AND source.status = 'COMPLETED'
+                          AND source.accepted_result_sha256 IS NOT NULL AND source.task_id = ?
+                        ORDER BY fact.function_name
+                        """, (row, ignored) -> readerSafeText(row.getString(1)), workItemId, caseKey, taskId);
     }
 
     /**
@@ -1822,6 +1969,25 @@ public final class GenerationTaskRepository {
         }
     }
 
+    private List<String> readerSafeList(String value) {
+        try {
+            return objectMapper.readValue(value, new TypeReference<List<String>>() { }).stream()
+                    .map(GenerationTaskRepository::readerSafeText).toList();
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("Unable to read validated structured list", exception);
+        }
+    }
+
+    private static String readerSafeText(String value) {
+        String redacted = SensitiveValueRedactor.redact(value == null ? "" : value.strip());
+        redacted = STACK_EXCEPTION.matcher(redacted).replaceAll("<internal-stack>");
+        return STACK_FRAME.matcher(redacted).replaceAll("<internal-stack>");
+    }
+
+    private static String orDefault(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value;
+    }
+
     private String taskFailureSummary(String resultSnapshot) {
         if (resultSnapshot == null || resultSnapshot.isBlank()) return null;
         try {
@@ -1840,6 +2006,8 @@ public final class GenerationTaskRepository {
             String id,
             GenerationTaskMode taskMode,
             GenerationTaskStatus status,
+            String structuredProcessingStatus,
+            String structuredCoverageStatus,
             String requestSnapshot,
             String resultSnapshot,
             String artifactId,
