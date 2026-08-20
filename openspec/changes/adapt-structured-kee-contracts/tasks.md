@@ -24,7 +24,7 @@
 ## 4. 耐久状态与原子接收
 
 - [ ] 4.1 设计并添加最小 Flyway 迁移，分别持久化材料审查事实/发现、功能清单条目、核对关系、测试点、结构化用例、引用绑定、处理状态和覆盖结果；引用绑定的 `subject_type` 必须进入主键/查询，不得复用 KEE 数据库或保存原始模型 JSON/Markdown。验证：Testcontainers 迁移测试。 `[Req-ID]: REQ-STG-001~007`
-- [ ] 4.2 为四类工作项实现事务性接收：validator、业务行、带 subject type 的引用和尝试终态全成功才提交，任何异常回滚全部写入；accept/fail 在锁事务内以数据库冻结的 skill/operation/material/slice/owner/lease 为授权真相，新 stable item key 仅在提交成功后发布。验证：伪造 claim、跨材料/切片、operation 错配、中途回滚和 registry 可见性 MySQL 测试。 `[Req-ID]: REQ-STG-006`
+- [ ] 4.2 为四类工作项实现事务性接收：validator、业务行、带 subject type 的引用和尝试终态全成功才提交，任何异常回滚全部写入；accept/fail 在锁事务内以数据库冻结的 skill/operation/material/slice/owner/lease 为授权真相，新 stable item key 仅在提交成功后发布。所有可引用业务 key 以 `(task_id,key)` 保证耐久唯一；功能清单跨切片相同文本采用原子 upsert 后锁读并合并授权 evidence，模型 key 冲突和稳定文本冲突均回滚。验证：伪造 claim、跨材料/切片、跨片重复与重启 registry、并发首次稳定 key 写入、模型 key 冲突、operation 错配、中途回滚和 registry 可见性 MySQL 测试。 `[Req-ID]: REQ-STG-006`
 - [ ] 4.3 实现稳定切片/工作项幂等身份、有界可重试白名单和租约恢复，保留 parsed-units 全局 ordinal；只允许 `model_unavailable|model_execution_failed` 最多再领一次，`structured_output_invalid` 和其他非白名单失败终止；failure type 严格枚举。过期 attempt 失效，达到最大尝试数不再领取；同 task+identity 并发注册返回同一 ID，但相同 identity 的任一冻结载荷坐标不一致必须拒绝且不修改旧行。验证：并发注册/认领、不同 operation/evidence closure 重放、未知 failure type、结构无效不重试、过期恢复、stale claim 和尝试上限测试。 `[Req-ID]: REQ-SKI-003, REQ-STG-006`
 
 ## 5. 结构化生成工作流与完成门禁

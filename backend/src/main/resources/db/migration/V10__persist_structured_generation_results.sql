@@ -50,6 +50,7 @@ CREATE TABLE structured_generation_attempt (
 
 CREATE TABLE structured_requirement_fact (
     work_item_id CHAR(36) NOT NULL,
+    task_id CHAR(36) NOT NULL,
     fact_key VARCHAR(128) NOT NULL,
     function_name TEXT NOT NULL,
     roles_json JSON NOT NULL,
@@ -62,11 +63,14 @@ CREATE TABLE structured_requirement_fact (
     exception_handling_json JSON NOT NULL,
     external_dependencies_json JSON NOT NULL,
     PRIMARY KEY (work_item_id, fact_key),
-    CONSTRAINT fk_structured_requirement_fact_work FOREIGN KEY (work_item_id) REFERENCES structured_generation_work_item (id) ON DELETE CASCADE
+    CONSTRAINT uq_structured_requirement_fact_task_key UNIQUE (task_id, fact_key),
+    CONSTRAINT fk_structured_requirement_fact_work FOREIGN KEY (work_item_id) REFERENCES structured_generation_work_item (id) ON DELETE CASCADE,
+    CONSTRAINT fk_structured_requirement_fact_task FOREIGN KEY (task_id) REFERENCES generation_task (id)
 ) ENGINE = InnoDB DEFAULT CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;
 
 CREATE TABLE structured_review_finding (
     work_item_id CHAR(36) NOT NULL,
+    task_id CHAR(36) NOT NULL,
     finding_key VARCHAR(128) NOT NULL,
     issue_type VARCHAR(255) NOT NULL,
     description TEXT NOT NULL,
@@ -75,30 +79,39 @@ CREATE TABLE structured_review_finding (
     design_center_guideline_recommendation TEXT NOT NULL,
     handling_level VARCHAR(32) NOT NULL,
     PRIMARY KEY (work_item_id, finding_key),
-    CONSTRAINT fk_structured_review_finding_work FOREIGN KEY (work_item_id) REFERENCES structured_generation_work_item (id) ON DELETE CASCADE
+    CONSTRAINT uq_structured_review_finding_task_key UNIQUE (task_id, finding_key),
+    CONSTRAINT fk_structured_review_finding_work FOREIGN KEY (work_item_id) REFERENCES structured_generation_work_item (id) ON DELETE CASCADE,
+    CONSTRAINT fk_structured_review_finding_task FOREIGN KEY (task_id) REFERENCES generation_task (id)
 ) ENGINE = InnoDB DEFAULT CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;
 
 CREATE TABLE structured_feature_reconciliation (
     work_item_id CHAR(36) NOT NULL,
+    task_id CHAR(36) NOT NULL,
     reconciliation_key VARCHAR(128) NOT NULL,
     classification VARCHAR(32) NOT NULL,
     scope_recommendation TEXT NOT NULL,
     confirmation_status VARCHAR(32) NOT NULL,
     PRIMARY KEY (work_item_id, reconciliation_key),
-    CONSTRAINT fk_structured_feature_reconciliation_work FOREIGN KEY (work_item_id) REFERENCES structured_generation_work_item (id) ON DELETE CASCADE
+    CONSTRAINT uq_structured_reconciliation_task_key UNIQUE (task_id, reconciliation_key),
+    CONSTRAINT fk_structured_feature_reconciliation_work FOREIGN KEY (work_item_id) REFERENCES structured_generation_work_item (id) ON DELETE CASCADE,
+    CONSTRAINT fk_structured_feature_reconciliation_task FOREIGN KEY (task_id) REFERENCES generation_task (id)
 ) ENGINE = InnoDB DEFAULT CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;
 
 CREATE TABLE structured_function_list_item (
     work_item_id CHAR(36) NOT NULL,
+    task_id CHAR(36) NOT NULL,
     item_key VARCHAR(128) NOT NULL,
     path_text TEXT NOT NULL,
     description TEXT NOT NULL,
     PRIMARY KEY (work_item_id, item_key),
-    CONSTRAINT fk_structured_function_list_item_work FOREIGN KEY (work_item_id) REFERENCES structured_generation_work_item (id) ON DELETE CASCADE
+    CONSTRAINT uq_structured_function_list_task_item UNIQUE (task_id, item_key),
+    CONSTRAINT fk_structured_function_list_item_work FOREIGN KEY (work_item_id) REFERENCES structured_generation_work_item (id) ON DELETE CASCADE,
+    CONSTRAINT fk_structured_function_list_item_task FOREIGN KEY (task_id) REFERENCES generation_task (id)
 ) ENGINE = InnoDB DEFAULT CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;
 
 CREATE TABLE structured_test_point (
     work_item_id CHAR(36) NOT NULL,
+    task_id CHAR(36) NOT NULL,
     test_point_key VARCHAR(128) NOT NULL,
     function_key VARCHAR(128) NOT NULL,
     function_name TEXT NOT NULL,
@@ -108,18 +121,23 @@ CREATE TABLE structured_test_point (
     missing_information_json JSON NOT NULL,
     formal_coverage_satisfied BOOLEAN NOT NULL,
     PRIMARY KEY (work_item_id, test_point_key),
-    CONSTRAINT fk_structured_test_point_work FOREIGN KEY (work_item_id) REFERENCES structured_generation_work_item (id) ON DELETE CASCADE
+    CONSTRAINT uq_structured_test_point_task_key UNIQUE (task_id, test_point_key),
+    CONSTRAINT fk_structured_test_point_work FOREIGN KEY (work_item_id) REFERENCES structured_generation_work_item (id) ON DELETE CASCADE,
+    CONSTRAINT fk_structured_test_point_task FOREIGN KEY (task_id) REFERENCES generation_task (id)
 ) ENGINE = InnoDB DEFAULT CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;
 
 CREATE TABLE structured_test_case (
     work_item_id CHAR(36) NOT NULL,
+    task_id CHAR(36) NOT NULL,
     case_key VARCHAR(128) NOT NULL,
     title TEXT NOT NULL,
     preconditions_json JSON NOT NULL,
     case_status VARCHAR(32) NOT NULL,
     missing_information_json JSON NOT NULL,
     PRIMARY KEY (work_item_id, case_key),
-    CONSTRAINT fk_structured_test_case_work FOREIGN KEY (work_item_id) REFERENCES structured_generation_work_item (id) ON DELETE CASCADE
+    CONSTRAINT uq_structured_test_case_task_key UNIQUE (task_id, case_key),
+    CONSTRAINT fk_structured_test_case_work FOREIGN KEY (work_item_id) REFERENCES structured_generation_work_item (id) ON DELETE CASCADE,
+    CONSTRAINT fk_structured_test_case_task FOREIGN KEY (task_id) REFERENCES generation_task (id)
 ) ENGINE = InnoDB DEFAULT CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;
 
 CREATE TABLE structured_test_case_step (

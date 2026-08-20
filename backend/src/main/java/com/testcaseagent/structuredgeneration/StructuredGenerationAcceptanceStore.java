@@ -21,6 +21,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Consumer;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -132,24 +133,24 @@ public final class StructuredGenerationAcceptanceStore {
         Objects.requireNonNull(validator, "validator must not be null").validate(workItem, result);
         accept(claim, result, null, "REQUIREMENT_MATERIAL_REVIEW", ignored -> {
             for (RequirementMaterialReviewValidator.RequirementFact fact : result.requirementFacts()) {
-                jdbc.update("""
-                        INSERT INTO structured_requirement_fact (work_item_id, fact_key, function_name, roles_json,
+                insertTaskScoped("requirement fact", () -> jdbc.update("""
+                        INSERT INTO structured_requirement_fact (work_item_id, task_id, fact_key, function_name, roles_json,
                         trigger_conditions_json, inputs_json, business_rules_json, outputs_json, permissions_json, state_changes_json,
-                        exception_handling_json, external_dependencies_json) VALUES (?, ?, ?, CAST(? AS JSON), CAST(? AS JSON),
+                        exception_handling_json, external_dependencies_json) VALUES (?, ?, ?, ?, CAST(? AS JSON), CAST(? AS JSON),
                         CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON))""",
-                        claim.workItemId(), fact.factKey(), fact.function(), json(fact.roles()), json(fact.triggerConditions()), json(fact.inputs()),
+                        claim.workItemId(), claim.taskId(), fact.factKey(), fact.function(), json(fact.roles()), json(fact.triggerConditions()), json(fact.inputs()),
                         json(fact.businessRules()), json(fact.outputs()), json(fact.permissions()), json(fact.stateChanges()),
-                        json(fact.exceptionHandling()), json(fact.externalDependencies()));
+                        json(fact.exceptionHandling()), json(fact.externalDependencies())));
                 bind(claim.workItemId(), fact.factKey(), "REQUIREMENT_FACT", "EVIDENCE", fact.evidenceKeys());
             }
             for (RequirementMaterialReviewValidator.ReviewFinding finding : result.reviewFindings()) {
-                jdbc.update("""
+                insertTaskScoped("review finding", () -> jdbc.update("""
                         INSERT INTO structured_review_finding
-                        (work_item_id, finding_key, issue_type, description, test_design_impact, current_project_recommendation,
-                        design_center_guideline_recommendation, handling_level) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        (work_item_id, task_id, finding_key, issue_type, description, test_design_impact, current_project_recommendation,
+                        design_center_guideline_recommendation, handling_level) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
-                        claim.workItemId(), finding.findingKey(), finding.issueType(), finding.description(), finding.testDesignImpact(),
-                        finding.currentProjectRecommendation(), finding.designCenterGuidelineRecommendation(), finding.handlingLevel().name());
+                        claim.workItemId(), claim.taskId(), finding.findingKey(), finding.issueType(), finding.description(), finding.testDesignImpact(),
+                        finding.currentProjectRecommendation(), finding.designCenterGuidelineRecommendation(), finding.handlingLevel().name()));
                 bind(claim.workItemId(), finding.findingKey(), "REVIEW_FINDING", "EVIDENCE", finding.evidenceKeys());
             }
         });
@@ -164,12 +165,12 @@ public final class StructuredGenerationAcceptanceStore {
         Objects.requireNonNull(validator, "validator must not be null").validate(workItem, result);
         accept(claim, result, null, "FEATURE_SCOPE_RECONCILIATION", ignored -> {
             for (FeatureReconciliationValidator.Reconciliation row : result.reconciliations()) {
-                jdbc.update("""
+                insertTaskScoped("feature reconciliation", () -> jdbc.update("""
                         INSERT INTO structured_feature_reconciliation
-                        (work_item_id, reconciliation_key, classification, scope_recommendation, confirmation_status)
-                        VALUES (?, ?, ?, ?, ?)
-                        """, claim.workItemId(), row.reconciliationKey(), row.classification().name(),
-                        row.scopeRecommendation(), row.confirmationStatus().name());
+                        (work_item_id, task_id, reconciliation_key, classification, scope_recommendation, confirmation_status)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """, claim.workItemId(), claim.taskId(), row.reconciliationKey(), row.classification().name(),
+                        row.scopeRecommendation(), row.confirmationStatus().name()));
                 bind(claim.workItemId(), row.reconciliationKey(), "RECONCILIATION", "FUNCTION_LIST_ITEM", row.functionListItemKeys());
                 bind(claim.workItemId(), row.reconciliationKey(), "RECONCILIATION", "REQUIREMENT_FACT", row.requirementFactKeys());
                 bind(claim.workItemId(), row.reconciliationKey(), "RECONCILIATION", "EVIDENCE", row.evidenceKeys());
@@ -200,9 +201,8 @@ public final class StructuredGenerationAcceptanceStore {
                     if (!frozen.allowedEvidenceKeys().contains(evidenceKey)) throw new IllegalArgumentException("Evidence is outside the current parsed-unit slice");
                     registry.requireEvidence(evidenceKey, frozen.materialKey());
                 }
-                jdbc.update("INSERT INTO structured_function_list_item (work_item_id, item_key, path_text, description) VALUES (?, ?, ?, ?)",
-                        claim.workItemId(), row.itemKey(), row.path(), row.description());
-                bind(claim.workItemId(), row.itemKey(), "FUNCTION_LIST_ITEM", "EVIDENCE", row.evidenceKeys());
+                String ownerWorkItemId = functionItemOwner(claim, row);
+                bindIdempotently(ownerWorkItemId, row.itemKey(), "FUNCTION_LIST_ITEM", "EVIDENCE", row.evidenceKeys());
             }
         });
         for (FunctionListItem row : checked) publishKey(registry, StructuredKeyType.FUNCTION_LIST_ITEM, row.itemKey());
@@ -216,20 +216,20 @@ public final class StructuredGenerationAcceptanceStore {
         String coverageStatus = workItem.basis() == FunctionalTestcaseResultValidator.Basis.FORMAL_REQUIREMENT
                 ? "SATISFIED" : "NOT_APPLICABLE";
         accept(claim, result, coverageStatus, "FUNCTIONAL_TESTCASE_DESIGN", ignored -> {
-            jdbc.update("""
+            insertTaskScoped("test point", () -> jdbc.update("""
                     INSERT INTO structured_test_point
-                    (work_item_id, test_point_key, function_key, function_name, test_point_type, basis, description, missing_information_json, formal_coverage_satisfied)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), ?)
-                    """, claim.workItemId(), workItem.testPointKey(), workItem.functionKey(), workItem.functionName(),
-                    workItem.testPointType().name(), workItem.basis().name(), workItem.description(), json(workItem.missingInformation()), outcome.formalCoverageSatisfied());
+                    (work_item_id, task_id, test_point_key, function_key, function_name, test_point_type, basis, description, missing_information_json, formal_coverage_satisfied)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), ?)
+                    """, claim.workItemId(), claim.taskId(), workItem.testPointKey(), workItem.functionKey(), workItem.functionName(),
+                    workItem.testPointType().name(), workItem.basis().name(), workItem.description(), json(workItem.missingInformation()), outcome.formalCoverageSatisfied()));
             bind(claim.workItemId(), workItem.testPointKey(), "TEST_POINT", "REQUIREMENT_FACT", workItem.requirementFactKeys());
             bind(claim.workItemId(), workItem.testPointKey(), "TEST_POINT", "EVIDENCE", workItem.evidenceKeys());
             for (FunctionalTestcaseResultValidator.Testcase testcase : result.testcases()) {
-                jdbc.update("""
+                insertTaskScoped("test case", () -> jdbc.update("""
                         INSERT INTO structured_test_case
-                        (work_item_id, case_key, title, preconditions_json, case_status, missing_information_json)
-                        VALUES (?, ?, ?, CAST(? AS JSON), ?, CAST(? AS JSON))""", claim.workItemId(), testcase.caseKey(), testcase.title(),
-                        json(testcase.preconditions()), testcase.caseStatus().name(), json(testcase.missingInformation()));
+                        (work_item_id, task_id, case_key, title, preconditions_json, case_status, missing_information_json)
+                        VALUES (?, ?, ?, ?, CAST(? AS JSON), ?, CAST(? AS JSON))""", claim.workItemId(), claim.taskId(), testcase.caseKey(), testcase.title(),
+                        json(testcase.preconditions()), testcase.caseStatus().name(), json(testcase.missingInformation())));
                 for (FunctionalTestcaseResultValidator.Step step : testcase.steps()) jdbc.update("""
                         INSERT INTO structured_test_case_step (work_item_id, case_key, step_no, action_text, expected_text)
                         VALUES (?, ?, ?, ?, ?)
@@ -309,6 +309,43 @@ public final class StructuredGenerationAcceptanceStore {
                 INSERT INTO structured_reference_binding (work_item_id, subject_key, subject_type, reference_type, reference_key)
                 VALUES (?, ?, ?, ?, ?)
                 """, workItemId, subjectKey, subjectType, referenceType, reference);
+    }
+
+    private void bindIdempotently(String workItemId, String subjectKey, String subjectType,
+            String referenceType, List<String> references) {
+        for (String reference : references) jdbc.update("""
+                INSERT INTO structured_reference_binding (work_item_id, subject_key, subject_type, reference_type, reference_key)
+                VALUES (?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE reference_key = VALUES(reference_key)
+                """, workItemId, subjectKey, subjectType, referenceType, reference);
+    }
+
+    private String functionItemOwner(WorkClaim claim, FunctionListItem row) {
+        jdbc.update("""
+                INSERT INTO structured_function_list_item (work_item_id, task_id, item_key, path_text, description)
+                VALUES (?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE item_key = VALUES(item_key)
+                """, claim.workItemId(), claim.taskId(), row.itemKey(), row.path(), row.description());
+        List<StoredFunctionItem> existing = jdbc.query("""
+                SELECT work_item_id, path_text, description
+                FROM structured_function_list_item
+                WHERE task_id = ? AND item_key = ? FOR UPDATE
+                """, (result, ignored) -> new StoredFunctionItem(result.getString("work_item_id"),
+                result.getString("path_text"), result.getString("description")), claim.taskId(), row.itemKey());
+        if (existing.isEmpty()) throw new IllegalStateException("Task-scoped function-list item was not persisted");
+        StoredFunctionItem stored = existing.get(0);
+        if (!stored.path().equals(row.path()) || !stored.description().equals(row.description())) {
+            throw new IllegalStateException("Stable function-list identity conflicts with persisted business text");
+        }
+        return stored.workItemId();
+    }
+
+    private static void insertTaskScoped(String kind, Runnable insert) {
+        try {
+            insert.run();
+        } catch (DuplicateKeyException exception) {
+            throw new IllegalStateException("Task-scoped " + kind + " key conflicts with an accepted result", exception);
+        }
     }
 
     private FrozenWork lockedWork(String workItemId) {
@@ -455,4 +492,5 @@ public final class StructuredGenerationAcceptanceStore {
     private record FrozenWork(String id, String taskId, String identityKey, String skillName, String operationName, String status,
             String materialKey, List<String> allowedEvidenceKeys, String leaseOwner, Instant leaseExpiresAt, String acceptedResultSha256) { }
     private record CompletedRow(String status, String hash) { }
+    private record StoredFunctionItem(String workItemId, String path, String description) { }
 }

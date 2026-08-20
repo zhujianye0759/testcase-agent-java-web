@@ -72,6 +72,8 @@ KEE 已验证字段、类型、枚举、边界和编号，不等于业务可接�
 
 工作项 `identity_key` 是幂等定位键，不是绕过冻结坐标比较的授权凭据。原子 upsert 后必须锁定读取已有行，并逐项比较 skill、operation、ordinal、material、source label、evidence closure、function key 和 test-point key；只有完全相同的重放才返回原 ID，不同载荷不得修改原行。
 
+进程内 registry 只用于当前校验闭包，不承担耐久唯一性。所有跨 work item 可引用的业务表都保存 `task_id` 并建立 `(task_id,business_key)` 唯一约束；重复模型 key 的第二次写入作为任务内身份冲突回滚。功能清单 stable key 由 Java 生成，允许跨切片合并：先执行原子 insert-on-duplicate，再锁读已存在行，核对 path/description 一致后把当前切片的授权 evidence binding 合并到唯一 owner work；冲突则回滚当前接收。详情和 Excel 均从这些任务级唯一表读取。
+
 ### 7. 页面和 Excel 只消费持久化业务投影
 
 任务详情从 Java 数据库读取材料审查发现、功能核对、测试点、用例、处理状态和覆盖结果。它不代理或保存供页面展示的 KEE 原始 JSON、修复原文、Skill 正文或 Markdown。

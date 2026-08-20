@@ -84,6 +84,18 @@ class ApplicationDatabaseMigrationTest {
         assertThat(columnNames(jdbcTemplate, "structured_generation_work_item"))
                 .contains("identity_key", "ordinal_start", "ordinal_end", "accepted_result_sha256")
                 .doesNotContain("raw_model_json", "raw_markdown");
+        for (String table : java.util.List.of("structured_requirement_fact", "structured_review_finding",
+                "structured_feature_reconciliation", "structured_function_list_item", "structured_test_point",
+                "structured_test_case")) {
+            assertThat(columnNames(jdbcTemplate, table)).contains("task_id");
+        }
+        assertThat(uniqueIndexNames(jdbcTemplate)).contains(
+                "uq_structured_requirement_fact_task_key",
+                "uq_structured_review_finding_task_key",
+                "uq_structured_reconciliation_task_key",
+                "uq_structured_function_list_task_item",
+                "uq_structured_test_point_task_key",
+                "uq_structured_test_case_task_key");
     }
 
     private static java.util.List<String> tableNames(JdbcTemplate jdbcTemplate) {
@@ -100,5 +112,13 @@ class ApplicationDatabaseMigrationTest {
                 FROM information_schema.columns
                 WHERE table_schema = DATABASE() AND table_name = ?
                 """, String.class, tableName);
+    }
+
+    private static java.util.List<String> uniqueIndexNames(JdbcTemplate jdbcTemplate) {
+        return jdbcTemplate.queryForList("""
+                SELECT DISTINCT index_name
+                FROM information_schema.statistics
+                WHERE table_schema = DATABASE() AND non_unique = 0
+                """, String.class);
     }
 }

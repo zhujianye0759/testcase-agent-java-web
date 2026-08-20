@@ -74,6 +74,8 @@ Java SHALL 要求结果 `function_key` 和 `test_point_key` 与请求完全一�
 ### Requirement: [REQ-STG-006] 每个工作项原子接收且失败不污染已验收结果
 Java SHALL 在同一事务中保存一个已完整通过业务校验的 Skill 结果、引用绑定和尝试终态。失败或重试 MUST 产生零部分业务结果；重试 SHALL 只替换当前失败工作项，不得覆盖其他已验收材料、核对或测试点结果。
 
+所有会跨 work item 被引用的 fact、finding、function-list item、reconciliation、test-point 和 testcase key SHALL 具有任务级数据库唯一性，MUST NOT 依赖进程内 registry 证明跨切片或重启后的唯一。模型产生的 key 在进入任务总账前 SHALL 由 Java 绑定到任务/来源工作身份；不同工作项再次写入相同任务 key 时 SHALL 原子冲突并回滚，不得形成歧义 join。多个 extraction 切片产生相同 Java stable item key 时，Java SHALL 以原子 upsert 后锁读的方式核对规范化业务文本一致并合并各自已授权证据；业务文本冲突 SHALL 失败关闭。页面、核对输入和 Excel MUST 只读取任务级唯一条目，不得因跨切片或重启回放重复展示。
+
 引用绑定 SHALL 明确持久化 `subject_type`，并将其纳入绑定主键和查询条件；不同业务类型 MAY 使用相同 subject key，MUST NOT 被合并或产生主键冲突。
 
 数据库工作项中冻结的 skill、operation、material key、切片 evidence closure、lease owner 和 lease expiry SHALL 是接收授权的唯一真相。Java SHALL 在 accept/fail 的同一锁定事务中重读并验证这些值，MUST NOT 信任调用方可构造的 claim 字段扩大权限。`feature-scope-reconciliation` 工作项 MUST 区分 `extract_function_list` 与 `reconcile`；extract 注册缺少材料、来源标签或非空切片 evidence closure 时 SHALL 失败关闭。
@@ -85,6 +87,21 @@ Java SHALL 对工作项重试设置固定最大尝试数，并只允许 `model_u
 #### Scenario: 持久化中途失败
 - **WHEN** 保存任一业务行、引用或尝试终态失败
 - **THEN** Java SHALL 回滚该工作项的全部写入
+
+#### Scenario: 跨切片返回相同稳定功能项
+- **WHEN** 两个已验证 extraction 切片生成相同 Java stable item key 且业务文本一致
+- **THEN** Java SHALL 只保留一个任务级功能项并合并两片的授权证据
+- **AND** 重启后重建 registry 或回放相同结果不得产生第二行
+
+#### Scenario: 跨工作项模型 key 冲突
+- **WHEN** 第二个工作项或重启后的 registry 尝试以同一任务 key 保存不同 fact、finding、reconciliation、test-point 或 testcase 业务内容
+- **THEN** Java SHALL 依靠任务级耐久唯一约束原子拒绝当前工作项
+- **AND** 已验收业务行和引用总账 SHALL 保持不变
+
+#### Scenario: 并发首次写入同一稳定功能项
+- **WHEN** 两个 extraction 切片并发首次接受相同 `(task_id,item_key)`
+- **THEN** Java SHALL 通过原子 upsert 收敛为一行、锁定核对文本并合并授权 evidence
+- **AND** MUST NOT 依赖未命中查询的 gap lock 或默认隔离级别
 
 #### Scenario: 调用方伪造更宽切片闭包
 - **WHEN** claim 携带的材料或 evidence closure 与数据库冻结工作项不一致

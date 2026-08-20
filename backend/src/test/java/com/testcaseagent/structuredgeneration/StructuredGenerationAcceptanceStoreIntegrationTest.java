@@ -285,6 +285,100 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
                 .isInstanceOf(IllegalStateException.class);
     }
 
+    /** [Req-ID]: REQ-STG-003, REQ-STG-006 */
+    @Test
+    void mergesTheSameStableFunctionItemAcrossSlicesAndARegistryRestartIntoOneTaskRow() {
+        store.register(new StructuredGenerationAcceptanceStore.WorkRegistration("task-1", "b".repeat(64),
+                "feature-scope-reconciliation", "FEATURE_SCOPE_EXTRACT", 1, 1, "material-1", "slice 1",
+                List.of("evidence-1"), null, null));
+        StructuredGenerationAcceptanceStore.WorkClaim first = store.claimNext("task-1", "worker-1").orElseThrow();
+        StructuredValidationRegistry firstRegistry = StructuredValidationRegistry.forTask("task-1")
+                .registerEvidence(new StructuredEvidence("evidence-1", "task-1", "material-1", false, false, true));
+        store.acceptFunctionListItems(first, firstRegistry, List.of(
+                new StructuredGenerationAcceptanceStore.FunctionListItem("fli-stable", "订单/提交", "提交订单", List.of("evidence-1"))));
+
+        store.register(new StructuredGenerationAcceptanceStore.WorkRegistration("task-1", "c".repeat(64),
+                "feature-scope-reconciliation", "FEATURE_SCOPE_EXTRACT", 2, 2, "material-1", "slice 2",
+                List.of("evidence-2"), null, null));
+        StructuredGenerationAcceptanceStore.WorkClaim second = store.claimNext("task-1", "worker-2").orElseThrow();
+        StructuredValidationRegistry rebuiltRegistry = StructuredValidationRegistry.forTask("task-1")
+                .registerEvidence(new StructuredEvidence("evidence-2", "task-1", "material-1", false, false, true));
+        store.acceptFunctionListItems(second, rebuiltRegistry, List.of(
+                new StructuredGenerationAcceptanceStore.FunctionListItem("fli-stable", "订单/提交", "提交订单", List.of("evidence-2"))));
+
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_function_list_item WHERE task_id = 'task-1' AND item_key = 'fli-stable'",
+                Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_reference_binding WHERE subject_type = 'FUNCTION_LIST_ITEM' "
+                + "AND subject_key = 'fli-stable'", Integer.class)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_generation_work_item WHERE task_id = 'task-1' AND status = 'COMPLETED'",
+                Integer.class)).isEqualTo(2);
+        rebuiltRegistry.require(StructuredKeyType.FUNCTION_LIST_ITEM, "fli-stable");
+    }
+
+    /** [Req-ID]: REQ-STG-003, REQ-STG-006 */
+    @Test
+    void atomicallyMergesConcurrentFirstWritesOfTheSameStableFunctionItem() throws Exception {
+        store.register(new StructuredGenerationAcceptanceStore.WorkRegistration("task-1", "d".repeat(64),
+                "feature-scope-reconciliation", "FEATURE_SCOPE_EXTRACT", 1, 1, "material-1", "slice 1",
+                List.of("evidence-1"), null, null));
+        StructuredGenerationAcceptanceStore.WorkClaim first = store.claimNext("task-1", "worker-1").orElseThrow();
+        store.register(new StructuredGenerationAcceptanceStore.WorkRegistration("task-1", "e".repeat(64),
+                "feature-scope-reconciliation", "FEATURE_SCOPE_EXTRACT", 2, 2, "material-1", "slice 2",
+                List.of("evidence-2"), null, null));
+        StructuredGenerationAcceptanceStore.WorkClaim second = store.claimNext("task-1", "worker-2").orElseThrow();
+        StructuredValidationRegistry firstRegistry = StructuredValidationRegistry.forTask("task-1")
+                .registerEvidence(new StructuredEvidence("evidence-1", "task-1", "material-1", false, false, true));
+        StructuredValidationRegistry secondRegistry = StructuredValidationRegistry.forTask("task-1")
+                .registerEvidence(new StructuredEvidence("evidence-2", "task-1", "material-1", false, false, true));
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService workers = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> firstWrite = workers.submit(() -> {
+                start.await();
+                store.acceptFunctionListItems(first, firstRegistry, List.of(
+                        new StructuredGenerationAcceptanceStore.FunctionListItem("fli-concurrent", "订单/提交", "提交订单", List.of("evidence-1"))));
+                return null;
+            });
+            Future<?> secondWrite = workers.submit(() -> {
+                start.await();
+                store.acceptFunctionListItems(second, secondRegistry, List.of(
+                        new StructuredGenerationAcceptanceStore.FunctionListItem("fli-concurrent", "订单/提交", "提交订单", List.of("evidence-2"))));
+                return null;
+            });
+            start.countDown();
+            firstWrite.get();
+            secondWrite.get();
+        } finally {
+            workers.shutdownNow();
+        }
+
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_function_list_item WHERE task_id = 'task-1' "
+                + "AND item_key = 'fli-concurrent'", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_reference_binding WHERE subject_type = 'FUNCTION_LIST_ITEM' "
+                + "AND subject_key = 'fli-concurrent'", Integer.class)).isEqualTo(2);
+    }
+
+    /** [Req-ID]: REQ-STG-002, REQ-STG-006 */
+    @Test
+    void rejectsARepeatedTaskFactKeyWithDifferentBusinessTextAfterRegistryRestart() {
+        StructuredGenerationAcceptanceStore.WorkClaim first = claimReviewWork();
+        store.acceptReview(first, new RequirementMaterialReviewValidator(), reviewItem(),
+                new RequirementMaterialReviewValidator.Result(List.of(fact("fact-reused", "提交订单")), List.of()));
+        store.register(reviewWork("f".repeat(64)));
+        StructuredGenerationAcceptanceStore.WorkClaim conflicting = store.claimNext("task-1", "worker-2").orElseThrow();
+
+        assertThatThrownBy(() -> store.acceptReview(conflicting, new RequirementMaterialReviewValidator(), reviewItem(),
+                new RequirementMaterialReviewValidator.Result(List.of(fact("fact-reused", "取消订单")), List.of())))
+                .isInstanceOf(IllegalStateException.class);
+
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_requirement_fact WHERE task_id = 'task-1' "
+                + "AND fact_key = 'fact-reused'", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT function_name FROM structured_requirement_fact WHERE task_id = 'task-1' "
+                + "AND fact_key = 'fact-reused'", String.class)).isEqualTo("提交订单");
+        assertThat(jdbc.queryForObject("SELECT status FROM structured_generation_work_item WHERE id = ?",
+                String.class, conflicting.workItemId())).isEqualTo("RUNNING");
+    }
+
     /** [Req-ID]: REQ-STG-006 */
     @Test
     void rejectsFunctionListEvidenceOutsideTheClaimedMaterialWithoutPublishingKeys() {

@@ -175,50 +175,50 @@ class GenerationTaskDetailTest {
         String factWorkId = completedWork(taskId, "requirement-material-quality-review", "REQUIREMENT_MATERIAL_REVIEW", "需求来源");
         jdbcTemplate.update("""
                 INSERT INTO structured_requirement_fact
-                (work_item_id, fact_key, function_name, roles_json, trigger_conditions_json, inputs_json, business_rules_json,
+                (work_item_id, task_id, fact_key, function_name, roles_json, trigger_conditions_json, inputs_json, business_rules_json,
                  outputs_json, permissions_json, state_changes_json, exception_handling_json, external_dependencies_json)
-                VALUES (?, 'fact-internal-key', '订单提交', CAST('[\"用户\"]' AS JSON), CAST('[]' AS JSON), CAST('[]' AS JSON),
+                VALUES (?, ?, 'fact-internal-key', '订单提交', CAST('[\"用户\"]' AS JSON), CAST('[]' AS JSON), CAST('[]' AS JSON),
                         CAST('[]' AS JSON), CAST('[]' AS JSON), CAST('[]' AS JSON), CAST('[]' AS JSON), CAST('[]' AS JSON), CAST('[]' AS JSON))
-                """, factWorkId);
+                """, factWorkId, taskId);
 
         String reviewWorkId = completedWork(taskId, "requirement-material-quality-review", "REQUIREMENT_MATERIAL_REVIEW",
                 "需求来源 https://private.example/secret");
         jdbcTemplate.update("""
                 INSERT INTO structured_review_finding
-                (work_item_id, finding_key, issue_type, description, test_design_impact, current_project_recommendation,
+                (work_item_id, task_id, finding_key, issue_type, description, test_design_impact, current_project_recommendation,
                  design_center_guideline_recommendation, handling_level)
-                VALUES (?, 'finding-internal-key', '完整性', 'java.lang.IllegalStateException: secret\n    at com.example.Secret.run(Secret.java:1)',
+                VALUES (?, ?, 'finding-internal-key', '完整性', 'java.lang.IllegalStateException: secret\n    at com.example.Secret.run(Secret.java:1)',
                         '补充异常场景', '补齐需求说明', '建立审查准则', 'BLOCKING')
-                """, reviewWorkId);
+                """, reviewWorkId, taskId);
 
         String functionListWorkId = completedWork(taskId, "feature-scope-reconciliation", "FEATURE_SCOPE_EXTRACT", "功能清单");
         jdbcTemplate.update("""
-                INSERT INTO structured_function_list_item (work_item_id, item_key, path_text, description)
-                VALUES (?, 'function-list-internal-key', '订单/提交', '提交订单')
-                """, functionListWorkId);
+                INSERT INTO structured_function_list_item (work_item_id, task_id, item_key, path_text, description)
+                VALUES (?, ?, 'function-list-internal-key', '订单/提交', '提交订单')
+                """, functionListWorkId, taskId);
         String reconciliationWorkId = completedWork(taskId, "feature-scope-reconciliation", "FEATURE_SCOPE_RECONCILIATION", "核对");
         jdbcTemplate.update("""
                 INSERT INTO structured_feature_reconciliation
-                (work_item_id, reconciliation_key, classification, scope_recommendation, confirmation_status)
-                VALUES (?, 'reconciliation-internal-key', 'EXACT_MATCH', '保持范围', 'CONFIRMED')
-                """, reconciliationWorkId);
+                (work_item_id, task_id, reconciliation_key, classification, scope_recommendation, confirmation_status)
+                VALUES (?, ?, 'reconciliation-internal-key', 'EXACT_MATCH', '保持范围', 'CONFIRMED')
+                """, reconciliationWorkId, taskId);
         bind(reconciliationWorkId, "reconciliation-internal-key", "RECONCILIATION", "FUNCTION_LIST_ITEM", "function-list-internal-key");
         bind(reconciliationWorkId, "reconciliation-internal-key", "RECONCILIATION", "REQUIREMENT_FACT", "fact-internal-key");
 
         String testcaseWorkId = completedWork(taskId, "functional-testcase-design", "FUNCTIONAL_TESTCASE_DESIGN", "测试点");
         jdbcTemplate.update("""
                 INSERT INTO structured_test_point
-                (work_item_id, test_point_key, function_key, function_name, test_point_type, basis, description, missing_information_json,
+                (work_item_id, task_id, test_point_key, function_key, function_name, test_point_type, basis, description, missing_information_json,
                  formal_coverage_satisfied)
-                VALUES (?, 'test-point-internal-key', 'function-internal-key', '订单提交', 'NORMAL_BEHAVIOR', 'FORMAL_REQUIREMENT', '提交成功',
+                VALUES (?, ?, 'test-point-internal-key', 'function-internal-key', '订单提交', 'NORMAL_BEHAVIOR', 'FORMAL_REQUIREMENT', '提交成功',
                         CAST('[\"无\"]' AS JSON), TRUE)
-                """, testcaseWorkId);
+                """, testcaseWorkId, taskId);
         jdbcTemplate.update("""
                 INSERT INTO structured_test_case
-                (work_item_id, case_key, title, preconditions_json, case_status, missing_information_json)
-                VALUES (?, 'case-internal-key', '正常提交订单', CAST('[\"用户已登录\"]' AS JSON), 'PENDING_CONFIRMATION',
+                (work_item_id, task_id, case_key, title, preconditions_json, case_status, missing_information_json)
+                VALUES (?, ?, 'case-internal-key', '正常提交订单', CAST('[\"用户已登录\"]' AS JSON), 'PENDING_CONFIRMATION',
                         CAST('[\"接口超时阈值\"]' AS JSON))
-                """, testcaseWorkId);
+                """, testcaseWorkId, taskId);
         jdbcTemplate.update("""
                 INSERT INTO structured_test_case_step (work_item_id, case_key, step_no, action_text, expected_text)
                 VALUES (?, 'case-internal-key', 1, '提交订单', '订单创建成功')
@@ -231,17 +231,17 @@ class GenerationTaskDetailTest {
                 "REQUIREMENT_MATERIAL_REVIEW", "其他任务需求");
         jdbcTemplate.update("""
                 INSERT INTO structured_requirement_fact
-                (work_item_id, fact_key, function_name, roles_json, trigger_conditions_json, inputs_json, business_rules_json,
+                (work_item_id, task_id, fact_key, function_name, roles_json, trigger_conditions_json, inputs_json, business_rules_json,
                  outputs_json, permissions_json, state_changes_json, exception_handling_json, external_dependencies_json)
-                VALUES (?, 'fact-internal-key', '恶意跨任务需求', CAST('[]' AS JSON), CAST('[]' AS JSON), CAST('[]' AS JSON),
+                VALUES (?, ?, 'fact-internal-key', '恶意跨任务需求', CAST('[]' AS JSON), CAST('[]' AS JSON), CAST('[]' AS JSON),
                         CAST('[]' AS JSON), CAST('[]' AS JSON), CAST('[]' AS JSON), CAST('[]' AS JSON), CAST('[]' AS JSON), CAST('[]' AS JSON))
-                """, otherFactWorkId);
+                """, otherFactWorkId, otherTaskId);
         String otherFunctionWorkId = completedWork(otherTaskId, "feature-scope-reconciliation",
                 "FEATURE_SCOPE_EXTRACT", "其他任务功能清单");
         jdbcTemplate.update("""
-                INSERT INTO structured_function_list_item (work_item_id, item_key, path_text, description)
-                VALUES (?, 'function-list-internal-key', '恶意跨任务功能', '不得进入当前任务投影')
-                """, otherFunctionWorkId);
+                INSERT INTO structured_function_list_item (work_item_id, task_id, item_key, path_text, description)
+                VALUES (?, ?, 'function-list-internal-key', '恶意跨任务功能', '不得进入当前任务投影')
+                """, otherFunctionWorkId, otherTaskId);
 
         JsonNode response = objectMapper.readTree(objectMapper.writeValueAsString(
                 GenerationTaskDetailResponse.from(repository.findDetail(taskId).orElseThrow())));
