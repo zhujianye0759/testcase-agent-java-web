@@ -64,8 +64,8 @@ describe('generation task detail', () => {
           auditRows: [{ sequence: 99, subjectOrFeature: '旧 Markdown 行', issueCategory: '不应显示', evidenceComparison: 'raw' }],
           testCaseRows: [{ ...completedDetail.testCaseRows[0], caseName: '旧 Markdown 用例' }],
           structuredResult: {
-            processingStatus: 'PARTIAL',
-            coverageStatus: 'INSUFFICIENT',
+            processingStatus: 'COMPLETED',
+            coverageStatus: 'PARTIAL',
             pendingCandidateCaseCount: 1,
             reviewFindings: [{
               sourceLabel: '需求规格说明书', subject: '订单提交', issueType: '边界未说明', description: '未说明最大订单金额。',
@@ -93,7 +93,7 @@ describe('generation task detail', () => {
 
     const result = wrapper.get('[data-testid="structured-result"]')
     expect(wrapper.text()).toContain('处理状态')
-    expect(wrapper.text()).toContain('正式覆盖不足')
+    expect(wrapper.text()).toContain('正式覆盖部分完整')
     expect(wrapper.text()).toContain('待确认候选')
     expect(result.text()).toContain('未说明最大订单金额')
     expect(result.text()).toContain('纳入本次测试范围')
@@ -102,6 +102,27 @@ describe('generation task detail', () => {
     expect(wrapper.text()).not.toContain('旧 Markdown 用例')
     expect(wrapper.text()).not.toContain('item_key')
     expect(wrapper.text()).not.toContain('evidence_keys')
+  })
+
+  it('[Req-ID]: REQ-SGD-002 does not expose an unknown structured enum as reader-facing text', async () => {
+    const wrapper = mount(TaskDetailView, {
+      props: {
+        taskId: 'task-unknown-structured-status',
+        getTask: vi.fn().mockResolvedValue({
+          ...completedDetail,
+          structuredResult: {
+            processingStatus: 'PARTIAL', coverageStatus: 'INSUFFICIENT', pendingCandidateCaseCount: 0,
+            reviewFindings: [], reconciliations: [], testPoints: [],
+          },
+        }),
+      } as never,
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('处理状态不可用')
+    expect(wrapper.text()).toContain('覆盖状态不可用')
+    expect(wrapper.text()).not.toContain('INSUFFICIENT')
+    wrapper.unmount()
   })
 
   it('[Req-ID]: REQ-WEB-003, REQ-WEB-005 renders a business-readable result summary and lets the response name the download', async () => {

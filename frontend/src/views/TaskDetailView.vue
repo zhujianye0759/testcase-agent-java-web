@@ -141,9 +141,20 @@ function admissionTypeText(types?: string) {
 function coverageText(status?: string) {
   return {
     PENDING: '正式覆盖待完成',
-    SATISFIED: '正式覆盖已满足',
-    INSUFFICIENT: '正式覆盖不足',
-  }[status ?? ''] ?? valueOrDash(status)
+    COMPLETE: '正式覆盖完整',
+    PARTIAL: '正式覆盖部分完整',
+    UNABLE_TO_GENERATE: '正式覆盖无法生成',
+  }[status ?? ''] ?? '覆盖状态不可用'
+}
+
+function structuredProcessingText(status?: string) {
+  return {
+    PENDING: '待处理',
+    RUNNING: '处理中',
+    COMPLETED: '已完成',
+    FAILED: '失败',
+    CANCELLED: '已取消',
+  }[status ?? ''] ?? '处理状态不可用'
 }
 
 function candidateStatusText(status?: string) {
@@ -263,7 +274,7 @@ watch(() => props.taskId, () => { void loadTask() })
         </div>
         <div v-if="structuredResult">
           <dt>处理状态</dt>
-          <dd>{{ statusText(structuredResult.processingStatus) }}</dd>
+          <dd>{{ structuredProcessingText(structuredResult.processingStatus) }}</dd>
         </div>
         <div v-if="structuredResult">
           <dt>正式覆盖</dt>

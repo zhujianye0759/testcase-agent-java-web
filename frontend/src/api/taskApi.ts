@@ -71,8 +71,8 @@ export interface GenerationTaskBusinessProgress {
 
 /** Java-validated and persisted business projection; it contains no KEE/model payload or internal keys. */
 export interface StructuredGenerationResult {
-  processingStatus: string
-  coverageStatus: 'PENDING' | 'SATISFIED' | 'INSUFFICIENT'
+  processingStatus: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
+  coverageStatus: 'PENDING' | 'COMPLETE' | 'PARTIAL' | 'UNABLE_TO_GENERATE'
   pendingCandidateCaseCount: number
   reviewFindings: Array<{
     sourceLabel: string
