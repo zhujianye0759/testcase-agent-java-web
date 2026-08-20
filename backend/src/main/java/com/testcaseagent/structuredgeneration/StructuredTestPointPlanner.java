@@ -49,13 +49,14 @@ public final class StructuredTestPointPlanner {
 
     private static void addIfPresent(List<FunctionalTestcaseDesignInput> points, FunctionDefinition function,
             FormalFact fact, FunctionalTestcaseDesignInput.TestPointType type, List<String> values) {
-        if (!values.isEmpty()) points.add(formal(function, fact, type, values.get(0)));
+        for (String value : values) points.add(formal(function, fact, type, value));
     }
 
     private static FunctionalTestcaseDesignInput formal(FunctionDefinition function, FormalFact fact,
             FunctionalTestcaseDesignInput.TestPointType type, String description) {
         return new FunctionalTestcaseDesignInput(function.functionKey(), function.functionName(),
-                new FunctionalTestcaseDesignInput.TestPoint(pointKey(function.functionKey(), fact.factKey(), type),
+                new FunctionalTestcaseDesignInput.TestPoint(pointKey(
+                        function.functionKey(), fact.factKey() + "\u0000" + description, type),
                         type, description, List.of(fact.factKey()), fact.evidenceKeys(),
                         FunctionalTestcaseDesignInput.Basis.FORMAL_REQUIREMENT, List.of()));
     }

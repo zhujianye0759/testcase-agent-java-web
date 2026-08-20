@@ -24,7 +24,6 @@ public final class StructuredCompletionGate {
                 && snapshot.completedReviewWork() == snapshot.totalReviewWork()
                 && snapshot.reconciliationComplete()
                 && snapshot.scopeFrozen()
-                && coverage == StructuredCoverageStatus.SATISFIED
                 && snapshot.artifactValidated()
                 && snapshot.failedWorkCount() == 0;
         if (completed) return new Outcome(GenerationTaskStatus.COMPLETED, coverage, true);

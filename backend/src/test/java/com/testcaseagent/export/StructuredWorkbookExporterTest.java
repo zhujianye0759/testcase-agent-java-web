@@ -20,14 +20,12 @@ class StructuredWorkbookExporterTest {
     Path artifactRoot;
 
     @Test
-    void exportsOnlyValidatedStructuredRowsWithTwoSheetsVisibleStatusAndDeduplicatedSources() throws Exception {
+    void exportsOnlyValidatedStructuredRowsWithTwoSheetsAndVisibleStatus() throws Exception {
         StructuredWorkbookExportRequest request = new StructuredWorkbookExportRequest("task-1", List.of(
                 new StructuredReviewRow("finding-key-2", 2, StructuredReviewRow.Source.REQUIREMENT_MATERIAL_REVIEW,
                         "订单查询", "ambiguous", "补充登录超时处理", true),
                 new StructuredReviewRow("finding-key-1", 1, StructuredReviewRow.Source.FEATURE_RECONCILIATION,
-                        "订单查询", "conflict", "范围待确认", true),
-                new StructuredReviewRow("finding-key-1", 9, StructuredReviewRow.Source.FEATURE_RECONCILIATION,
-                        "不应出现", "conflict", "重复来源", true)),
+                        "订单查询", "conflict", "范围待确认", true)),
                 List.of(
                         testcase("case-source-2", "待确认候选", StructuredTestCaseRow.Status.PENDING_CONFIRMATION),
                         testcase("case-source-1", "正式用例", StructuredTestCaseRow.Status.FORMAL)));
@@ -51,6 +49,27 @@ class StructuredWorkbookExporterTest {
             assertThat(workbook.getSheetAt(1).getRow(1).getCell(0).getCellType()).isEqualTo(CellType.STRING);
             assertThat(workbook.getSheetAt(1).getRow(1).getCell(4).getStringCellValue()).isEqualTo("1. 提交订单");
         }
+    }
+
+    @Test
+    void rejectsDuplicateReviewAndTestcaseSourceIdentitiesInsteadOfSilentlyDroppingRows() {
+        ApachePoiWorkbookExporter exporter = new ApachePoiWorkbookExporter(artifactRoot);
+        StructuredReviewRow review = new StructuredReviewRow("review-1", 1,
+                StructuredReviewRow.Source.REQUIREMENT_MATERIAL_REVIEW, "订单", "issue", "说明", true);
+
+        assertThatThrownBy(() -> exporter.exportStructured(new StructuredWorkbookExportRequest("task-review-duplicate",
+                List.of(review, new StructuredReviewRow("review-1", 2,
+                        StructuredReviewRow.Source.FEATURE_RECONCILIATION, "另一个订单", "conflict", "不应丢行", true)),
+                List.of(testcase("case-1", "正式用例", StructuredTestCaseRow.Status.FORMAL)))))
+                .isInstanceOf(WorkbookExportException.class)
+                .hasMessageContaining("duplicate");
+
+        assertThatThrownBy(() -> exporter.exportStructured(new StructuredWorkbookExportRequest("task-case-duplicate",
+                List.of(review), List.of(
+                        testcase("case-1", "正式用例", StructuredTestCaseRow.Status.FORMAL),
+                        testcase("case-1", "另一个正式用例", StructuredTestCaseRow.Status.FORMAL)))))
+                .isInstanceOf(WorkbookExportException.class)
+                .hasMessageContaining("duplicate");
     }
 
     @Test

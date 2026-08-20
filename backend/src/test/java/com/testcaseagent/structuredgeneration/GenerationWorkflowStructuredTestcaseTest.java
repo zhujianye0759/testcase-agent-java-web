@@ -38,6 +38,33 @@ class GenerationWorkflowStructuredTestcaseTest {
     }
 
     @Test
+    void preservesEveryFormalFactValueWithStableOrderAndUniqueValueOwnedKeys() {
+        var planner = new StructuredTestPointPlanner();
+        var fact = new StructuredTestPointPlanner.FormalFact(
+                "fact-1", "创建订单", List.of("校验客户", "校验金额"), List.of("金额不得小于零", "金额不得超过额度"),
+                List.of("订单管理员", "财务复核员"), List.of("草稿变为已提交", "已提交变为已支付"),
+                List.of("库存不足", "支付失败"), List.of("库存服务", "支付服务"), List.of("evidence-1"));
+        var definition = new StructuredTestPointPlanner.FunctionDefinition(
+                "function-1", "创建订单", List.of(fact), List.of());
+
+        var first = planner.plan(definition);
+        var second = planner.plan(definition);
+
+        assertThat(first).hasSize(13);
+        assertThat(first).extracting(input -> input.testPoint().description()).containsExactly(
+                "创建订单",
+                "校验客户", "校验金额",
+                "金额不得小于零", "金额不得超过额度",
+                "订单管理员", "财务复核员",
+                "草稿变为已提交", "已提交变为已支付",
+                "库存不足", "支付失败",
+                "库存服务", "支付服务");
+        assertThat(first).extracting(input -> input.testPoint().testPointKey()).doesNotHaveDuplicates();
+        assertThat(first).extracting(input -> input.testPoint().testPointKey())
+                .containsExactlyElementsOf(second.stream().map(input -> input.testPoint().testPointKey()).toList());
+    }
+
+    @Test
     void keepsGeneralExperiencePendingByRequiringExplicitMissingInformation() {
         var planner = new StructuredTestPointPlanner();
         var gap = new StructuredTestPointPlanner.ExperienceGap(

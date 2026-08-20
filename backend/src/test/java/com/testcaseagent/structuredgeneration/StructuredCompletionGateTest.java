@@ -17,10 +17,10 @@ class StructuredCompletionGateTest {
     }
 
     @Test
-    void terminalCallsWithMissingFormalCoverageRemainPartialAndInsufficient() {
+    void terminalCallsWithMissingFormalCoverageCompleteProcessingAndRemainInsufficient() {
         var outcome = new StructuredCompletionGate().evaluate(snapshot(3, 2, true, true));
 
-        assertThat(outcome.processingStatus()).isEqualTo(GenerationTaskStatus.PARTIAL);
+        assertThat(outcome.processingStatus()).isEqualTo(GenerationTaskStatus.COMPLETED);
         assertThat(outcome.coverageStatus()).isEqualTo(StructuredCoverageStatus.INSUFFICIENT);
         assertThat(outcome.artifactPublishable()).isTrue();
     }

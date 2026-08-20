@@ -85,14 +85,22 @@ public final class ApachePoiWorkbookExporter implements WorkbookExporter {
 
     private static List<StructuredReviewRow> distinctReviews(List<StructuredReviewRow> rows) {
         Map<String, StructuredReviewRow> distinct = new LinkedHashMap<>();
-        for (StructuredReviewRow row : rows) distinct.putIfAbsent(requiredSource(row == null ? null : row.sourceId()), row);
+        for (StructuredReviewRow row : rows) {
+            if (distinct.putIfAbsent(requiredSource(row == null ? null : row.sourceId()), row) != null) {
+                throw new WorkbookExportException("Structured review source identity is duplicate");
+            }
+        }
         return distinct.values().stream().sorted(Comparator.comparingInt(StructuredReviewRow::sequence)
                 .thenComparing(row -> row.source().name()).thenComparing(StructuredReviewRow::sourceId)).toList();
     }
 
     private static List<StructuredTestCaseRow> distinctTestcases(List<StructuredTestCaseRow> rows) {
         Map<String, StructuredTestCaseRow> distinct = new LinkedHashMap<>();
-        for (StructuredTestCaseRow row : rows) distinct.putIfAbsent(requiredSource(row == null ? null : row.sourceId()), row);
+        for (StructuredTestCaseRow row : rows) {
+            if (distinct.putIfAbsent(requiredSource(row == null ? null : row.sourceId()), row) != null) {
+                throw new WorkbookExportException("Structured testcase source identity is duplicate");
+            }
+        }
         return distinct.values().stream().sorted(Comparator.comparing((StructuredTestCaseRow row) -> row.status().ordinal())
                 .thenComparing(StructuredTestCaseRow::functionName).thenComparing(StructuredTestCaseRow::title)
                 .thenComparing(StructuredTestCaseRow::sourceId)).toList();
