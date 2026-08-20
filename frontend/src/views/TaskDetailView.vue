@@ -17,6 +17,11 @@ const props = withDefaults(defineProps<{
 const detail = ref<GenerationTaskDetail>()
 const loading = ref(true)
 const loadError = ref('')
+const loadErrorState = computed(() => {
+  if (/（403）|\b403\b/.test(loadError.value)) return 'forbidden'
+  if (/（404）|\b404\b/.test(loadError.value)) return 'not-found'
+  return 'error'
+})
 const pendingAction = ref<'cancel' | 'retry'>()
 const actionError = ref('')
 const mutating = ref(false)
@@ -37,6 +42,7 @@ const batchFailureSummary = computed(() => detail.value?.batches
   .map((batch) => batch.failureSummary)
   .join('；') ?? '')
 const businessProgress = computed(() => detail.value?.businessProgress)
+const structuredResult = computed(() => detail.value?.structuredResult)
 const businessStages = computed(() => {
   const progress = businessProgress.value
   if (!detail.value || !progress) return []
@@ -132,6 +138,22 @@ function admissionTypeText(types?: string) {
   return types.split(/[,，]/).map((type) => labels[type.trim()] ?? type.trim()).join('、')
 }
 
+function coverageText(status?: string) {
+  return {
+    PENDING: '正式覆盖待完成',
+    SATISFIED: '正式覆盖已满足',
+    INSUFFICIENT: '正式覆盖不足',
+  }[status ?? ''] ?? valueOrDash(status)
+}
+
+function candidateStatusText(status?: string) {
+  return status === 'FORMAL' ? '正式用例' : status === 'PENDING_CONFIRMATION' ? '待确认候选' : valueOrDash(status)
+}
+
+function confirmationText(status?: string) {
+  return status === 'CONFIRMED' ? '已确认' : status === 'PENDING_CONFIRMATION' ? '待确认' : valueOrDash(status)
+}
+
 function openConfirmation(action: 'cancel' | 'retry', event: { currentTarget: unknown }) {
   pendingAction.value = action
   actionError.value = ''
@@ -206,6 +228,7 @@ watch(() => props.taskId, () => { void loadTask() })
     <div
       v-else-if="loadError"
       class="task-detail__error"
+      :data-state="loadErrorState"
       role="alert"
     >
       <p>{{ loadError }}</p>
@@ -237,6 +260,18 @@ watch(() => props.taskId, () => { void loadTask() })
         <div>
           <dt>下载结果</dt>
           <dd>{{ detail.artifactReady ? (detail.status === 'PARTIAL' ? '可下载已完成部分' : '已生成，可下载') : '结果生成后可下载' }}</dd>
+        </div>
+        <div v-if="structuredResult">
+          <dt>处理状态</dt>
+          <dd>{{ statusText(structuredResult.processingStatus) }}</dd>
+        </div>
+        <div v-if="structuredResult">
+          <dt>正式覆盖</dt>
+          <dd>{{ coverageText(structuredResult.coverageStatus) }}</dd>
+        </div>
+        <div v-if="structuredResult">
+          <dt>待确认候选</dt>
+          <dd>{{ structuredResult.pendingCandidateCaseCount }} 条</dd>
         </div>
       </dl>
 
@@ -343,6 +378,98 @@ watch(() => props.taskId, () => { void loadTask() })
       </section>
 
       <section
+        v-if="structuredResult"
+        class="task-detail__section"
+        aria-labelledby="structured-review-title"
+        data-testid="structured-result"
+      >
+        <h2 id="structured-review-title">
+          需求与功能清单审查发现
+        </h2>
+        <div
+          v-if="structuredResult.reviewFindings.length || structuredResult.reconciliations.length"
+          class="task-detail__cards"
+        >
+          <article
+            v-for="finding in structuredResult.reviewFindings"
+            :key="`${finding.sourceLabel}-${finding.subject}-${finding.issueType}-${finding.description}`"
+          >
+            <h3>{{ finding.subject }}</h3>
+            <p>{{ finding.sourceLabel }} · {{ finding.issueType }}</p>
+            <p>{{ finding.description }}</p>
+            <details>
+              <summary>查看影响与建议</summary>
+              <dl class="task-detail__result-details">
+                <div><dt>测试设计影响</dt><dd>{{ finding.testDesignImpact }}</dd></div>
+                <div><dt>当前项目建议</dt><dd>{{ finding.currentProjectRecommendation }}</dd></div>
+                <div><dt>设计中心建议</dt><dd>{{ finding.designCenterGuidelineRecommendation }}</dd></div>
+              </dl>
+            </details>
+          </article>
+          <article
+            v-for="reconciliation in structuredResult.reconciliations"
+            :key="`${reconciliation.classification}-${reconciliation.functionListPaths.join('/')}-${reconciliation.requirementFunctions.join('/')}`"
+          >
+            <h3>{{ reconciliation.functionListPaths.join('、') || reconciliation.requirementFunctions.join('、') }}</h3>
+            <p>核对结论：{{ reconciliation.classification }} · {{ confirmationText(reconciliation.confirmationStatus) }}</p>
+            <p>{{ reconciliation.scopeRecommendation }}</p>
+          </article>
+        </div>
+        <p
+          v-else
+          data-state="no-results"
+        >
+          当前没有已保存的审查发现或功能核对结果。
+        </p>
+      </section>
+
+      <section
+        v-if="structuredResult"
+        class="task-detail__section"
+        aria-labelledby="structured-case-title"
+      >
+        <h2 id="structured-case-title">
+          测试用例
+        </h2>
+        <div
+          v-if="structuredResult.testPoints.length"
+          class="task-detail__cards"
+        >
+          <article
+            v-for="point in structuredResult.testPoints"
+            :key="`${point.functionName}-${point.type}-${point.description}`"
+          >
+            <h3>{{ point.functionName }} · {{ point.description }}</h3>
+            <p>测试点类型：{{ point.type }}；正式覆盖：{{ point.formalCoverageSatisfied ? '已满足' : '未满足' }}</p>
+            <p v-if="point.missingInformation.length">
+              缺失信息：{{ point.missingInformation.join('；') }}
+            </p>
+            <details
+              v-for="testcase in point.testcases"
+              :key="`${testcase.title}-${testcase.status}`"
+            >
+              <summary>{{ testcase.title }} · {{ candidateStatusText(testcase.status) }}</summary>
+              <dl class="task-detail__result-details">
+                <div><dt>前提约束</dt><dd>{{ testcase.preconditions.join('\n') || '-' }}</dd></div>
+                <div><dt>执行步骤与预期</dt><dd>{{ testcase.steps.map(step => `${step.stepNo}. ${step.action} → ${step.expected}`).join('\n') }}</dd></div>
+                <div><dt>对应需求</dt><dd>{{ testcase.requirementSummaries.join('\n') || '-' }}</dd></div>
+                <div v-if="testcase.missingInformation.length">
+                  <dt>待补充信息</dt><dd>{{ testcase.missingInformation.join('\n') }}</dd>
+                </div>
+              </dl>
+            </details>
+          </article>
+        </div>
+        <p
+          v-else
+          data-state="no-results"
+        >
+          尚无已验证并保存的测试用例。
+        </p>
+      </section>
+
+      <section
+        v-if="!structuredResult"
         class="task-detail__section"
         aria-labelledby="issue-title"
       >
@@ -373,6 +500,7 @@ watch(() => props.taskId, () => { void loadTask() })
       </section>
 
       <section
+        v-if="!structuredResult"
         class="task-detail__section"
         aria-labelledby="case-title"
       >

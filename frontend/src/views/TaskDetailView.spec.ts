@@ -54,6 +54,56 @@ const completedDetail = {
 
 // [Req-ID]: REQ-WEB-003, REQ-WEB-004, REQ-WEB-005, REQ-WEB-006, REQ-WEB-007, REQ-WEB-008
 describe('generation task detail', () => {
+  it('[Req-ID]: REQ-SGD-001, REQ-SGD-002 renders saved structured results with processing and coverage separated', async () => {
+    const wrapper = mount(TaskDetailView, {
+      props: {
+        taskId: 'task-structured',
+        getTask: vi.fn().mockResolvedValue({
+          ...completedDetail,
+          status: 'PARTIAL',
+          auditRows: [{ sequence: 99, subjectOrFeature: '旧 Markdown 行', issueCategory: '不应显示', evidenceComparison: 'raw' }],
+          testCaseRows: [{ ...completedDetail.testCaseRows[0], caseName: '旧 Markdown 用例' }],
+          structuredResult: {
+            processingStatus: 'PARTIAL',
+            coverageStatus: 'INSUFFICIENT',
+            pendingCandidateCaseCount: 1,
+            reviewFindings: [{
+              sourceLabel: '需求规格说明书', subject: '订单提交', issueType: '边界未说明', description: '未说明最大订单金额。',
+              handlingLevel: 'CONTINUE_INCOMPLETE', testDesignImpact: '边界用例待确认', currentProjectRecommendation: '确认最大金额',
+              designCenterGuidelineRecommendation: '补充金额边界模板',
+            }],
+            reconciliations: [{
+              functionListPaths: ['订单/提交'], requirementFunctions: ['提交订单'], classification: 'exact_match',
+              scopeRecommendation: '纳入本次测试范围', confirmationStatus: 'CONFIRMED',
+            }],
+            testPoints: [{
+              functionName: '提交订单', type: 'boundary_value', description: '最大金额边界', basis: 'GENERAL_EXPERIENCE',
+              missingInformation: ['需求未给出最大金额'], formalCoverageSatisfied: false,
+              testcases: [{
+                title: '订单金额上限候选', status: 'PENDING_CONFIRMATION', preconditions: ['已登录'],
+                steps: [{ stepNo: 1, action: '输入候选上限', expected: '系统按确认后的规则处理' }],
+                requirementSummaries: [], missingInformation: ['需求未给出最大金额'],
+              }],
+            }],
+          },
+        }),
+      } as never,
+    })
+    await flushPromises()
+
+    const result = wrapper.get('[data-testid="structured-result"]')
+    expect(wrapper.text()).toContain('处理状态')
+    expect(wrapper.text()).toContain('正式覆盖不足')
+    expect(wrapper.text()).toContain('待确认候选')
+    expect(result.text()).toContain('未说明最大订单金额')
+    expect(result.text()).toContain('纳入本次测试范围')
+    expect(wrapper.text()).toContain('订单金额上限候选 · 待确认候选')
+    expect(wrapper.text()).not.toContain('旧 Markdown 行')
+    expect(wrapper.text()).not.toContain('旧 Markdown 用例')
+    expect(wrapper.text()).not.toContain('item_key')
+    expect(wrapper.text()).not.toContain('evidence_keys')
+  })
+
   it('[Req-ID]: REQ-WEB-003, REQ-WEB-005 renders a business-readable result summary and lets the response name the download', async () => {
     const getTask = vi.fn().mockResolvedValue(completedDetail)
     const wrapper = mount(TaskDetailView, {
@@ -243,6 +293,18 @@ describe('generation task detail', () => {
     expect(getTask).toHaveBeenCalledTimes(2)
     expect(wrapper.text()).toContain('用户登录')
     wrapper.unmount()
+  })
+
+  it('[Req-ID]: REQ-SGD-002 distinguishes forbidden and not-found detail states', async () => {
+    for (const [message, state] of [['任务请求失败（403）', 'forbidden'], ['任务请求失败（404）', 'not-found']] as const) {
+      const wrapper = mount(TaskDetailView, {
+        props: { taskId: `task-${state}`, getTask: vi.fn().mockRejectedValue(new Error(message)) } as never,
+      })
+      await flushPromises()
+
+      expect(wrapper.get('[role="alert"]').attributes('data-state')).toBe(state)
+      wrapper.unmount()
+    }
   })
 
   it('keeps the full accumulated business rows accessible through native details controls without exposing internal evidence fields', async () => {

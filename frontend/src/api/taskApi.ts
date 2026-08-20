@@ -69,6 +69,46 @@ export interface GenerationTaskBusinessProgress {
   businessReason: string
 }
 
+/** Java-validated and persisted business projection; it contains no KEE/model payload or internal keys. */
+export interface StructuredGenerationResult {
+  processingStatus: string
+  coverageStatus: 'PENDING' | 'SATISFIED' | 'INSUFFICIENT'
+  pendingCandidateCaseCount: number
+  reviewFindings: Array<{
+    sourceLabel: string
+    subject: string
+    issueType: string
+    description: string
+    handlingLevel: 'BLOCKING' | 'CONTINUE_INCOMPLETE' | 'IMPROVEMENT'
+    testDesignImpact: string
+    currentProjectRecommendation: string
+    designCenterGuidelineRecommendation: string
+  }>
+  reconciliations: Array<{
+    functionListPaths: string[]
+    requirementFunctions: string[]
+    classification: string
+    scopeRecommendation: string
+    confirmationStatus: 'CONFIRMED' | 'PENDING_CONFIRMATION'
+  }>
+  testPoints: Array<{
+    functionName: string
+    type: string
+    description: string
+    basis: 'FORMAL_REQUIREMENT' | 'GENERAL_EXPERIENCE'
+    missingInformation: string[]
+    formalCoverageSatisfied: boolean
+    testcases: Array<{
+      title: string
+      status: 'FORMAL' | 'PENDING_CONFIRMATION'
+      preconditions: string[]
+      steps: Array<{ stepNo: number, action: string, expected: string }>
+      requirementSummaries: string[]
+      missingInformation: string[]
+    }>
+  }>
+}
+
 export interface GenerationTaskDetail {
   id: string
   taskMode: 'FEATURE' | 'ALL'
@@ -99,6 +139,7 @@ export interface GenerationTaskDetail {
     expectedResult?: string
     requirementContent?: string
   }>
+  structuredResult?: StructuredGenerationResult
   businessProgress: GenerationTaskBusinessProgress
 }
 
