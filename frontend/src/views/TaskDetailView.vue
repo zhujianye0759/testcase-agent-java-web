@@ -43,6 +43,34 @@ const batchFailureSummary = computed(() => detail.value?.batches
   .join('；') ?? '')
 const businessProgress = computed(() => detail.value?.businessProgress)
 const structuredResult = computed(() => detail.value?.structuredResult)
+const structuredStages = computed(() => {
+  const result = structuredResult.value
+  if (!result) return []
+  const phases = [
+    { label: '材料遍历', detail: structuredPhaseDetail(result.phaseProgress.materialTraversal, '份材料'), count: result.phaseProgress.materialTraversal },
+    { label: '需求材料审查', detail: structuredPhaseDetail(result.phaseProgress.requirementReview, '项工作'), count: result.phaseProgress.requirementReview },
+    { label: '功能清单核对', detail: structuredPhaseDetail(result.phaseProgress.featureReconciliation, '项工作'), count: result.phaseProgress.featureReconciliation },
+    { label: '测试用例设计', detail: structuredPhaseDetail(result.phaseProgress.testcaseDesign, '项工作'), count: result.phaseProgress.testcaseDesign },
+  ]
+  const activeIndex = result.processingStatus === 'COMPLETED'
+    ? phases.length
+    : phases.findIndex(phase => phase.count.failed > 0 || phase.count.total === 0 || phase.count.completed < phase.count.total)
+  const currentIndex = activeIndex < 0 ? phases.length : activeIndex
+  return phases.map((phase, index) => {
+    const state = phase.count.failed > 0
+      ? 'failed'
+      : index < currentIndex || result.processingStatus === 'COMPLETED'
+        ? 'complete'
+        : index === currentIndex
+          ? result.processingStatus === 'CANCELLED' ? 'cancelled' : 'current'
+          : 'pending'
+    return {
+      ...phase,
+      state,
+      detail: state === 'cancelled' ? `${phase.detail}，处理已停止` : phase.detail,
+    }
+  })
+})
 const businessStages = computed(() => {
   const progress = businessProgress.value
   if (!detail.value || !progress) return []
@@ -138,6 +166,42 @@ function admissionTypeText(types?: string) {
   return types.split(/[,，]/).map((type) => labels[type.trim()] ?? type.trim()).join('、')
 }
 
+function structuredPhaseDetail(phase: { total: number, completed: number, failed: number }, unit: string) {
+  if (phase.total === 0) {
+    return structuredResult.value?.processingStatus === 'COMPLETED' ? '无已登记工作' : '等待登记'
+  }
+  return `${phase.completed} / ${phase.total} ${unit}${phase.failed ? `，${phase.failed} 项失败` : ''}`
+}
+
+function structuredProgressText() {
+  const result = structuredResult.value
+  return result ? `结构化流程${structuredProcessingText(result.processingStatus)}` : ''
+}
+
+function structuredDeliveryStatusText() {
+  const result = structuredResult.value
+  if (!result) return '交付状态不可用'
+  if (result.processingStatus === 'PENDING') return '等待处理'
+  if (result.processingStatus === 'RUNNING') return '处理中，覆盖结果待定'
+  if (result.processingStatus === 'FAILED') return '处理失败，未形成交付'
+  if (result.processingStatus === 'CANCELLED') return '处理已取消'
+  if (result.processingStatus !== 'COMPLETED') return '交付状态不可用'
+  return {
+    COMPLETE: '处理已完成，正式覆盖完整',
+    PARTIAL: '处理已完成，正式覆盖部分完整',
+    UNABLE_TO_GENERATE: '处理已完成，正式覆盖无法生成',
+    PENDING: '处理已完成，覆盖结果待定',
+  }[result.coverageStatus] ?? '交付状态不可用'
+}
+
+function downloadResultText() {
+  if (!detail.value?.artifactReady) return '结果生成后可下载'
+  if (!structuredResult.value) return detail.value.status === 'PARTIAL' ? '可下载已完成部分' : '已生成，可下载'
+  return structuredResult.value.coverageStatus === 'COMPLETE'
+    ? 'Excel 已生成，正式覆盖完整'
+    : `Excel 已生成，${coverageText(structuredResult.value.coverageStatus)}`
+}
+
 function coverageText(status?: string) {
   return {
     PENDING: '正式覆盖待完成',
@@ -158,11 +222,36 @@ function structuredProcessingText(status?: string) {
 }
 
 function candidateStatusText(status?: string) {
-  return status === 'FORMAL' ? '正式用例' : status === 'PENDING_CONFIRMATION' ? '待确认候选' : valueOrDash(status)
+  return status === 'FORMAL' ? '正式用例' : status === 'PENDING_CONFIRMATION' ? '待确认候选' : '用例状态不可用'
 }
 
 function confirmationText(status?: string) {
-  return status === 'CONFIRMED' ? '已确认' : status === 'PENDING_CONFIRMATION' ? '待确认' : valueOrDash(status)
+  return status === 'CONFIRMED' ? '已确认' : status === 'PENDING_CONFIRMATION' ? '待确认' : '确认状态不可用'
+}
+
+function reconciliationClassificationText(classification?: string) {
+  return {
+    EXACT_MATCH: '精确匹配',
+    FUNCTION_LIST_ONLY: '仅功能清单存在',
+    REQUIREMENTS_ONLY: '仅需求材料存在',
+    CONFLICT: '内容冲突',
+    DUPLICATE: '重复功能',
+    SPLIT: '需要拆分',
+    MERGE: '需要合并',
+    INSUFFICIENT_EVIDENCE: '证据不足',
+  }[classification ?? ''] ?? '核对结论不可用'
+}
+
+function testPointTypeText(type?: string) {
+  return {
+    NORMAL_BEHAVIOR: '正常行为',
+    INPUT_VALIDATION: '输入校验',
+    BOUNDARY_VALUE: '边界值',
+    PERMISSION: '权限',
+    STATE_TRANSITION: '状态转换',
+    BUSINESS_EXCEPTION: '业务异常',
+    DEPENDENCY_FAILURE: '依赖失败',
+  }[type ?? ''] ?? '测试点类型不可用'
 }
 
 function openConfirmation(action: 'cancel' | 'retry', event: { currentTarget: unknown }) {
@@ -266,11 +355,11 @@ watch(() => props.taskId, () => { void loadTask() })
         </div>
         <div>
           <dt>进度</dt>
-          <dd>{{ detail.completedBatches }} / {{ detail.totalBatches }} 个批次已完成</dd>
+          <dd>{{ structuredResult ? structuredProgressText() : `${detail.completedBatches} / ${detail.totalBatches} 个批次已完成` }}</dd>
         </div>
         <div>
           <dt>下载结果</dt>
-          <dd>{{ detail.artifactReady ? (detail.status === 'PARTIAL' ? '可下载已完成部分' : '已生成，可下载') : '结果生成后可下载' }}</dd>
+          <dd>{{ downloadResultText() }}</dd>
         </div>
         <div v-if="structuredResult">
           <dt>处理状态</dt>
@@ -287,7 +376,44 @@ watch(() => props.taskId, () => { void loadTask() })
       </dl>
 
       <section
-        v-if="businessProgress"
+        v-if="structuredResult"
+        class="task-detail__section task-detail__business-progress"
+        aria-labelledby="structured-progress-title"
+        data-testid="structured-progress"
+      >
+        <div class="task-detail__progress-heading">
+          <div>
+            <h2 id="structured-progress-title">
+              结构化处理进度
+            </h2>
+            <p>各阶段数据均来自已保存的结构化工作记录。</p>
+          </div>
+          <p
+            class="status-chip"
+            :aria-label="`交付状态：${structuredDeliveryStatusText()}`"
+            data-testid="delivery-status"
+          >
+            {{ structuredDeliveryStatusText() }}
+          </p>
+        </div>
+        <ol
+          class="task-detail__stage-flow task-detail__stage-flow--structured"
+          aria-label="结构化任务处理流程"
+        >
+          <li
+            v-for="stage in structuredStages"
+            :key="stage.label"
+            :class="`task-detail__stage task-detail__stage--${stage.state}`"
+            :aria-current="stage.state === 'current' ? 'step' : undefined"
+          >
+            <strong>{{ stage.label }}</strong>
+            <span>{{ stage.detail }}</span>
+          </li>
+        </ol>
+      </section>
+
+      <section
+        v-else-if="businessProgress"
         class="task-detail__section task-detail__business-progress"
         aria-labelledby="business-progress-title"
         data-testid="business-progress"
@@ -422,7 +548,7 @@ watch(() => props.taskId, () => { void loadTask() })
             :key="`${reconciliation.classification}-${reconciliation.functionListPaths.join('/')}-${reconciliation.requirementFunctions.join('/')}`"
           >
             <h3>{{ reconciliation.functionListPaths.join('、') || reconciliation.requirementFunctions.join('、') }}</h3>
-            <p>核对结论：{{ reconciliation.classification }} · {{ confirmationText(reconciliation.confirmationStatus) }}</p>
+            <p>核对结论：{{ reconciliationClassificationText(reconciliation.classification) }} · {{ confirmationText(reconciliation.confirmationStatus) }}</p>
             <p>{{ reconciliation.scopeRecommendation }}</p>
           </article>
         </div>
@@ -451,7 +577,7 @@ watch(() => props.taskId, () => { void loadTask() })
             :key="`${point.functionName}-${point.type}-${point.description}`"
           >
             <h3>{{ point.functionName }} · {{ point.description }}</h3>
-            <p>测试点类型：{{ point.type }}；正式覆盖：{{ point.formalCoverageSatisfied ? '已满足' : '未满足' }}</p>
+            <p>测试点类型：{{ testPointTypeText(point.type) }}；正式覆盖：{{ point.formalCoverageSatisfied ? '已满足' : '未满足' }}</p>
             <p v-if="point.missingInformation.length">
               缺失信息：{{ point.missingInformation.join('；') }}
             </p>
@@ -583,7 +709,7 @@ watch(() => props.taskId, () => { void loadTask() })
         class="task-detail__download-action"
         :href="downloadUrl"
       >
-        {{ detail.status === 'PARTIAL' ? '下载已完成部分的 Excel' : '下载 Excel' }}
+        {{ structuredResult && structuredResult.coverageStatus !== 'COMPLETE' ? '下载 Excel（覆盖结果见页面）' : detail.status === 'PARTIAL' ? '下载已完成部分的 Excel' : '下载 Excel' }}
       </a>
     </div>
     <div
@@ -662,6 +788,10 @@ watch(() => props.taskId, () => { void loadTask() })
   list-style: none;
 }
 
+.task-detail__stage-flow--structured {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .task-detail__stage {
   min-width: 0;
   padding: var(--space-16);
@@ -684,6 +814,17 @@ watch(() => props.taskId, () => { void loadTask() })
 .task-detail__stage--complete,
 .task-detail__stage--current {
   border-color: var(--color-tech-cyan);
+  color: var(--color-text-primary);
+}
+
+.task-detail__stage--failed {
+  border-color: var(--color-error-active);
+  color: var(--color-error-active);
+}
+
+.task-detail__stage--cancelled {
+  border-color: var(--color-text-secondary);
+  background: var(--color-surface-muted);
   color: var(--color-text-primary);
 }
 

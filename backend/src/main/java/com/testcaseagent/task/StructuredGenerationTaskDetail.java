@@ -20,6 +20,7 @@ public record StructuredGenerationTaskDetail(
         StructuredProcessingStatus processingStatus,
         StructuredCoverageStatus coverageStatus,
         int pendingCandidateCaseCount,
+        PhaseProgress phaseProgress,
         List<ReviewFinding> reviewFindings,
         List<Reconciliation> reconciliations,
         List<TestPoint> testPoints) {
@@ -28,9 +29,33 @@ public record StructuredGenerationTaskDetail(
         Objects.requireNonNull(processingStatus, "processingStatus must not be null");
         Objects.requireNonNull(coverageStatus, "coverageStatus must not be null");
         if (pendingCandidateCaseCount < 0) throw new IllegalArgumentException("pendingCandidateCaseCount must not be negative");
+        Objects.requireNonNull(phaseProgress, "phaseProgress must not be null");
         reviewFindings = List.copyOf(Objects.requireNonNull(reviewFindings, "reviewFindings must not be null"));
         reconciliations = List.copyOf(Objects.requireNonNull(reconciliations, "reconciliations must not be null"));
         testPoints = List.copyOf(Objects.requireNonNull(testPoints, "testPoints must not be null"));
+    }
+
+    /** Persisted task-level counts for the four reader-facing structured phases. */
+    public record PhaseProgress(
+            PhaseCount materialTraversal,
+            PhaseCount requirementReview,
+            PhaseCount featureReconciliation,
+            PhaseCount testcaseDesign) {
+        public PhaseProgress {
+            Objects.requireNonNull(materialTraversal, "materialTraversal must not be null");
+            Objects.requireNonNull(requirementReview, "requirementReview must not be null");
+            Objects.requireNonNull(featureReconciliation, "featureReconciliation must not be null");
+            Objects.requireNonNull(testcaseDesign, "testcaseDesign must not be null");
+        }
+    }
+
+    /** One phase's durable registered, completed, and failed work counts. */
+    public record PhaseCount(int total, int completed, int failed) {
+        public PhaseCount {
+            if (total < 0 || completed < 0 || failed < 0 || completed + failed > total) {
+                throw new IllegalArgumentException("Structured phase counts are inconsistent");
+            }
+        }
     }
 
     /** A requirement-material finding represented exclusively by reader-facing text. */

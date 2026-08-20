@@ -76,7 +76,7 @@ KEE 已验证字段、类型、枚举、边界和编号，不等于业务可接�
 
 ### 7. 页面和 Excel 只消费持久化业务投影
 
-任务详情从 Java 数据库读取材料审查发现、功能核对、测试点、用例、处理状态和覆盖结果。它不代理或保存供页面展示的 KEE 原始 JSON、修复原文、Skill 正文或 Markdown。生产配置强制注入 structured ALL coordinator；新 ALL 任务没有 nullable coordinator 或旧 Markdown 回退。
+任务详情从 Java 数据库读取材料审查发现、功能核对、测试点、用例、处理状态、覆盖结果，以及按材料清单/structured work 汇总的四阶段计数。structured ALL 页面不读取 legacy batch/businessProgress 来推断阶段；取消只标记实际完成阶段，未知业务枚举统一显示不可用。它不代理或保存供页面展示的 KEE 原始 JSON、修复原文、Skill 正文或 Markdown。生产配置强制注入 structured ALL coordinator；新 ALL 任务没有 nullable coordinator 或旧 Markdown 回退。
 
 Excel 仍恰好两个 Sheet：“需求与功能清单审查发现”和“测试用例”。导出器从已验证记录确定性生成文件，保留公式注入防护、来源去重、哈希和回读校验。待确认经验用例必须清晰标识，且汇总统计不得把它计入正式覆盖。零功能或零用例也是合法终态时，导出器仍生成两个仅含固定表头的 Sheet 并回读；任务完成 API 拒绝 null artifact。
 

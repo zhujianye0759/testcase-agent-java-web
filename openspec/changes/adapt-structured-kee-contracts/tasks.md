@@ -37,7 +37,7 @@
 ## 6. 页面与固定双 Sheet 交付
 
 - [x] 6.1 将任务详情 DTO 改为已持久化的结构化审查、核对、测试点、用例、处理状态和覆盖投影；禁止原始 JSON、Markdown、内部 key/凭据/URL/栈进入响应。验证：`GenerationTaskDetailTest`。 `[Req-ID]: REQ-SGD-001, REQ-SGD-002`
-- [ ] 6.2 更新 PC 任务详情页面及状态测试，分别展示处理进度、正式覆盖和待确认候选，保留 loading/ready/empty/no-results/error/forbidden/not-found、键盘焦点和过期响应保护。验证：`npm --prefix frontend run test -- --run TaskDetailView.spec.ts`，并在 1440x820 及相关宽度执行视觉检查。 `[Req-ID]: REQ-SGD-001, REQ-SGD-002`
+- [x] 6.2 更新 PC 任务详情页面及状态测试，分别展示持久化材料遍历/需求审查/功能核对/用例设计进度、正式覆盖和待确认候选；structured ALL 禁止借用 legacy batch/businessProgress，`COMPLETED+PARTIAL` 保持顶层完成且文案明确覆盖部分完整；业务枚举未知值不得原样回显，取消只完成实际已完成阶段。保留 loading/ready/empty/no-results/error/forbidden/not-found、键盘焦点和过期响应保护。验证：`npm --prefix frontend run test -- --run TaskDetailView.spec.ts`，并在 1440x820 及相关宽度执行视觉检查。 `[Req-ID]: REQ-SGD-001, REQ-SGD-002`
 - [x] 6.3 重构 Excel 输入为与页面相同的已持久化结构化投影，仍恰好生成“需求与功能清单审查发现”“测试用例”两个 Sheet，区分 formal/pending_confirmation 并保持公式安全、哈希和回读；零功能/零用例时仍生成并回读两个表头 Sheet，完成 API 拒绝 null artifact；重复 stable source ID 必须失败关闭，不得静默少行。验证：`StructuredWorkbookExporterTest`。 `[Req-ID]: REQ-SGD-003, REQ-SGD-004`
 
 ## 7. 迁移、兼容回归与外部验收

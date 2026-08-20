@@ -60,24 +60,32 @@ describe('generation task detail', () => {
         taskId: 'task-structured',
         getTask: vi.fn().mockResolvedValue({
           ...completedDetail,
-          status: 'PARTIAL',
+          status: 'COMPLETED',
+          totalBatches: 0,
+          completedBatches: 0,
           auditRows: [{ sequence: 99, subjectOrFeature: '旧 Markdown 行', issueCategory: '不应显示', evidenceComparison: 'raw' }],
           testCaseRows: [{ ...completedDetail.testCaseRows[0], caseName: '旧 Markdown 用例' }],
           structuredResult: {
             processingStatus: 'COMPLETED',
             coverageStatus: 'PARTIAL',
             pendingCandidateCaseCount: 1,
+            phaseProgress: {
+              materialTraversal: { total: 2, completed: 2, failed: 0 },
+              requirementReview: { total: 3, completed: 3, failed: 0 },
+              featureReconciliation: { total: 2, completed: 2, failed: 0 },
+              testcaseDesign: { total: 4, completed: 4, failed: 0 },
+            },
             reviewFindings: [{
               sourceLabel: '需求规格说明书', subject: '订单提交', issueType: '边界未说明', description: '未说明最大订单金额。',
               handlingLevel: 'CONTINUE_INCOMPLETE', testDesignImpact: '边界用例待确认', currentProjectRecommendation: '确认最大金额',
               designCenterGuidelineRecommendation: '补充金额边界模板',
             }],
             reconciliations: [{
-              functionListPaths: ['订单/提交'], requirementFunctions: ['提交订单'], classification: 'exact_match',
+              functionListPaths: ['订单/提交'], requirementFunctions: ['提交订单'], classification: 'EXACT_MATCH',
               scopeRecommendation: '纳入本次测试范围', confirmationStatus: 'CONFIRMED',
             }],
             testPoints: [{
-              functionName: '提交订单', type: 'boundary_value', description: '最大金额边界', basis: 'GENERAL_EXPERIENCE',
+              functionName: '提交订单', type: 'BOUNDARY_VALUE', description: '最大金额边界', basis: 'GENERAL_EXPERIENCE',
               missingInformation: ['需求未给出最大金额'], formalCoverageSatisfied: false,
               testcases: [{
                 title: '订单金额上限候选', status: 'PENDING_CONFIRMATION', preconditions: ['已登录'],
@@ -94,12 +102,26 @@ describe('generation task detail', () => {
     const result = wrapper.get('[data-testid="structured-result"]')
     expect(wrapper.text()).toContain('处理状态')
     expect(wrapper.text()).toContain('正式覆盖部分完整')
+    expect(wrapper.text()).toContain('处理已完成，正式覆盖部分完整')
+    expect(wrapper.text()).toContain('材料遍历')
+    expect(wrapper.text()).toContain('2 / 2 份材料')
+    expect(wrapper.text()).toContain('需求材料审查')
+    expect(wrapper.text()).toContain('3 / 3 项工作')
+    expect(wrapper.text()).toContain('功能清单核对')
+    expect(wrapper.text()).toContain('测试用例设计')
+    expect(wrapper.text()).toContain('精确匹配')
+    expect(wrapper.text()).toContain('测试点类型：边界值')
     expect(wrapper.text()).toContain('待确认候选')
     expect(result.text()).toContain('未说明最大订单金额')
     expect(result.text()).toContain('纳入本次测试范围')
     expect(wrapper.text()).toContain('订单金额上限候选 · 待确认候选')
     expect(wrapper.text()).not.toContain('旧 Markdown 行')
     expect(wrapper.text()).not.toContain('旧 Markdown 用例')
+    expect(wrapper.find('[data-testid="business-progress"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('0 / 0 个批次已完成')
+    expect(wrapper.text()).not.toContain('完整交付')
+    expect(wrapper.text()).not.toContain('EXACT_MATCH')
+    expect(wrapper.text()).not.toContain('BOUNDARY_VALUE')
     expect(wrapper.text()).not.toContain('item_key')
     expect(wrapper.text()).not.toContain('evidence_keys')
   })
@@ -112,7 +134,24 @@ describe('generation task detail', () => {
           ...completedDetail,
           structuredResult: {
             processingStatus: 'PARTIAL', coverageStatus: 'INSUFFICIENT', pendingCandidateCaseCount: 0,
-            reviewFindings: [], reconciliations: [], testPoints: [],
+            phaseProgress: {
+              materialTraversal: { total: 1, completed: 0, failed: 0 },
+              requirementReview: { total: 0, completed: 0, failed: 0 },
+              featureReconciliation: { total: 0, completed: 0, failed: 0 },
+              testcaseDesign: { total: 0, completed: 0, failed: 0 },
+            },
+            reviewFindings: [],
+            reconciliations: [{
+              functionListPaths: ['订单'], requirementFunctions: [], classification: 'FUTURE_CLASSIFICATION',
+              scopeRecommendation: '待处理', confirmationStatus: 'FUTURE_CONFIRMATION',
+            }],
+            testPoints: [{
+              functionName: '订单', type: 'FUTURE_POINT', description: '未知类型', basis: 'FORMAL_REQUIREMENT',
+              missingInformation: [], formalCoverageSatisfied: false, testcases: [{
+                title: '未知状态用例', status: 'FUTURE_CASE', preconditions: [], steps: [],
+                requirementSummaries: [], missingInformation: [],
+              }],
+            }],
           },
         }),
       } as never,
@@ -121,7 +160,80 @@ describe('generation task detail', () => {
 
     expect(wrapper.text()).toContain('处理状态不可用')
     expect(wrapper.text()).toContain('覆盖状态不可用')
+    expect(wrapper.text()).toContain('核对结论不可用')
+    expect(wrapper.text()).toContain('测试点类型不可用')
+    expect(wrapper.text()).toContain('确认状态不可用')
+    expect(wrapper.text()).toContain('用例状态不可用')
     expect(wrapper.text()).not.toContain('INSUFFICIENT')
+    expect(wrapper.text()).not.toContain('FUTURE_CLASSIFICATION')
+    expect(wrapper.text()).not.toContain('FUTURE_POINT')
+    expect(wrapper.text()).not.toContain('FUTURE_CONFIRMATION')
+    expect(wrapper.text()).not.toContain('FUTURE_CASE')
+    wrapper.unmount()
+  })
+
+  it('[Req-ID]: REQ-SGD-002 marks the first unfinished structured phase as cancelled without completing later phases', async () => {
+    const wrapper = mount(TaskDetailView, {
+      props: {
+        taskId: 'task-cancelled-structured',
+        getTask: vi.fn().mockResolvedValue({
+          ...completedDetail,
+          status: 'CANCELLED', artifactReady: false, artifactId: undefined,
+          structuredResult: {
+            processingStatus: 'CANCELLED', coverageStatus: 'PENDING', pendingCandidateCaseCount: 0,
+            phaseProgress: {
+              materialTraversal: { total: 2, completed: 2, failed: 0 },
+              requirementReview: { total: 2, completed: 1, failed: 0 },
+              featureReconciliation: { total: 0, completed: 0, failed: 0 },
+              testcaseDesign: { total: 0, completed: 0, failed: 0 },
+            },
+            reviewFindings: [], reconciliations: [], testPoints: [],
+          },
+        }),
+      } as never,
+    })
+    await flushPromises()
+
+    const stages = wrapper.findAll('[aria-label="结构化任务处理流程"] > li')
+    expect(stages[0].classes()).toContain('task-detail__stage--complete')
+    expect(stages[1].classes()).toContain('task-detail__stage--cancelled')
+    expect(stages[1].text()).toContain('处理已停止')
+    expect(stages[2].classes()).toContain('task-detail__stage--pending')
+    expect(stages[3].classes()).toContain('task-detail__stage--pending')
+    stages.slice(1).forEach(stage => expect(stage.classes()).not.toContain('task-detail__stage--complete'))
+    wrapper.unmount()
+  })
+
+  it.each([
+    ['CANCELLED', '处理已取消'],
+    ['FAILED', '处理失败，未形成交付'],
+  ])('[Req-ID]: REQ-SGD-002 keeps all completed phases complete when the later delivery gate is %s', async (processingStatus, deliveryText) => {
+    const wrapper = mount(TaskDetailView, {
+      props: {
+        taskId: `task-delivery-${processingStatus.toLowerCase()}`,
+        getTask: vi.fn().mockResolvedValue({
+          ...completedDetail,
+          status: processingStatus, artifactReady: false, artifactId: undefined,
+          structuredResult: {
+            processingStatus, coverageStatus: 'PENDING', pendingCandidateCaseCount: 0,
+            phaseProgress: {
+              materialTraversal: { total: 2, completed: 2, failed: 0 },
+              requirementReview: { total: 2, completed: 2, failed: 0 },
+              featureReconciliation: { total: 2, completed: 2, failed: 0 },
+              testcaseDesign: { total: 2, completed: 2, failed: 0 },
+            },
+            reviewFindings: [], reconciliations: [], testPoints: [],
+          },
+        }),
+      } as never,
+    })
+    await flushPromises()
+
+    const stages = wrapper.findAll('[aria-label="结构化任务处理流程"] > li')
+    stages.forEach(stage => expect(stage.classes()).toContain('task-detail__stage--complete'))
+    expect(stages[3].classes()).not.toContain('task-detail__stage--cancelled')
+    expect(stages[3].classes()).not.toContain('task-detail__stage--failed')
+    expect(wrapper.get('[data-testid="delivery-status"]').text()).toContain(deliveryText)
     wrapper.unmount()
   })
 

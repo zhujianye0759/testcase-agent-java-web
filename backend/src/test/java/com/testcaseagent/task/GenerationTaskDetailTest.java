@@ -22,6 +22,7 @@ import com.testcaseagent.web.TestCaseAgentApplication;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -164,8 +165,20 @@ class GenerationTaskDetailTest {
     }
 
     @Test
+    void legacyDetailWithoutStructuredAxesDoesNotReadStructuredMaterialTotal() {
+        AtomicBoolean materialTotalRead = new AtomicBoolean();
+
+        assertThat(repository.structuredResult("legacy-task", null, null, () -> {
+            materialTotalRead.set(true);
+            throw new AssertionError("legacy detail must not require structured scope");
+        })).isNull();
+        assertThat(materialTotalRead).isFalse();
+    }
+
+    @Test
     void returnsOnlyReaderSafeValidatedStructuredProjectionWithExactWireEnums() throws Exception {
         String taskId = createAllTask();
+        repository.replaceMaterialInventory(taskId, documents(), false);
         jdbcTemplate.update("""
                 UPDATE generation_task
                 SET structured_processing_status = 'COMPLETED', structured_coverage_status = 'PARTIAL'
@@ -249,6 +262,14 @@ class GenerationTaskDetailTest {
         assertThat(structured.path("processingStatus").asText()).isEqualTo("COMPLETED");
         assertThat(structured.path("coverageStatus").asText()).isEqualTo("PARTIAL");
         assertThat(structured.path("pendingCandidateCaseCount").asInt()).isEqualTo(1);
+        assertThat(structured.path("phaseProgress").path("materialTraversal").path("total").asInt()).isEqualTo(2);
+        assertThat(structured.path("phaseProgress").path("materialTraversal").path("completed").asInt()).isEqualTo(2);
+        assertThat(structured.path("phaseProgress").path("requirementReview").path("total").asInt()).isEqualTo(2);
+        assertThat(structured.path("phaseProgress").path("requirementReview").path("completed").asInt()).isEqualTo(2);
+        assertThat(structured.path("phaseProgress").path("featureReconciliation").path("total").asInt()).isEqualTo(2);
+        assertThat(structured.path("phaseProgress").path("featureReconciliation").path("completed").asInt()).isEqualTo(2);
+        assertThat(structured.path("phaseProgress").path("testcaseDesign").path("total").asInt()).isEqualTo(1);
+        assertThat(structured.path("phaseProgress").path("testcaseDesign").path("completed").asInt()).isEqualTo(1);
         assertThat(structured.path("reviewFindings").get(0).path("handlingLevel").asText()).isEqualTo("BLOCKING");
         assertThat(structured.path("reconciliations").get(0).path("confirmationStatus").asText()).isEqualTo("CONFIRMED");
         assertThat(structured.path("testPoints").get(0).path("basis").asText()).isEqualTo("FORMAL_REQUIREMENT");

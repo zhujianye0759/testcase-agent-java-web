@@ -74,6 +74,12 @@ export interface StructuredGenerationResult {
   processingStatus: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
   coverageStatus: 'PENDING' | 'COMPLETE' | 'PARTIAL' | 'UNABLE_TO_GENERATE'
   pendingCandidateCaseCount: number
+  phaseProgress: {
+    materialTraversal: StructuredPhaseCount
+    requirementReview: StructuredPhaseCount
+    featureReconciliation: StructuredPhaseCount
+    testcaseDesign: StructuredPhaseCount
+  }
   reviewFindings: Array<{
     sourceLabel: string
     subject: string
@@ -87,13 +93,13 @@ export interface StructuredGenerationResult {
   reconciliations: Array<{
     functionListPaths: string[]
     requirementFunctions: string[]
-    classification: string
+    classification: 'EXACT_MATCH' | 'FUNCTION_LIST_ONLY' | 'REQUIREMENTS_ONLY' | 'CONFLICT' | 'DUPLICATE' | 'SPLIT' | 'MERGE' | 'INSUFFICIENT_EVIDENCE'
     scopeRecommendation: string
     confirmationStatus: 'CONFIRMED' | 'PENDING_CONFIRMATION'
   }>
   testPoints: Array<{
     functionName: string
-    type: string
+    type: 'NORMAL_BEHAVIOR' | 'INPUT_VALIDATION' | 'BOUNDARY_VALUE' | 'PERMISSION' | 'STATE_TRANSITION' | 'BUSINESS_EXCEPTION' | 'DEPENDENCY_FAILURE'
     description: string
     basis: 'FORMAL_REQUIREMENT' | 'GENERAL_EXPERIENCE'
     missingInformation: string[]
@@ -107,6 +113,12 @@ export interface StructuredGenerationResult {
       missingInformation: string[]
     }>
   }>
+}
+
+export interface StructuredPhaseCount {
+  total: number
+  completed: number
+  failed: number
 }
 
 export interface GenerationTaskDetail {

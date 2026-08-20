@@ -40,6 +40,7 @@ import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.IntSupplier;
 import java.util.regex.Pattern;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -1129,7 +1130,8 @@ public final class GenerationTaskRepository {
                     row.artifactId() != null, row.artifactId(), row.artifactSha256(), failureSummary, failureSummary, batches(taskId),
                     acceptedMarkdownRows(taskId),
                     request, businessProgress(taskId, row.taskMode(), row.status(), request),
-                    structuredResult(taskId, row.structuredProcessingStatus(), row.structuredCoverageStatus()));
+                    structuredResult(taskId, row.structuredProcessingStatus(), row.structuredCoverageStatus(),
+                            () -> request.requirementScope().documents().size()));
         });
     }
 
@@ -1244,12 +1246,41 @@ public final class GenerationTaskRepository {
      *
      * [Req-ID]: REQ-STG-006
      */
-    private StructuredGenerationTaskDetail structuredResult(String taskId, String processingValue, String coverageValue) {
+    StructuredGenerationTaskDetail structuredResult(
+            String taskId, String processingValue, String coverageValue, IntSupplier materialDocumentTotal) {
         if (processingValue == null || coverageValue == null) return null;
         StructuredProcessingStatus processing = StructuredProcessingStatus.valueOf(processingValue);
         StructuredCoverageStatus coverage = StructuredCoverageStatus.valueOf(coverageValue);
         return new StructuredGenerationTaskDetail(processing, coverage, pendingCandidateCaseCount(taskId),
+                structuredPhaseProgress(taskId, materialDocumentTotal.getAsInt()),
                 structuredReviewFindings(taskId), structuredReconciliations(taskId), structuredTestPoints(taskId));
+    }
+
+    private StructuredGenerationTaskDetail.PhaseProgress structuredPhaseProgress(
+            String taskId, int materialDocumentTotal) {
+        Integer completedMaterials = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM material_inventory_document
+                WHERE task_id = ? AND complete = TRUE
+                """, Integer.class, taskId);
+        return new StructuredGenerationTaskDetail.PhaseProgress(
+                new StructuredGenerationTaskDetail.PhaseCount(
+                        materialDocumentTotal, completedMaterials == null ? 0 : completedMaterials, 0),
+                structuredWorkPhase(taskId, "operation_name = 'REQUIREMENT_MATERIAL_REVIEW'"),
+                structuredWorkPhase(taskId,
+                        "operation_name IN ('FEATURE_SCOPE_EXTRACT','FEATURE_SCOPE_RECONCILIATION')"),
+                structuredWorkPhase(taskId, "operation_name = 'FUNCTIONAL_TESTCASE_DESIGN'"));
+    }
+
+    private StructuredGenerationTaskDetail.PhaseCount structuredWorkPhase(String taskId, String operationPredicate) {
+        return jdbcTemplate.queryForObject("""
+                        SELECT COUNT(*) AS total,
+                               COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END), 0) AS completed,
+                               COALESCE(SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END), 0) AS failed
+                        FROM structured_generation_work_item
+                        WHERE task_id = ? AND %s
+                        """.formatted(operationPredicate), (row, ignored) ->
+                        new StructuredGenerationTaskDetail.PhaseCount(
+                                row.getInt("total"), row.getInt("completed"), row.getInt("failed")), taskId);
     }
 
     private int pendingCandidateCaseCount(String taskId) {

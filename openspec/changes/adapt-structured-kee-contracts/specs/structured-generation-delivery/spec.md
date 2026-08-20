@@ -9,7 +9,7 @@
 - **AND** SHALL NOT 请求或渲染原始模型数据
 
 ### Requirement: [REQ-SGD-002] 处理进度与正式覆盖分别呈现
-任务详情 SHALL 分别呈现材料遍历/审查/核对/用例处理进度和正式测试点覆盖结果。structured processing wire enum SHALL 只接受 `PENDING|RUNNING|COMPLETED|FAILED|CANCELLED`，coverage wire enum SHALL 只接受 `PENDING|COMPLETE|PARTIAL|UNABLE_TO_GENERATE`；页面 SHALL 映射为“待处理、处理中、已完成、失败、已取消”和“待定、完整、部分完整、无法生成”，不得回显未知原始枚举。待确认经验用例 MAY 单独计数，但 MUST NOT 增加正式覆盖数量。加载、就绪、空、无结果、错误、禁止访问和未找到状态 SHALL 保持可区分。
+任务详情 SHALL 从已持久化的 structured work 与材料清单分别呈现材料遍历、需求审查、功能核对、用例处理进度和正式测试点覆盖结果；structured ALL MUST NOT 使用 legacy batch 或 legacy business progress 冒充这些阶段。structured processing wire enum SHALL 只接受 `PENDING|RUNNING|COMPLETED|FAILED|CANCELLED`，coverage wire enum SHALL 只接受 `PENDING|COMPLETE|PARTIAL|UNABLE_TO_GENERATE`；页面 SHALL 映射为“待处理、处理中、已完成、失败、已取消”和“待定、完整、部分完整、无法生成”，核对分类、测试点类型、确认状态和用例状态也 SHALL 映射为固定中文，不得回显未知原始枚举。`COMPLETED+PARTIAL` SHALL 表述为处理已完成且正式覆盖部分完整，不得改写为顶层 `PARTIAL` 或完整交付；取消 SHALL 只把实际完成的阶段标为完成，存在未完成阶段时将首个未完成阶段标为已取消/停止并保持后续阶段待处理；若取消或失败发生在四个阶段均已完成后的导出/完成门禁，四个阶段 SHALL 继续显示完成，仅由整体交付状态表示取消或失败。待确认经验用例 MAY 单独计数，但 MUST NOT 增加正式覆盖数量。加载、就绪、空、无结果、错误、禁止访问和未找到状态 SHALL 保持可区分。
 
 #### Scenario: 只有待确认经验用例
 - **WHEN** 某功能已有待确认经验用例但没有满足正式覆盖的用例
