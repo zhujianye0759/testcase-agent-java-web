@@ -16,7 +16,6 @@ import java.util.Objects;
 public final class StructuredValidationRegistry {
     private final String taskId;
     private final Map<StructuredKeyType, Map<String, String>> keys = new EnumMap<>(StructuredKeyType.class);
-    private final Map<String, StructuredKeyType> keyTypes = new LinkedHashMap<>();
     private final Map<String, StructuredEvidence> evidence = new LinkedHashMap<>();
 
     private StructuredValidationRegistry(String taskId) {
@@ -32,10 +31,9 @@ public final class StructuredValidationRegistry {
     public StructuredValidationRegistry register(StructuredKeyType type, String key) {
         Objects.requireNonNull(type, "type must not be null");
         String checkedKey = required(key, "key");
-        if (keyTypes.putIfAbsent(checkedKey, type) != null) {
+        if (keys.computeIfAbsent(type, ignored -> new LinkedHashMap<>()).putIfAbsent(checkedKey, checkedKey) != null) {
             throw new IllegalArgumentException("Structured key is already registered: " + checkedKey);
         }
-        keys.computeIfAbsent(type, ignored -> new LinkedHashMap<>()).put(checkedKey, checkedKey);
         return this;
     }
 
@@ -55,7 +53,7 @@ public final class StructuredValidationRegistry {
     public void require(StructuredKeyType type, String key) {
         Objects.requireNonNull(type, "type must not be null");
         String checkedKey = required(key, "key");
-        if (keyTypes.get(checkedKey) != type) {
+        if (!keys.getOrDefault(type, Map.of()).containsKey(checkedKey)) {
             throw new IllegalArgumentException("Unknown or wrong structured key type: " + checkedKey);
         }
     }

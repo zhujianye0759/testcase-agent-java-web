@@ -45,7 +45,8 @@ import reactor.core.publisher.Mono;
  * [Req-ID]: REQ-KAG-001, REQ-KAG-002, REQ-KAG-003, REQ-KAG-004, REQ-KAG-005, REQ-SCP-001,
  * REQ-SCP-003, REQ-FEW-002, REQ-FEW-003, REQ-ANA-004, REQ-KSI-004
  */
-public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort, RequirementMaterialReaderPort, StructuredSkillExecutionPort {
+public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort, RequirementMaterialReaderPort,
+        StructuredSkillExecutionPort, StructuredSkillSessionPort {
 
     private static final String API_KEY_HEADER = "X-API-Key";
     private static final Set<String> PARSED_UNITS_BUSINESS_ERRORS = Set.of(
@@ -494,6 +495,12 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
         } catch (RuntimeException exception) {
             throw invocationFailure("Knowledge agent session creation failed", exception);
         }
+    }
+
+    /** Creates only the empty session coordinate required by the isolated-Skill URL. */
+    @Override
+    public String openStructuredSession() {
+        return createSession();
     }
 
     /**

@@ -36,4 +36,16 @@ class StructuredValidationRegistryTest {
         assertThrows(IllegalArgumentException.class, () -> registry.require(StructuredKeyType.FUNCTION, "unknown"));
         assertThrows(IllegalArgumentException.class, () -> registry.register(StructuredKeyType.FUNCTION, "function-1"));
     }
+
+    @Test
+    void keepsTheSameTextualKeyIsolatedAcrossBusinessTypes() {
+        StructuredValidationRegistry registry = StructuredValidationRegistry.forTask("task-1")
+                .register(StructuredKeyType.REQUIREMENT_FACT, "shared-key")
+                .register(StructuredKeyType.REVIEW_FINDING, "shared-key");
+
+        assertDoesNotThrow(() -> registry.require(StructuredKeyType.REQUIREMENT_FACT, "shared-key"));
+        assertDoesNotThrow(() -> registry.require(StructuredKeyType.REVIEW_FINDING, "shared-key"));
+        assertThrows(IllegalArgumentException.class,
+                () -> registry.require(StructuredKeyType.TESTCASE, "shared-key"));
+    }
 }

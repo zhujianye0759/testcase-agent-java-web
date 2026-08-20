@@ -87,6 +87,8 @@ public final class RequirementMaterialTraversalService {
             case "function_list" -> "FUNCTION_LIST";
             case "work_order_plan" -> "WORK_ORDER_PLAN";
             case "requirements_spec" -> "REQUIREMENT";
+            case "prototype" -> "PROTOTYPE";
+            case "requirement_list" -> "REQUIREMENT_LIST";
             default -> throw new IllegalStateException("Unsupported requirement material type: " + materialType);
         };
     }

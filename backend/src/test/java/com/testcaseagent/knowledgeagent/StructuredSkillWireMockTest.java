@@ -23,6 +23,18 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 class StructuredSkillWireMockTest {
     @RegisterExtension static WireMockExtension kee = WireMockExtension.newInstance().build();
 
+    @Test
+    void opensOnlyAnEmptySessionCoordinateWithoutCreatingAChatMessage() {
+        kee.stubFor(post(urlEqualTo("/api/v1/sessions"))
+                .willReturn(okJson("{\"success\":true,\"data\":{\"id\":\"structured-session-1\"}}")));
+
+        String sessionId = ((StructuredSkillSessionPort) adapter()).openStructuredSession();
+
+        assertThat(sessionId).isEqualTo("structured-session-1");
+        kee.verify(1, postRequestedFor(urlEqualTo("/api/v1/sessions")));
+        kee.verify(0, postRequestedFor(urlEqualTo("/api/v1/agent-chat/structured-session-1")));
+    }
+
     /** [Req-ID]: REQ-SKI-002, REQ-SKI-004 */
     @Test
     void sendsOnlyTheSixStructuredFieldsAndDoesNotCreateSessionsOrUseSse() {

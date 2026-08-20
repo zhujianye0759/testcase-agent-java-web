@@ -55,6 +55,26 @@ class RequirementMaterialTraversalServiceTest {
     }
 
     @Test
+    void retainsPrototypeAndRequirementListAsDistinctSupplementaryMaterialRoles() {
+        RequirementMaterialReaderPort reader = mock(RequirementMaterialReaderPort.class);
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        CreateGenerationTaskRequest request = request(List.of(
+                new RequirementDocumentCoordinate("prototype-doc", "prototype"),
+                new RequirementDocumentCoordinate("requirement-list-doc", "requirement_list")),
+                List.of("prototype", "requirement_list"));
+        when(reader.readAll(request.requirementScope(), "prototype-doc")).thenReturn(material("prototype-doc", "prototype-unit"));
+        when(reader.readAll(request.requirementScope(), "requirement-list-doc"))
+                .thenReturn(material("requirement-list-doc", "requirement-list-unit"));
+
+        new RequirementMaterialTraversalService(reader, repository).traverse("task-1", request, false);
+
+        ArgumentCaptor<List<MaterialInventoryDocument>> documents = ArgumentCaptor.forClass(List.class);
+        verify(repository).replaceMaterialInventory(eq("task-1"), documents.capture(), eq(false));
+        assertThat(documents.getValue()).extracting(MaterialInventoryDocument::documentRole)
+                .containsExactly("PROTOTYPE", "REQUIREMENT_LIST");
+    }
+
+    @Test
     void neverPersistsACompleteGateWhenALaterFrozenDocumentReadFails() {
         RequirementMaterialReaderPort reader = mock(RequirementMaterialReaderPort.class);
         GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
