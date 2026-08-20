@@ -145,6 +145,14 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
                 invocation.requirementScope(), invocation.input(), FeatureScopeReconciliationResult.class);
     }
 
+    /** Executes extract-function-list without ordinary Agent Chat fallback. [Req-ID]: REQ-SKI-002, REQ-SKI-004 */
+    @Override
+    public StructuredSkillSuccessEnvelope<FunctionListExtractionResult> extractFunctionList(
+            FunctionListExtractionInvocation invocation) {
+        return invokeStructured(invocation.sessionId(), invocation.agentId(), StructuredSkillName.FEATURE_SCOPE_RECONCILIATION,
+                invocation.requirementScope(), invocation.input(), FunctionListExtractionResult.class);
+    }
+
     /** Executes one testcase-design route without SSE, tools, or Markdown parsing. [Req-ID]: REQ-SKI-002, REQ-SKI-004 */
     @Override
     public StructuredSkillSuccessEnvelope<FunctionalTestcaseDesignResult> designFunctionalTestcases(
@@ -197,7 +205,7 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
             exactStructuredFields(data, Set.of("schema_version", "skill_name", "repair_attempted", "result"));
             if (!"1.0".equals(data.path("schema_version").asText()) || !expectedSkill.wireValue().equals(data.path("skill_name").asText())
                     || !data.path("repair_attempted").isBoolean() || !data.path("result").isObject()) throw invalidStructuredResponse();
-            validateResultFields(data.path("result"), expectedSkill);
+            validateResultFields(data.path("result"), expectedSkill, resultType);
             T result = structuredObjectMapper.treeToValue(data.path("result"), resultType);
             return new StructuredSkillSuccessEnvelope<>(true, new StructuredSkillSuccess<>("1.0", expectedSkill.wireValue(),
                     data.path("repair_attempted").booleanValue(), result));
@@ -247,7 +255,7 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
         if (!actual.equals(expected)) throw invalidStructuredResponse();
     }
 
-    private static void validateResultFields(JsonNode result, StructuredSkillName skill) {
+    private static void validateResultFields(JsonNode result, StructuredSkillName skill, Class<?> resultType) {
         switch (skill) {
             case REQUIREMENT_MATERIAL_QUALITY_REVIEW -> {
                 exactStructuredFields(result, Set.of("requirement_facts", "review_findings"));
@@ -257,9 +265,18 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
                         "test_design_impact", "current_project_recommendation", "design_center_guideline_recommendation", "handling_level"));
             }
             case FEATURE_SCOPE_RECONCILIATION -> {
-                exactStructuredFields(result, Set.of("reconciliations"));
-                exactArrayObjects(result.path("reconciliations"), Set.of("reconciliation_key", "function_list_item_keys", "requirement_fact_keys",
-                        "classification", "evidence_keys", "scope_recommendation", "confirmation_status"));
+                if (resultType == FeatureScopeReconciliationResult.class) {
+                    if (!FeatureScopeReconciliationInput.OPERATION.equals(result.path("operation").asText())) throw invalidStructuredResponse();
+                    exactStructuredFields(result, Set.of("operation", "reconciliations"));
+                    exactArrayObjects(result.path("reconciliations"), Set.of("reconciliation_key", "function_list_item_keys", "requirement_fact_keys",
+                            "classification", "evidence_keys", "scope_recommendation", "confirmation_status"));
+                } else if (resultType == FunctionListExtractionResult.class) {
+                    if (!FunctionListExtractionInput.OPERATION.equals(result.path("operation").asText())) throw invalidStructuredResponse();
+                    exactStructuredFields(result, Set.of("operation", "function_list_items"));
+                    exactArrayObjects(result.path("function_list_items"), Set.of("path", "description", "evidence_keys"));
+                } else {
+                    throw invalidStructuredResponse();
+                }
             }
             case FUNCTIONAL_TESTCASE_DESIGN -> {
                 exactStructuredFields(result, Set.of("function_key", "test_point_key", "testcases"));

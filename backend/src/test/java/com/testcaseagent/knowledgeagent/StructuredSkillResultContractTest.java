@@ -28,7 +28,7 @@ class StructuredSkillResultContractTest {
     void deserializesAllFrozenResultEnumsAndRejectsUnknownNestedFields() throws Exception {
         ObjectMapper mapper = new ObjectMapper().configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, true);
         FeatureScopeReconciliationResult reconciliation = mapper.readValue("""
-                {"reconciliations":[{"reconciliation_key":"rec-1","function_list_item_keys":["item-1"],
+                {"operation":"reconcile","reconciliations":[{"reconciliation_key":"rec-1","function_list_item_keys":["item-1"],
                 "requirement_fact_keys":[],"classification":"function_list_only","evidence_keys":["evidence-1"],
                 "scope_recommendation":"保留待确认","confirmation_status":"pending_confirmation"}]}
                 """, FeatureScopeReconciliationResult.class);
@@ -44,7 +44,7 @@ class StructuredSkillResultContractTest {
         assertThat(testcase.testcases().get(0).caseStatus())
                 .isEqualTo(FunctionalTestcaseDesignResult.CaseStatus.PENDING_CONFIRMATION);
         assertThatThrownBy(() -> mapper.readValue("""
-                {"reconciliations":[{"reconciliation_key":"rec-1","function_list_item_keys":["item-1"],
+                {"operation":"reconcile","reconciliations":[{"reconciliation_key":"rec-1","function_list_item_keys":["item-1"],
                 "requirement_fact_keys":[],"classification":"exact_match","evidence_keys":[],
                 "scope_recommendation":"保留","confirmation_status":"confirmed","unknown":true}]}
                 """, FeatureScopeReconciliationResult.class))

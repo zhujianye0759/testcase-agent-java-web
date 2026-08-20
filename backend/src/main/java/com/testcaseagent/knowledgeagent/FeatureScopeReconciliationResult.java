@@ -8,8 +8,10 @@ import java.util.List;
 
 /** Typed result of one feature-scope reconciliation. [Req-ID]: REQ-SKI-004 */
 @JsonIgnoreProperties(ignoreUnknown = false)
-public record FeatureScopeReconciliationResult(List<Reconciliation> reconciliations) {
-    public FeatureScopeReconciliationResult { reconciliations=StructuredSkillContract.list(reconciliations,"reconciliations",1,200); StructuredSkillContract.uniqueKeys(reconciliations.stream().map(Reconciliation::reconciliationKey).toList(),"reconciliation"); }
+public record FeatureScopeReconciliationResult(String operation, List<Reconciliation> reconciliations) {
+    /** Creates the only permitted reconciliation result. */
+    public FeatureScopeReconciliationResult(List<Reconciliation> reconciliations) { this(FeatureScopeReconciliationInput.OPERATION, reconciliations); }
+    public FeatureScopeReconciliationResult { if(!FeatureScopeReconciliationInput.OPERATION.equals(operation))throw new IllegalArgumentException("operation must be reconcile"); reconciliations=StructuredSkillContract.list(reconciliations,"reconciliations",1,200); StructuredSkillContract.uniqueKeys(reconciliations.stream().map(Reconciliation::reconciliationKey).toList(),"reconciliation"); }
     public enum Classification { EXACT_MATCH, FUNCTION_LIST_ONLY, REQUIREMENTS_ONLY, CONFLICT, DUPLICATE, SPLIT, MERGE, INSUFFICIENT_EVIDENCE; @JsonValue public String wireValue(){return name().toLowerCase(java.util.Locale.ROOT);} @JsonCreator public static Classification fromWire(String value){return valueOf(value.toUpperCase(java.util.Locale.ROOT));} }
     public enum ConfirmationStatus { CONFIRMED, PENDING_CONFIRMATION; @JsonValue public String wireValue(){return name().toLowerCase(java.util.Locale.ROOT);} @JsonCreator public static ConfirmationStatus fromWire(String value){return valueOf(value.toUpperCase(java.util.Locale.ROOT));} }
     @JsonIgnoreProperties(ignoreUnknown = false)

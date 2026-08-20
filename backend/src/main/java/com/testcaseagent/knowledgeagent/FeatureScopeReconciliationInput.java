@@ -7,9 +7,16 @@ import java.util.List;
 /** Exact input for one feature-list and requirement-fact reconciliation. [Req-ID]: REQ-SKI-003 */
 @JsonIgnoreProperties(ignoreUnknown = false)
 public record FeatureScopeReconciliationInput(
+        String operation,
         @JsonProperty("function_list_items") List<FunctionListItem> functionListItems,
         @JsonProperty("requirement_facts") List<RequirementFact> requirementFacts) {
+    static final String OPERATION = "reconcile";
+    /** Creates the only permitted reconciliation operation. */
+    public FeatureScopeReconciliationInput(List<FunctionListItem> functionListItems, List<RequirementFact> requirementFacts) {
+        this(OPERATION, functionListItems, requirementFacts);
+    }
     public FeatureScopeReconciliationInput {
+        if (!OPERATION.equals(operation)) throw new IllegalArgumentException("operation must be reconcile");
         functionListItems = StructuredSkillContract.list(functionListItems, "functionListItems", 1, 200);
         requirementFacts = StructuredSkillContract.list(requirementFacts, "requirementFacts", 0, 200);
         StructuredSkillContract.uniqueKeys(functionListItems.stream().map(FunctionListItem::itemKey).toList(), "functionListItem");

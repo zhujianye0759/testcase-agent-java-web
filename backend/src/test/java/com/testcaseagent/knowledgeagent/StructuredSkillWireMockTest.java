@@ -43,6 +43,29 @@ class StructuredSkillWireMockTest {
         kee.verify(0, postRequestedFor(urlEqualTo("/api/v1/sessions")));
     }
 
+    /** [Req-ID]: REQ-SKI-002, REQ-SKI-003, REQ-SKI-004 */
+    @Test
+    void callsTheExtractOperationWithGlobalOrdinalsAndRejectsAMismatchedOperationResult() {
+        kee.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill"))
+                .inScenario("feature-operation").whenScenarioStateIs(com.github.tomakehurst.wiremock.stubbing.Scenario.STARTED)
+                .willSetStateTo("mismatched").willReturn(okJson(extractSuccess())));
+        kee.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill"))
+                .inScenario("feature-operation").whenScenarioStateIs("mismatched")
+                .willReturn(okJson(reconcileOperationWithExtractResult())));
+
+        StructuredSkillSuccessEnvelope<FunctionListExtractionResult> response = adapter().extractFunctionList(extractionInvocation());
+
+        assertThat(response.data().result().functionListItems()).hasSize(1);
+        kee.verify(postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill"))
+                .withRequestBody(matchingJsonPath("$.skill_name", equalTo("feature-scope-reconciliation")))
+                .withRequestBody(matchingJsonPath("$.input.operation", equalTo("extract_function_list")))
+                .withRequestBody(matchingJsonPath("$.input.units[0].ordinal", equalTo("33")))
+                .withRequestBody(notMatching(".*\\\"query\\\".*")));
+        assertThatThrownBy(() -> adapter().extractFunctionList(extractionInvocation()))
+                .isInstanceOfSatisfying(StructuredSkillExecutionException.class,
+                        failure -> assertThat(failure.type()).isEqualTo(StructuredSkillErrorType.STRUCTURED_OUTPUT_INVALID));
+    }
+
     /** [Req-ID]: REQ-SKI-005 */
     @Test
     void mapsOnlyTheStableErrorTypeWithoutRetainingErrorText() {
@@ -159,5 +182,15 @@ class StructuredSkillWireMockTest {
                 new RequirementScope("kb-1", "system-1", "version-1", "requirements_spec", "project-1",
                         List.of(new RequirementDocumentCoordinate("doc-1"))), input);
     }
+    private static FunctionListExtractionInvocation extractionInvocation() {
+        return new FunctionListExtractionInvocation("session-1", "agent-1",
+                new RequirementScope("kb-1", "system-1", "version-1", "requirements_spec", "project-1",
+                        List.of(new RequirementDocumentCoordinate("doc-1"))),
+                new FunctionListExtractionInput("material-1", "功能清单", List.of(
+                        new FunctionListExtractionInput.Unit("unit-33", 33, "功能一"),
+                        new FunctionListExtractionInput.Unit("unit-34", 34, "功能二"))));
+    }
     private static String success() { return "{\"success\":true,\"data\":{\"schema_version\":\"1.0\",\"skill_name\":\"requirement-material-quality-review\",\"repair_attempted\":false,\"result\":{\"requirement_facts\":[],\"review_findings\":[{\"finding_key\":\"finding-1\",\"issue_type\":\"missing\",\"description\":\"描述\",\"evidence_keys\":[],\"test_design_impact\":\"影响\",\"current_project_recommendation\":\"建议\",\"design_center_guideline_recommendation\":\"规范建议\",\"handling_level\":\"improvement\"}]}}}"; }
+    private static String extractSuccess() { return "{\"success\":true,\"data\":{\"schema_version\":\"1.0\",\"skill_name\":\"feature-scope-reconciliation\",\"repair_attempted\":false,\"result\":{\"operation\":\"extract_function_list\",\"function_list_items\":[{\"path\":\"订单/提交\",\"description\":\"提交订单\",\"evidence_keys\":[\"unit-33\"]}]}}}"; }
+    private static String reconcileOperationWithExtractResult() { return "{\"success\":true,\"data\":{\"schema_version\":\"1.0\",\"skill_name\":\"feature-scope-reconciliation\",\"repair_attempted\":false,\"result\":{\"operation\":\"reconcile\",\"function_list_items\":[]}}}"; }
 }
