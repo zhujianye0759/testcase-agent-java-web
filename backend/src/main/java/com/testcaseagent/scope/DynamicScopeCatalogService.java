@@ -113,17 +113,19 @@ public final class DynamicScopeCatalogService {
             Map<String, ScopeSelection> selections) {
         Map<TypeCoordinate, List<KnowledgeDocument>> byType = documents.stream()
                 .filter(document -> eligible(document, knowledgeBase.id(), container.systemId(), version.id()))
-                .collect(Collectors.groupingBy(document -> new TypeCoordinate(
+                .collect(Collectors.groupingBy(document -> new TypeCoordinate(document.scope().projectId(),
                         document.scope().contentTypeKey(), label(document.scope())), LinkedHashMap::new, Collectors.toList()));
 
         List<ScopeCatalogView.MaterialTypeOption> materialTypes = byType.entrySet().stream()
                 .sorted(Map.Entry.comparingByKey(Comparator.comparing(TypeCoordinate::label).thenComparing(TypeCoordinate::key)))
                 .map(entry -> {
                     List<String> documentIds = entry.getValue().stream().map(KnowledgeDocument::id).distinct().sorted().toList();
+                    Map<String, String> hashes = entry.getValue().stream().collect(Collectors.toMap(KnowledgeDocument::id,
+                            KnowledgeDocument::fileSha256, (left, right) -> left, LinkedHashMap::new));
                     String selectionId = opaque("scope-", knowledgeBase.id(), container.systemId(), version.id(),
-                            ADMISSION_MATERIAL, entry.getKey().key(), String.join(",", documentIds));
+                            entry.getKey().projectId(), ADMISSION_MATERIAL, entry.getKey().key(), String.join(",", documentIds));
                     ScopeSelection selection = new ScopeSelection(selectionId, knowledgeBase.id(), container.systemId(),
-                            version.id(), ADMISSION_MATERIAL, entry.getKey().key(), documentIds);
+                            version.id(), entry.getKey().projectId(), ADMISSION_MATERIAL, entry.getKey().key(), documentIds, hashes);
                     if (selections.put(selectionId, selection) != null) {
                         throw new ScopeCatalogUnavailableException("Duplicate opaque scope selection");
                     }
@@ -140,6 +142,8 @@ public final class DynamicScopeCatalogService {
                 && document.scope() != null
                 && systemId.equals(document.scope().systemId())
                 && versionId.equals(document.scope().versionId())
+                && !blank(document.scope().projectId())
+                && !blank(document.fileSha256())
                 && ADMISSION_MATERIAL.equals(document.scope().contentCategory())
                 && !blank(document.scope().contentTypeKey());
     }
@@ -162,5 +166,5 @@ public final class DynamicScopeCatalogService {
         }
     }
 
-    private record TypeCoordinate(String key, String label) { }
+    private record TypeCoordinate(String projectId, String key, String label) { }
 }

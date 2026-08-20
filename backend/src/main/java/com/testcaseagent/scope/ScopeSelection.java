@@ -1,6 +1,7 @@
 package com.testcaseagent.scope;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Server-only material leaf that can be frozen into a task-owned RequirementScope.
@@ -12,10 +13,13 @@ public record ScopeSelection(
         String knowledgeBaseId,
         String systemId,
         String versionId,
+        String projectId,
         String materialCategory,
         String admissionTypeKey,
-        List<String> documentIds) {
+        List<String> documentIds,
+        Map<String, String> documentSha256ById) {
     public ScopeSelection {
         documentIds = List.copyOf(documentIds);
+        documentSha256ById = Map.copyOf(documentSha256ById);
     }
 }

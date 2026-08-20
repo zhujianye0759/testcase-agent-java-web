@@ -31,6 +31,7 @@ public interface KnowledgeScopeCatalogPort {
     record KnowledgeDocument(
             String id,
             String knowledgeBaseId,
+            String fileSha256,
             String parseStatus,
             String enableStatus,
             DocumentScope scope) { }

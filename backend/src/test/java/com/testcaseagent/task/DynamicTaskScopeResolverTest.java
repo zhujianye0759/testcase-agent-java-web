@@ -28,7 +28,7 @@ class DynamicTaskScopeResolverTest {
         CreateGenerationTaskRequest request = resolver.resolve(command(selected));
 
         assertThat(request.requirementScope().knowledgeBaseId()).isEqualTo("requirement-kb");
-        assertThat(request.requirementScope().projectId()).isNull();
+        assertThat(request.requirementScope().projectId()).isEqualTo("project-1");
         assertThat(request.requirementScope().documents()).extracting(document -> document.documentId())
                 .containsExactly("function-doc", "work-order-doc");
         assertThat(request.requirementScope().documents()).extracting(document -> document.materialTypeKey())
@@ -72,6 +72,26 @@ class DynamicTaskScopeResolverTest {
                 .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("同一知识库");
     }
 
+    @Test
+    void rejectsMissingRequiredMaterialCombinationsAndDuplicateFileHashes() {
+        DynamicScopeCatalogService missingFormal = new DynamicScopeCatalogService(
+                new FixedDocumentsCatalogPort(List.of(document("function-doc", "hash-function", "function_list"))),
+                Duration.ofHours(1), Clock.systemUTC());
+        List<String> missingFormalSelections = missingFormal.catalog(false).selections().keySet().stream().toList();
+        assertThatThrownBy(() -> new DynamicTaskScopeResolver(missingFormal, profile())
+                .resolve(command(missingFormalSelections)))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("正式需求材料");
+
+        DynamicScopeCatalogService duplicateHashes = new DynamicScopeCatalogService(
+                new FixedDocumentsCatalogPort(List.of(document("function-doc", "same-hash", "function_list"),
+                        document("work-order-doc", "same-hash", "work_order_plan"))),
+                Duration.ofHours(1), Clock.systemUTC());
+        List<String> duplicateSelections = duplicateHashes.catalog(false).selections().keySet().stream().sorted().toList();
+        assertThatThrownBy(() -> new DynamicTaskScopeResolver(duplicateHashes, profile())
+                .resolve(command(duplicateSelections)))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("SHA-256");
+    }
+
     private static CreateGenerationTaskCommand command(List<String> selected) {
         return new CreateGenerationTaskCommand(GenerationTaskMode.ALL, "", FewShotPolicy.AUTO,
                 "markdown-1.0", "1.0", selected, "");
@@ -90,6 +110,33 @@ class DynamicTaskScopeResolverTest {
         return new DynamicScopeCatalogService(new CatalogPort(), Duration.ofHours(1), Clock.systemUTC());
     }
 
+    private static KnowledgeScopeCatalogPort.KnowledgeDocument document(String id, String hash, String type) {
+        return new KnowledgeScopeCatalogPort.KnowledgeDocument(id, "requirement-kb", hash, "completed", "enabled",
+                new KnowledgeScopeCatalogPort.DocumentScope("zlyg", "version-v1", "project-1",
+                        "admission_material", type, type));
+    }
+
+    private static final class FixedDocumentsCatalogPort implements KnowledgeScopeCatalogPort {
+        private final List<KnowledgeDocument> documents;
+
+        private FixedDocumentsCatalogPort(List<KnowledgeDocument> documents) {
+            this.documents = List.copyOf(documents);
+        }
+
+        @Override public List<KnowledgeBase> listKnowledgeBases() {
+            return List.of(new KnowledgeBase("requirement-kb", "战略运管知识库", "document"));
+        }
+        @Override public Optional<ScopeContainer> getScopeContainer(String knowledgeBaseId) {
+            return Optional.of(new ScopeContainer(knowledgeBaseId, "system", "zlyg", "战略运管系统"));
+        }
+        @Override public List<SystemVersion> listSystemVersions(String knowledgeBaseId) {
+            return List.of(new SystemVersion("version-v1", "zlyg", "V1.0", "active", true));
+        }
+        @Override public List<KnowledgeDocument> listDocuments(String knowledgeBaseId) {
+            return documents;
+        }
+    }
+
     private static final class CatalogPort implements KnowledgeScopeCatalogPort {
         @Override public List<KnowledgeBase> listKnowledgeBases() {
             return List.of(new KnowledgeBase("requirement-kb", "战略运管知识库", "document"));
@@ -105,8 +152,8 @@ class DynamicTaskScopeResolverTest {
                     document("work-order-doc", "work_order_plan", "工单方案"));
         }
         private KnowledgeDocument document(String id, String key, String label) {
-            return new KnowledgeDocument(id, "requirement-kb", "completed", "enabled",
-                    new DocumentScope("zlyg", "version-v1", null, "admission_material", key, label));
+            return new KnowledgeDocument(id, "requirement-kb", "sha256-" + id, "completed", "enabled",
+                    new DocumentScope("zlyg", "version-v1", "project-1", "admission_material", key, label));
         }
     }
 
@@ -123,8 +170,9 @@ class DynamicTaskScopeResolverTest {
             return List.of(new SystemVersion("version-v1", "zlyg", "V1.0", "active", true));
         }
         @Override public List<KnowledgeDocument> listDocuments(String knowledgeBaseId) {
-            return documentAvailable ? List.of(new KnowledgeDocument("function-doc", "requirement-kb", "completed", "enabled",
-                    new DocumentScope("zlyg", "version-v1", null, "admission_material", "function_list", "功能清单"))) : List.of();
+            return documentAvailable ? List.of(new KnowledgeDocument("function-doc", "requirement-kb", "sha256-function-doc",
+                    "completed", "enabled", new DocumentScope("zlyg", "version-v1", "project-1",
+                    "admission_material", "function_list", "功能清单"))) : List.of();
         }
     }
 
@@ -142,8 +190,9 @@ class DynamicTaskScopeResolverTest {
                     "V1.0", "active", true));
         }
         @Override public List<KnowledgeDocument> listDocuments(String knowledgeBaseId) {
-            return List.of(new KnowledgeDocument("document-" + knowledgeBaseId, knowledgeBaseId, "completed", "enabled",
-                    new DocumentScope("system-" + knowledgeBaseId, "version-" + knowledgeBaseId, null,
+            return List.of(new KnowledgeDocument("document-" + knowledgeBaseId, knowledgeBaseId,
+                    "sha256-document-" + knowledgeBaseId, "completed", "enabled",
+                    new DocumentScope("system-" + knowledgeBaseId, "version-" + knowledgeBaseId, "project-" + knowledgeBaseId,
                             "admission_material", "function_list", "功能清单")));
         }
     }

@@ -156,6 +156,21 @@ class ParsedUnitsWireMockTest {
         assertRejected("unit_id repeats");
     }
 
+    /** [Req-ID]: REQ-SKI-001 */
+    @Test
+    void rejectsUnitsOutsideTheStableChunkIndexAndUnitIdOrder() {
+        stubPage(50, null, page(DOCUMENT_ID, 2, List.of(
+                unit("chunk-z", 2, 1, "later", 5, 10),
+                unit("chunk-a", 1, 2, "earlier", 0, 4)), null, true));
+        assertRejected("stable order");
+
+        knowledgeEngine.resetAll();
+        stubPage(50, null, page(DOCUMENT_ID, 2, List.of(
+                unit("chunk-z", 1, 1, "same-index-z", 0, 12),
+                unit("chunk-a", 1, 2, "same-index-a", 13, 25)), null, true));
+        assertRejected("stable order");
+    }
+
     /** [Req-ID]: REQ-SMR-001, REQ-SMR-002, REQ-SMR-004 */
     @Test
     void rejectsCursorLoopsEmptyProgressAndInvalidTerminalCombinations() {

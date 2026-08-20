@@ -118,7 +118,8 @@ public final class WebClientKnowledgeScopeCatalogAdapter implements KnowledgeSco
                 textOrNull(scope, "content_category"), textOrNull(scope, "content_type_key"),
                 textOrNull(scope, "content_type_name")) : null;
         return new KnowledgeDocument(requiredText(item, "id"), requiredText(item, "knowledge_base_id"),
-                textOrNull(item, "parse_status"), textOrNull(item, "enable_status"), documentScope);
+                textOrNull(item, "file_hash"), textOrNull(item, "parse_status"), textOrNull(item, "enable_status"),
+                documentScope);
     }
 
     private JsonNode get(String uri, String failureMessage) {

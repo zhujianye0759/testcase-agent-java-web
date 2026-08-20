@@ -35,6 +35,10 @@ class DynamicScopeCatalogServiceTest {
         assertThat(snapshot.selections().values()).flatExtracting(ScopeSelection::documentIds)
                 .containsExactlyInAnyOrder("function-doc", "work-order-doc")
                 .doesNotContain("disabled-doc", "other-category-doc");
+        assertThat(snapshot.selections().values()).allSatisfy(selection -> {
+            assertThat(selection.projectId()).isEqualTo("project-1");
+            assertThat(selection.documentSha256ById().keySet()).containsExactlyElementsOf(selection.documentIds());
+        });
     }
 
     @Test
@@ -98,8 +102,8 @@ class DynamicScopeCatalogServiceTest {
         }
 
         private KnowledgeDocument document(String id, String parse, String enable, String category, String key, String label) {
-            return new KnowledgeDocument(id, "requirement-kb", parse, enable,
-                    new DocumentScope("zlyg", "version-v1", null, category, key, label));
+            return new KnowledgeDocument(id, "requirement-kb", "sha256-" + id, parse, enable,
+                    new DocumentScope("zlyg", "version-v1", "project-1", category, key, label));
         }
     }
 }
