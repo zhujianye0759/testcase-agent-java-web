@@ -7,11 +7,12 @@ KEE 已冻结 `parsed-units` 与结构化 `isolated-skill` 契约，但 Java Web
 - **BREAKING**：Java 对现有 `POST /api/v1/agent-chat/{sessionId}/isolated-skill` 的调用设计改为六字段同步 JSON 合同，不再按 SSE、Markdown、`read_skill` 工具事件或 AgentEngine 终态接收结果。
 - Java 通过冻结的 `GET /api/v1/knowledge/{knowledgeId}/parsed-units` 合同完整遍历持久化解析文本；任一页失败、重复、遗漏、游标循环或总数不一致均废弃整次遍历。
 - Java 为 `requirement-material-quality-review`、`feature-scope-reconciliation`、`functional-testcase-design` 建立各自的输入/结果 DTO 和严格消费者合同；材料切片保留全局 `ordinal`，首值不小于 1 且切片内严格连续。
+- `feature-scope-reconciliation` 使用严格 `operation` 区分功能清单提取与双向核对：`extract_function_list` 只从功能清单切片提取无 `item_key` 的条目，Java 校验证据后生成任务内稳定 `item_key`；`reconcile` 才接收已聚合的功能清单条目和需求事实。不得新增第四个 Skill、复用普通 Agent/Markdown 或由 Java 猜测 Excel 层级。
 - KEE 负责结构校验和最多一次格式修复；Java 负责所有 `*_key`/`evidence_key` 引用、证据归属、终态、正式覆盖、状态映射及持久化业务规则，模型结果不得直接入库。
 - 取消固定正反两条和 `2N` 门禁；正式测试点至少有一条 `formal` 用例，`general_experience` 只能产生 `pending_confirmation` 用例且不计入正式覆盖。
 - 处理状态与覆盖结果分离。页面只显示 Java 已校验并保存的结构化数据，不展示原始 JSON 或 Markdown 预览；Excel 固定为“需求与功能清单审查发现”和“测试用例”两个 Sheet。
 - 普通 Agent Chat、RAG、Wiki、PageIndex、图谱、Web/MCP、history/Memory、附件、图片、`read_skill`/Sandbox 和普通 Skill 模式保持不变。
-- KEE 结构化接口已由主线程完成代码审查和聚焦测试，本地冻结提交为 `ba21fecf`；该提交尚未部署或推送。Java 可进入本地实现和消费者合同验证，但真实 E2E 继续等待部署通知。
+- KEE 基础结构化接口提交为 `ba21fecf`；`extract_function_list`/`reconcile` 增补合同已由 KEE 主线程完成复审、聚焦与普通 Agent 回归并冻结于本地提交 `4c68f2f8`。该提交尚未部署或推送；Java 可完成本地 DTO、编排和业务校验 GREEN，但真实 E2E 继续等待部署通知与精确镜像证据。
 
 ## Capabilities
 

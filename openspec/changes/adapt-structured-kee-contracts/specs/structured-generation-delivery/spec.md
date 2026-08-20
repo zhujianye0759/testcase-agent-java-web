@@ -9,14 +9,14 @@
 - **AND** SHALL NOT 请求或渲染原始模型数据
 
 ### Requirement: [REQ-SGD-002] 处理进度与正式覆盖分别呈现
-任务详情 SHALL 分别呈现材料遍历/审查/核对/用例处理进度和正式测试点覆盖结果。待确认经验用例 MAY 单独计数，但 MUST NOT 增加正式覆盖数量。加载、就绪、空、无结果、错误、禁止访问和未找到状态 SHALL 保持可区分。
+任务详情 SHALL 分别呈现材料遍历/审查/核对/用例处理进度和正式测试点覆盖结果。structured processing wire enum SHALL 只接受 `PENDING|RUNNING|COMPLETED|FAILED|CANCELLED`，coverage wire enum SHALL 只接受 `PENDING|COMPLETE|PARTIAL|UNABLE_TO_GENERATE`；页面 SHALL 映射为“待处理、处理中、已完成、失败、已取消”和“待定、完整、部分完整、无法生成”，不得回显未知原始枚举。待确认经验用例 MAY 单独计数，但 MUST NOT 增加正式覆盖数量。加载、就绪、空、无结果、错误、禁止访问和未找到状态 SHALL 保持可区分。
 
 #### Scenario: 只有待确认经验用例
 - **WHEN** 某功能已有待确认经验用例但没有满足正式覆盖的用例
 - **THEN** 页面 SHALL 显示候选已产生且正式覆盖仍不足
 
 ### Requirement: [REQ-SGD-003] Excel 固定为两个业务 Sheet
-导出器 SHALL 只生成“需求与功能清单审查发现”和“测试用例”两个 Sheet。第一 Sheet SHALL 来源于已验证的材料审查与功能核对记录；第二 Sheet SHALL 来源于已验证的正式和待确认用例，并 SHALL 清晰区分其状态。导出器 MUST 保持确定顺序、公式注入防护、来源去重、文件哈希和回读验证，且 MUST NOT 增加原始 JSON、Markdown 或技术证据 Sheet。
+导出器 SHALL 只生成“需求与功能清单审查发现”和“测试用例”两个 Sheet。第一 Sheet SHALL 来源于已验证的材料审查与功能核对记录；第二 Sheet SHALL 来源于已验证的正式和待确认用例，并 SHALL 清晰区分其状态。导出器 MUST 保持确定顺序、公式注入防护、文件哈希和回读验证，且 MUST NOT 增加原始 JSON、Markdown 或技术证据 Sheet。页面与 Excel SHALL 读取同一份已验证持久化投影并保持业务记录数量一致；重复稳定 source ID SHALL 作为数据一致性错误失败关闭，MUST NOT 在导出时静默去重或少行。
 
 #### Scenario: 生成合法工作簿
 - **WHEN** 任务满足允许导出的业务门禁

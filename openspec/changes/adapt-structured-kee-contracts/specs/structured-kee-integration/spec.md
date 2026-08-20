@@ -25,7 +25,11 @@ Java SHALL 只向 `POST /api/v1/agent-chat/{sessionId}/isolated-skill` 发送 `a
 - **THEN** Java SHALL 在网络调用前失败关闭
 
 ### Requirement: [REQ-SKI-003] Java 使用三个精确 Skill 输入合同
-Java SHALL 只调用 `requirement-material-quality-review`、`feature-scope-reconciliation` 和 `functional-testcase-design`。材料审查 input SHALL 包含 `material_key`、受支持的 `content_type_key`、`source_label` 和 1..32 个唯一 `units`；每个切片首 `ordinal` MUST 大于等于 1，后续每项 MUST 等于前一项加 1，并 SHALL 保留 parsed-units 全局序号。功能核对 input SHALL 包含 1..200 个唯一功能清单条目和 0..200 个唯一需求事实。用例设计 input SHALL 包含一个功能和一个受支持类型、依据及缺失信息的测试点。
+Java SHALL 只调用 `requirement-material-quality-review`、`feature-scope-reconciliation` 和 `functional-testcase-design`。材料审查 input SHALL 包含 `material_key`、受支持的 `content_type_key`、`source_label` 和 1..32 个唯一 `units`；每个切片首 `ordinal` MUST 大于等于 1，后续每项 MUST 等于前一项加 1，并 SHALL 保留 parsed-units 全局序号。
+
+`feature-scope-reconciliation` input SHALL 以严格 `operation` 区分两种操作。`extract_function_list` SHALL 包含 `operation="extract_function_list"`、`material_key`、`source_label` 和 1..32 个功能清单 parsed units；切片的 `unit_key`、全局连续 `ordinal` 和 `content` 规则与材料审查完全相同。其 result SHALL 精确回显同一 operation，并返回 `function_list_items`；每项只含 `path`、`description` 和 1..100 个非空唯一 `evidence_keys`，MUST NOT 包含模型生成的 `item_key`。Java SHALL 先验证每项证据属于当前功能清单材料及当前切片，再生成任务内稳定 `item_key`，跨切片聚合并确定性去重。
+
+`reconcile` input SHALL 包含 `operation="reconcile"`、1..200 个唯一功能清单条目和 0..200 个唯一需求事实；result SHALL 精确回显 `operation="reconcile"` 并返回 reconciliations。Java 与 KEE 均 SHALL 拒绝 input/result operation 错配并产生零业务结果。用例设计 input SHALL 包含一个功能和一个受支持类型、依据及缺失信息的测试点。不得新增第四个 Skill、复用普通 Agent/Markdown 扫描或由 Java 猜测 Excel 行列层级。
 
 所有 key SHALL 为 1..128 个 UTF-8 字符；面向读者的标签和描述 SHALL 不超过 16,384 UTF-8 字节；key 数组 SHALL 最多包含 100 个唯一非空值；每个嵌套层级 MUST 拒绝未知字段。三个 input 的精确形状分别为：
 
@@ -42,6 +46,16 @@ Java SHALL 只调用 `requirement-material-quality-review`、`feature-scope-reco
 
 ```json
 {
+  "operation":"extract_function_list",
+  "material_key":"string",
+  "source_label":"string",
+  "units":[{"unit_key":"string","ordinal":33,"content":"string"}]
+}
+```
+
+```json
+{
+  "operation":"reconcile",
   "function_list_items": [{"item_key":"string","path":"string","description":"string","evidence_keys":["string"]}],
   "requirement_facts": [{"fact_key":"string","function":"string","evidence_keys":["string"]}]
 }
@@ -107,6 +121,18 @@ Java SHALL 只接收 `success=true` 且 `data.schema_version="1.0"`、`data.skil
 
 ```json
 {
+  "operation":"extract_function_list",
+  "function_list_items":[{
+    "path":"string","description":"string","evidence_keys":["string"]
+  }]
+}
+```
+
+或：
+
+```json
+{
+  "operation":"reconcile",
   "reconciliations":[{
     "reconciliation_key":"string",
     "function_list_item_keys":["string"],"requirement_fact_keys":["string"],
@@ -117,7 +143,7 @@ Java SHALL 只接收 `success=true` 且 `data.schema_version="1.0"`、`data.skil
 }
 ```
 
-`reconciliations` SHALL 为 1..200 项，且每项两个来源 key 数组至少一个非空。
+`reconciliations` SHALL 为 1..200 项，且每项两个来源 key 数组至少一个非空。`extract_function_list` 与 `reconcile` 的 input/result operation MUST 逐字一致；operation 错配 SHALL 作为 `structured_output_invalid` 失败关闭且产生零结果。
 
 `functional-testcase-design` 的 result SHALL 精确为：
 

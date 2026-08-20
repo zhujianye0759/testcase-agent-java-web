@@ -58,9 +58,9 @@ KEE 已验证字段、类型、枚举、边界和编号，不等于业务可接�
 
 ### 5. 三阶段工作流以结构化终态收敛
 
-阶段一按材料切片调用 `requirement-material-quality-review`。Java 要求返回的 `requirement_facts` 与 `review_findings` 分别在 0..200 且合计至少一项，并验证所有证据引用与材料角色。
+阶段一按正式需求与补充材料切片调用 `requirement-material-quality-review`。Java 要求返回的 `requirement_facts` 与 `review_findings` 分别在 0..200 且合计至少一项，并验证所有证据引用与材料角色。功能清单切片不冒充需求材料，而是调用同一 `feature-scope-reconciliation` Skill 的 `operation=extract_function_list`；模型只返回 path、description 和当前切片 evidence keys，Java 校验后生成稳定任务内 item key，并跨切片聚合、去重。
 
-阶段二调用 `feature-scope-reconciliation`。Java 验证每个输入功能清单条目和需求事实都进入可追溯终态；`confirmed` 与 `pending_confirmation` 分开保存，`blocking` 材料问题和证据不足不能被静默提升为已确认范围。
+阶段二调用同一 Skill 的 `operation=reconcile`。Java 验证 input/result operation 匹配，并验证每个输入功能清单条目和需求事实都进入可追溯终态；`confirmed` 与 `pending_confirmation` 分开保存，`blocking` 材料问题和证据不足不能被静默提升为已确认范围。该双操作设计不增加第四个 Skill，不复用普通 Agent/Markdown，也不要求 Java 理解 Excel 原生层级。
 
 阶段三由 Java 基于正式需求事实和已确认范围形成数量不固定的测试点，并逐测试点调用 `functional-testcase-design`。返回的 `function_key`、`test_point_key` 必须与请求完全一致。`formal_requirement` 测试点至少接收一条 `formal` 用例；`general_experience` 只能接收 `pending_confirmation` 用例，且不计入正式覆盖。每个结果允许 1..50 条用例，不再要求正反成对。
 
@@ -68,7 +68,9 @@ KEE 已验证字段、类型、枚举、边界和编号，不等于业务可接�
 
 处理状态记录工作是否排队、执行、重试、失败、取消或完成；覆盖结果记录正式需求事实、测试点和正式用例是否满足覆盖门禁。`COMPLETED` 只表示所有必需工作已取得终态并通过业务校验；正式覆盖不足时不得伪装为覆盖完成。`PARTIAL` 不能升级为 `COMPLETED`。
 
-结构化错误按 `error.details.type` 分类。可重试性由 Java 的固定策略决定，而不是错误文本；任何失败都产生零业务结果。KEE 的 `repair_attempted` 仅作为诊断元数据，不改变 Java 的接收规则。
+结构化错误按 `error.details.type` 分类。Java 只把 `model_unavailable`、`model_execution_failed` 视为短暂模型依赖错误，并最多追加一次 Java 级尝试；`structured_output_invalid` 已穷尽 KEE 调用内的一次格式修复，必须终止而不得形成第三次模型调用。`failure_type` 只允许固定白名单，不写异常原文。任何失败都产生零业务结果，KEE 的 `repair_attempted` 仅作为诊断元数据，不改变 Java 的接收规则。
+
+工作项 `identity_key` 是幂等定位键，不是绕过冻结坐标比较的授权凭据。原子 upsert 后必须锁定读取已有行，并逐项比较 skill、operation、ordinal、material、source label、evidence closure、function key 和 test-point key；只有完全相同的重放才返回原 ID，不同载荷不得修改原行。
 
 ### 7. 页面和 Excel 只消费持久化业务投影
 
@@ -96,4 +98,4 @@ Excel 仍恰好两个 Sheet：“需求与功能清单审查发现”和“测�
 
 ## Open Questions
 
-无字段问题。唯一外部门禁是 KEE latest 部署通知与精确镜像证据，不属于字段冻结阻断。
+无字段问题。`extract_function_list`/`reconcile` 已冻结于 KEE 本地提交 `4c68f2f8`；唯一外部门禁是该提交尚未部署，真实 E2E 必须等待 KEE latest 部署通知与精确镜像证据。

@@ -64,4 +64,41 @@ class ApplicationDatabaseMigrationTest {
                 .isEqualTo("./var/test-artifacts");
         assertThat(materialTraversalService).isNotNull();
     }
+
+    /** [Req-ID]: REQ-STG-001, REQ-STG-006, REQ-STG-007 */
+    @Test
+    void addsOnlyApplicationOwnedStructuredGenerationState(@Autowired JdbcTemplate jdbcTemplate) {
+        assertThat(tableNames(jdbcTemplate)).contains(
+                "structured_generation_work_item",
+                "structured_generation_attempt",
+                "structured_requirement_fact",
+                "structured_review_finding",
+                "structured_feature_reconciliation",
+                "structured_test_point",
+                "structured_test_case",
+                "structured_test_case_step",
+                "structured_reference_binding");
+
+        assertThat(columnNames(jdbcTemplate, "generation_task"))
+                .contains("structured_processing_status", "structured_coverage_status");
+        assertThat(columnNames(jdbcTemplate, "structured_generation_work_item"))
+                .contains("identity_key", "ordinal_start", "ordinal_end", "accepted_result_sha256")
+                .doesNotContain("raw_model_json", "raw_markdown");
+    }
+
+    private static java.util.List<String> tableNames(JdbcTemplate jdbcTemplate) {
+        return jdbcTemplate.queryForList("""
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = DATABASE()
+                """, String.class);
+    }
+
+    private static java.util.List<String> columnNames(JdbcTemplate jdbcTemplate, String tableName) {
+        return jdbcTemplate.queryForList("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = DATABASE() AND table_name = ?
+                """, String.class, tableName);
+    }
 }

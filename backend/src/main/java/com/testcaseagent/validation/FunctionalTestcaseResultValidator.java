@@ -35,8 +35,11 @@ public final class FunctionalTestcaseResultValidator {
                 }
                 hasFormalCoverage = true;
             }
-            if (item.basis() == Basis.GENERAL_EXPERIENCE) {
-                requireNonblankItems(requiredList(row.missingInformation(), "case missingInformation"), "case missingInformation");
+            List<String> missingInformation = requiredList(row.missingInformation(), "case missingInformation");
+            if (row.caseStatus() == CaseStatus.PENDING_CONFIRMATION) {
+                requireNonblankItems(missingInformation, "case missingInformation");
+            } else {
+                for (String value : missingInformation) required(value, "case missingInformation");
             }
             validateSteps(requiredList(row.steps(), "steps"));
         }
@@ -92,13 +95,15 @@ public final class FunctionalTestcaseResultValidator {
     }
 
     /** Immutable request-side closure for exactly one test point. */
-    public record WorkItem(StructuredValidationRegistry registry, String functionKey, String testPointKey,
+    public record WorkItem(StructuredValidationRegistry registry, String functionKey, String functionName, String testPointKey, String description,
             TestPointType testPointType, Basis basis, List<String> requirementFactKeys, List<String> evidenceKeys,
             List<String> missingInformation) {
         public WorkItem {
             registry = Objects.requireNonNull(registry, "registry must not be null");
             required(functionKey, "functionKey");
+            required(functionName, "functionName");
             required(testPointKey, "testPointKey");
+            required(description, "description");
             if (testPointType == null || basis == null) throw new IllegalArgumentException("testPointType and basis must not be null");
             requirementFactKeys = requiredList(requirementFactKeys, "requirementFactKeys");
             evidenceKeys = requiredList(evidenceKeys, "evidenceKeys");

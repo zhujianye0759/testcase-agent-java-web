@@ -4,6 +4,7 @@
 - [x] 1.2 为同步 `isolated-skill` 建立精确六字段请求 RED 测试，证明单 KB/单 scope/唯一版本/非空项目/文档集合相等，并证明未知聊天字段、超过 2 MiB 和普通 Agent 回退被拒绝。验证：`./backend/mvnw.cmd -f backend/pom.xml -Dtest=StructuredSkillWireMockTest test`。 `[Req-ID]: REQ-SKI-002, REQ-SKI-005`
 - [x] 1.3 为三类 input 建立 DTO/序列化 RED 测试，覆盖所有字段、枚举、计数和唯一性；材料切片必须证明 `33..64` 合法、断序非法且不得重编号。验证：`./backend/mvnw.cmd -f backend/pom.xml -Dtest=StructuredSkillInputContractTest test`。 `[Req-ID]: REQ-SKI-003`
 - [x] 1.4 为统一成功/失败外壳及三类 result 建立反序列化 RED 测试，拒绝未知字段、错误 schema/skill、SSE/Markdown、超过 4 MiB、错误数组边界和不连续 step_no。验证：`./backend/mvnw.cmd -f backend/pom.xml -Dtest=StructuredSkillResultContractTest test`。 `[Req-ID]: REQ-SKI-004, REQ-SKI-005`
+- [x] 1.5 为 KEE 冻结提交 `4c68f2f8` 中 `feature-scope-reconciliation` 的 `extract_function_list`/`reconcile` 严格 operation 建立并转绿增补合同：证明功能清单切片保留全局 ordinal、提取结果无 item_key 且 evidence 非空唯一、reconcile 保留既有输入/结果，并拒绝 input/result operation 错配。验证：`./backend/mvnw.cmd -f backend/pom.xml -Dtest=FeatureScopeOperationContractTest test`。 `[Req-ID]: REQ-SKI-003, REQ-SKI-004, REQ-STG-003`
 
 ## 2. 窄端口与 HTTP 适配器
 
@@ -16,31 +17,31 @@
 
 - [x] 3.1 建立任务内稳定 key/evidence 注册表及作用域测试，覆盖材料、单元、功能清单条目、需求事实、发现、核对、功能、测试点和用例；拒绝跨任务、跨材料、ExampleScope、未遍历或退休证据。 `[Req-ID]: REQ-STG-001`
 - [x] 3.2 实现需求材料审查 validator：两个数组分别 0..200、合计至少 1，验证引用和 handling_level，并限制 `prototype`/`requirement_list` 只能作为补充证据。先运行失败夹具，再使 `RequirementMaterialReviewValidatorTest` GREEN。 `[Req-ID]: REQ-STG-001, REQ-STG-002`
-- [x] 3.3 实现功能核对 validator：验证全部来源 key 和 evidence，保证每个输入来源取得终态，保留 pending/insufficient/conflict/split/merge/duplicate，不自动提升或改写。验证：`FeatureReconciliationValidatorTest`。 `[Req-ID]: REQ-STG-001, REQ-STG-003`
-- [x] 3.4 实现测试点和用例 validator：精确回显 function/test-point key、引用闭包、七类 type、formal/general-experience 状态映射、正式覆盖及 1..50 非固定数量用例。验证：`FunctionalTestcaseResultValidatorTest`。 `[Req-ID]: REQ-STG-001, REQ-STG-004, REQ-STG-005`
+- [x] 3.3 实现功能提取与核对 validator：提取结果只接受当前材料/切片 evidence，允许 0 项，Java 使用 UTF-8 长度前缀字段编码生成无 NUL 边界歧义的 stable item key 并跨片去重；核对结果验证全部来源 key/evidence 和终态，保留 pending/insufficient/conflict/split/merge/duplicate。验证：`FunctionListExtractionValidatorTest,FeatureReconciliationValidatorTest`。 `[Req-ID]: REQ-STG-001, REQ-STG-003`
+- [x] 3.4 实现测试点和用例 validator：精确回显 function/test-point key、引用闭包、七类 type、formal/general-experience 状态映射；formal 用例两类引用非空，任何 pending 用例 missing information 非空；正式覆盖及 1..50 非固定数量用例。验证：`FunctionalTestcaseResultValidatorTest`。 `[Req-ID]: REQ-STG-001, REQ-STG-004, REQ-STG-005`
 - [x] 3.5 在任务创建前冻结非空 project，要求 `function_list` 加至少一种正式需求材料，并基于文件 SHA-256 拒绝缺失或重复材料；原型和需求清单不得替代正式材料。验证：`WebClientKnowledgeScopeCatalogAdapterTest,DynamicScopeCatalogServiceTest,DynamicTaskScopeResolverTest`。 `[Req-ID]: REQ-STG-008, REQ-SKI-002`
 
 ## 4. 耐久状态与原子接收
 
-- [ ] 4.1 设计并添加最小 Flyway 迁移，分别持久化材料审查事实/发现、核对关系、测试点、结构化用例、引用绑定、处理状态和覆盖结果；不得复用 KEE 数据库或保存原始模型 JSON/Markdown。验证：Testcontainers 迁移测试。 `[Req-ID]: REQ-STG-001~007`
-- [ ] 4.2 为三个工作项实现事务性接收：validator、业务行、引用和尝试终态全成功才提交，任何异常回滚全部写入。验证：新增 MySQL 原子接收集成测试。 `[Req-ID]: REQ-STG-006`
-- [ ] 4.3 实现稳定切片/工作项幂等身份和失败重试，保留 parsed-units 全局 ordinal；只替换当前失败尝试，不覆盖其他已验收结果。验证：重复接收、重试替换、并发认领和中途回滚测试。 `[Req-ID]: REQ-SKI-003, REQ-STG-006`
+- [ ] 4.1 设计并添加最小 Flyway 迁移，分别持久化材料审查事实/发现、功能清单条目、核对关系、测试点、结构化用例、引用绑定、处理状态和覆盖结果；引用绑定的 `subject_type` 必须进入主键/查询，不得复用 KEE 数据库或保存原始模型 JSON/Markdown。验证：Testcontainers 迁移测试。 `[Req-ID]: REQ-STG-001~007`
+- [ ] 4.2 为四类工作项实现事务性接收：validator、业务行、带 subject type 的引用和尝试终态全成功才提交，任何异常回滚全部写入；accept/fail 在锁事务内以数据库冻结的 skill/operation/material/slice/owner/lease 为授权真相，新 stable item key 仅在提交成功后发布。验证：伪造 claim、跨材料/切片、operation 错配、中途回滚和 registry 可见性 MySQL 测试。 `[Req-ID]: REQ-STG-006`
+- [ ] 4.3 实现稳定切片/工作项幂等身份、有界可重试白名单和租约恢复，保留 parsed-units 全局 ordinal；只允许 `model_unavailable|model_execution_failed` 最多再领一次，`structured_output_invalid` 和其他非白名单失败终止；failure type 严格枚举。过期 attempt 失效，达到最大尝试数不再领取；同 task+identity 并发注册返回同一 ID，但相同 identity 的任一冻结载荷坐标不一致必须拒绝且不修改旧行。验证：并发注册/认领、不同 operation/evidence closure 重放、未知 failure type、结构无效不重试、过期恢复、stale claim 和尝试上限测试。 `[Req-ID]: REQ-SKI-003, REQ-STG-006`
 
 ## 5. 结构化生成工作流与完成门禁
 
 - [ ] 5.1 将材料完整遍历后的单元按 1..32 连续全局 ordinal 切片，逐材料执行 `requirement-material-quality-review`，所有切片终态后才进入核对阶段。验证：`GenerationWorkflowStructuredReviewTest`。 `[Req-ID]: REQ-SKI-001, REQ-SKI-003, REQ-STG-002`
-- [ ] 5.2 以已验证功能清单条目和需求事实调用 `feature-scope-reconciliation`，全部来源终态后原子冻结最终功能集合；取消旧 Markdown bulk/singleton 补偿对新路径的影响。验证：`GenerationWorkflowStructuredReconciliationTest`。 `[Req-ID]: REQ-STG-003`
-- [ ] 5.3 由 Java 根据正式事实建立非固定数量测试点并逐点调用 `functional-testcase-design`；移除固定正反两条和 `2N` 作为新路径完成条件。验证：`GenerationWorkflowStructuredTestcaseTest`。 `[Req-ID]: REQ-STG-004, REQ-STG-005`
-- [ ] 5.4 分离处理状态与覆盖结果，只有所有材料/核对/正式测试点/用例/制品门禁通过才进入 `COMPLETED`；部分成功保持 `PARTIAL`，取消和失败不得发布完整制品。验证：状态机与恢复测试。 `[Req-ID]: REQ-STG-007`
+- [ ] 5.2 先对功能清单 parsed units 按 1..32 全局连续切片调用 `feature-scope-reconciliation(operation=extract_function_list)`，校验证据后由 Java 生成稳定 item_key 并跨片聚合/去重；再以已验证功能清单条目和需求事实调用同一 Skill 的 `operation=reconcile`，全部来源终态后原子冻结最终功能集合。取消旧 Markdown bulk/singleton 补偿对新路径的影响，不猜 Excel 层级。验证：`GenerationWorkflowStructuredReconciliationTest`。 `[Req-ID]: REQ-STG-003`
+- [ ] 5.3 由 Java 根据正式事实的每个非空规则值建立稳定、非固定数量测试点并逐点调用 `functional-testcase-design`；stable key 使用 UTF-8 长度前缀字段编码，不得静默丢弃多值，移除固定正反两条和 `2N` 作为新路径完成条件。验证：`GenerationWorkflowStructuredTestcaseTest`。 `[Req-ID]: REQ-STG-004, REQ-STG-005`
+- [ ] 5.4 分离处理状态与覆盖结果并统一 DB/wire enum：processing=`PENDING|RUNNING|COMPLETED|FAILED|CANCELLED`，coverage=`PENDING|COMPLETE|PARTIAL|UNABLE_TO_GENERATE`；全部计划工作无执行失败地终态即为 `COMPLETED`，覆盖不足独立标记，`PARTIAL` 不得出现在 structured processing 轴，取消和执行失败分别保留。验证：状态机、持久化与页面测试。 `[Req-ID]: REQ-STG-007, REQ-SGD-002`
 
 ## 6. 页面与固定双 Sheet 交付
 
 - [ ] 6.1 将任务详情 DTO 改为已持久化的结构化审查、核对、测试点、用例、处理状态和覆盖投影；禁止原始 JSON、Markdown、内部 key/凭据/URL/栈进入响应。验证：`GenerationTaskDetailTest`。 `[Req-ID]: REQ-SGD-001, REQ-SGD-002`
 - [ ] 6.2 更新 PC 任务详情页面及状态测试，分别展示处理进度、正式覆盖和待确认候选，保留 loading/ready/empty/no-results/error/forbidden/not-found、键盘焦点和过期响应保护。验证：`npm --prefix frontend run test -- --run TaskDetailView.spec.ts`，并在 1440x820 及相关宽度执行视觉检查。 `[Req-ID]: REQ-SGD-001, REQ-SGD-002`
-- [ ] 6.3 重构 Excel 输入为结构化记录，仍恰好生成“需求与功能清单审查发现”“测试用例”两个 Sheet，区分 formal/pending_confirmation 并保持公式安全、去重、哈希和回读。验证：`MarkdownWorkbookExporterTest` 的结构化替代测试。 `[Req-ID]: REQ-SGD-003, REQ-SGD-004`
+- [ ] 6.3 重构 Excel 输入为与页面相同的已持久化结构化投影，仍恰好生成“需求与功能清单审查发现”“测试用例”两个 Sheet，区分 formal/pending_confirmation 并保持公式安全、哈希和回读；重复 stable source ID 必须失败关闭，不得静默少行。验证：`StructuredWorkbookExporterTest`。 `[Req-ID]: REQ-SGD-003, REQ-SGD-004`
 
 ## 7. 迁移、兼容回归与外部验收
 
 - [ ] 7.1 清点并隔离旧 `all-completeness-cross-audit` 中被替代的 SSE、Markdown、准备会话、固定重试提示和 `2N` 需求/任务；保留与新路线兼容的 parsed-units、任务耐久性、取消/重试和双 Sheet 能力，未经用户确认不归档旧 change。 `[Req-ID]: all`
 - [ ] 7.2 运行后端聚焦测试、MySQL/Testcontainers 回归、前端 typecheck/lint/test/build、`git diff --check` 和 `openspec validate adapt-structured-kee-contracts --strict`；不得把 fixture PASS 表述为真实 KEE 联调。 `[Req-ID]: all`
-- [ ] 7.3 在 KEE `ba21fecf` 对应 latest 获得部署通知和精确镜像证据后，执行 parsed-units 全遍历、三个 Skill、十类错误、一次 repair 标志、同步响应及普通 Agent 非干扰联合验收；记录提交/镜像和运行证据。部署条件不足时保持本任务未完成。 `[Req-ID]: REQ-SKI-001~006, REQ-SGD-004`
+- [ ] 7.3 在 KEE `4c68f2f8`（前置 `ba21fecf`）对应 latest 获得部署通知和精确镜像证据后，执行 parsed-units 全遍历、三个 Skill（含双 operation）、十类错误、一次 repair 标志、同步响应及普通 Agent 非干扰联合验收；记录提交/镜像和运行证据。部署条件不足时保持本任务未完成。 `[Req-ID]: REQ-SKI-001~006, REQ-SGD-004`

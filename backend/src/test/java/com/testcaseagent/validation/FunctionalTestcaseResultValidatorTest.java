@@ -49,6 +49,20 @@ class FunctionalTestcaseResultValidatorTest {
     }
 
     @Test
+    void anyPendingCandidateRequiresNonblankMissingInformationEvenOnAFormalPoint() {
+        FunctionalTestcaseResultValidator.WorkItem workItem = workItem(FunctionalTestcaseResultValidator.Basis.FORMAL_REQUIREMENT);
+        FunctionalTestcaseResultValidator.Testcase formal = new FunctionalTestcaseResultValidator.Testcase("case-formal", "formal", List.of(),
+                List.of(new FunctionalTestcaseResultValidator.Step(1, "action", "expected")), List.of("fact-1"), List.of("evidence-1"),
+                FunctionalTestcaseResultValidator.CaseStatus.FORMAL, List.of());
+        FunctionalTestcaseResultValidator.Testcase unexplainedPending = new FunctionalTestcaseResultValidator.Testcase("case-pending", "pending", List.of(),
+                List.of(new FunctionalTestcaseResultValidator.Step(1, "action", "expected")), List.of("fact-1"), List.of("evidence-1"),
+                FunctionalTestcaseResultValidator.CaseStatus.PENDING_CONFIRMATION, List.of("  "));
+
+        assertThrows(IllegalArgumentException.class, () -> validator.validate(workItem,
+                new FunctionalTestcaseResultValidator.Result("function-1", "point-1", List.of(formal, unexplainedPending))));
+    }
+
+    @Test
     void generalExperienceCannotBeSilentlyPromotedToFormal() {
         FunctionalTestcaseResultValidator.WorkItem workItem = workItem(FunctionalTestcaseResultValidator.Basis.GENERAL_EXPERIENCE);
         assertThrows(IllegalArgumentException.class, () -> validator.validate(workItem,
@@ -62,7 +76,7 @@ class FunctionalTestcaseResultValidatorTest {
     @Test
     void generalExperienceRequiresExplicitMissingInformationForThePointAndEveryCandidateCase() {
         StructuredValidationRegistry registry = registry();
-        assertThrows(IllegalArgumentException.class, () -> new FunctionalTestcaseResultValidator.WorkItem(registry, "function-1", "point-1",
+        assertThrows(IllegalArgumentException.class, () -> new FunctionalTestcaseResultValidator.WorkItem(registry, "function-1", "Function one", "point-1", "boundary test",
                 FunctionalTestcaseResultValidator.TestPointType.BOUNDARY_VALUE, FunctionalTestcaseResultValidator.Basis.GENERAL_EXPERIENCE,
                 List.of("fact-1"), List.of("evidence-1"), List.of()));
 
@@ -90,7 +104,7 @@ class FunctionalTestcaseResultValidatorTest {
         StructuredValidationRegistry registry = registry();
         List<String> missingInformation = basis == FunctionalTestcaseResultValidator.Basis.GENERAL_EXPERIENCE
                 ? List.of("No formal requirement evidence is available") : List.of();
-        return new FunctionalTestcaseResultValidator.WorkItem(registry, "function-1", "point-1",
+        return new FunctionalTestcaseResultValidator.WorkItem(registry, "function-1", "Function one", "point-1", "boundary test",
                 FunctionalTestcaseResultValidator.TestPointType.BOUNDARY_VALUE, basis, List.of("fact-1"), List.of("evidence-1"),
                 missingInformation);
     }
