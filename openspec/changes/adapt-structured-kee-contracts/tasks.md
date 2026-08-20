@@ -42,6 +42,6 @@
 
 ## 7. 迁移、兼容回归与外部验收
 
-- [ ] 7.1 清点并隔离旧 `all-completeness-cross-audit` 中被替代的 SSE、Markdown、准备会话、固定重试提示和 `2N` 需求/任务；保留与新路线兼容的 parsed-units、任务耐久性、取消/重试和双 Sheet 能力，未经用户确认不归档旧 change。 `[Req-ID]: all`
-- [ ] 7.2 运行后端聚焦测试、MySQL/Testcontainers 回归、前端 typecheck/lint/test/build、`git diff --check` 和 `openspec validate adapt-structured-kee-contracts --strict`；不得把 fixture PASS 表述为真实 KEE 联调。 `[Req-ID]: all`
+- [x] 7.1 清点并隔离旧 `all-completeness-cross-audit` 中被替代的 SSE、Markdown、准备会话、固定重试提示和 `2N` 需求/任务；保留与新路线兼容的 parsed-units、任务耐久性、取消/重试和双 Sheet 能力，未经用户确认不归档旧 change。证据：`evidence/7.1-7.2-local-gates.md`。 `[Req-ID]: all`
+- [x] 7.2 运行后端聚焦测试、MySQL/Testcontainers 回归、前端 typecheck/lint/test/build、`git diff --check` 和 `openspec validate adapt-structured-kee-contracts --strict`；不得把 fixture PASS 表述为真实 KEE 联调。证据：`evidence/7.1-7.2-local-gates.md`。 `[Req-ID]: all`
 - [ ] 7.3 在 KEE `4c68f2f8`（前置 `ba21fecf`）对应 latest 获得部署通知和精确镜像证据后，执行 parsed-units 全遍历、三个 Skill（含双 operation）、十类错误、一次 repair 标志、同步响应及普通 Agent 非干扰联合验收；记录提交/镜像和运行证据。部署条件不足时保持本任务未完成。 `[Req-ID]: REQ-SKI-001~006, REQ-SGD-004`

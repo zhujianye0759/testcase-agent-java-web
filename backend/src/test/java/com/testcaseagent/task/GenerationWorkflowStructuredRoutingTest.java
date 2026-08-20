@@ -26,12 +26,13 @@ class GenerationWorkflowStructuredRoutingTest {
         RequirementMaterialTraversalService traversal = mock(RequirementMaterialTraversalService.class);
         FeatureAuditService legacyAudit = mock(FeatureAuditService.class);
         FrozenFeatureService legacyFreeze = mock(FrozenFeatureService.class);
+        WorkbookExporter legacyExporter = mock(WorkbookExporter.class);
         StructuredAllGenerationCoordinator structured = mock(StructuredAllGenerationCoordinator.class);
         CreateGenerationTaskRequest request = mock(CreateGenerationTaskRequest.class);
         when(request.taskMode()).thenReturn(GenerationTaskMode.ALL);
         when(request.featureIds()).thenReturn(List.of());
         when(repository.request("task-structured")).thenReturn(request);
-        GenerationWorkflow workflow = new GenerationWorkflow(repository, legacyAgent, mock(WorkbookExporter.class),
+        GenerationWorkflow workflow = new GenerationWorkflow(repository, legacyAgent, legacyExporter,
                 new ObjectMapper(), mock(TaskExecutionQueue.class), new SyncTaskExecutor(), traversal,
                 legacyAudit, legacyFreeze, structured);
 
@@ -40,7 +41,11 @@ class GenerationWorkflowStructuredRoutingTest {
         verify(structured).execute("task-structured", request);
         verify(legacyAgent, never()).prepareGenerationSession(org.mockito.ArgumentMatchers.any());
         verify(legacyAgent, never()).invoke(org.mockito.ArgumentMatchers.any());
+        verify(traversal, never()).traverse(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyBoolean());
         verify(legacyAudit, never()).audit(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
         verify(legacyFreeze, never()).freeze(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
+        verify(repository, never()).requireQueuedWork(org.mockito.ArgumentMatchers.anyString());
+        verify(legacyExporter, never()).exportMarkdown(org.mockito.ArgumentMatchers.any());
     }
 }
