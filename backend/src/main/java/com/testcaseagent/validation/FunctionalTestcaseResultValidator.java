@@ -18,7 +18,7 @@ public final class FunctionalTestcaseResultValidator {
         List<Testcase> cases = requiredList(checked.testcases(), "testcases");
         if (cases.isEmpty() || cases.size() > 50) throw new IllegalArgumentException("testcases must contain 1..50 rows");
         Set<String> caseKeys = new HashSet<>();
-        boolean hasFormal = false;
+        boolean hasFormalCoverage = false;
         for (Testcase testcase : cases) {
             Testcase row = Objects.requireNonNull(testcase, "testcase must not be null");
             if (!caseKeys.add(required(row.caseKey(), "caseKey"))) throw new IllegalArgumentException("caseKey must be unique");
@@ -26,15 +26,24 @@ public final class FunctionalTestcaseResultValidator {
             if (item.basis() == Basis.GENERAL_EXPERIENCE && row.caseStatus() != CaseStatus.PENDING_CONFIRMATION) {
                 throw new IllegalArgumentException("General-experience test points can only produce pending-confirmation cases");
             }
-            hasFormal |= row.caseStatus() == CaseStatus.FORMAL;
-            validateReferences(item, requiredList(row.requirementFactKeys(), "case requirementFactKeys"),
-                    requiredList(row.evidenceKeys(), "case evidenceKeys"));
+            List<String> factKeys = requiredList(row.requirementFactKeys(), "case requirementFactKeys");
+            List<String> evidenceKeys = requiredList(row.evidenceKeys(), "case evidenceKeys");
+            validateReferences(item, factKeys, evidenceKeys);
+            if (row.caseStatus() == CaseStatus.FORMAL) {
+                if (factKeys.isEmpty() || evidenceKeys.isEmpty()) {
+                    throw new IllegalArgumentException("A formal testcase requires nonempty requirement-fact and evidence closures");
+                }
+                hasFormalCoverage = true;
+            }
+            if (item.basis() == Basis.GENERAL_EXPERIENCE) {
+                requireNonblankItems(requiredList(row.missingInformation(), "case missingInformation"), "case missingInformation");
+            }
             validateSteps(requiredList(row.steps(), "steps"));
         }
-        if (item.basis() == Basis.FORMAL_REQUIREMENT && !hasFormal) {
+        if (item.basis() == Basis.FORMAL_REQUIREMENT && !hasFormalCoverage) {
             throw new IllegalArgumentException("A formal requirement test point requires at least one formal testcase");
         }
-        return new ValidationOutcome(checked, item.basis() == Basis.FORMAL_REQUIREMENT && hasFormal);
+        return new ValidationOutcome(checked, item.basis() == Basis.FORMAL_REQUIREMENT && hasFormalCoverage);
     }
 
     private static void validateReferences(WorkItem item, List<String> factKeys, List<String> evidenceKeys) {
@@ -72,6 +81,11 @@ public final class FunctionalTestcaseResultValidator {
         return List.copyOf(values);
     }
 
+    private static void requireNonblankItems(List<String> values, String field) {
+        if (values.isEmpty()) throw new IllegalArgumentException(field + " must not be empty");
+        for (String value : values) required(value, field);
+    }
+
     private static String required(String value, String field) {
         if (value == null || value.isBlank()) throw new IllegalArgumentException(field + " must not be blank");
         return value;
@@ -79,7 +93,8 @@ public final class FunctionalTestcaseResultValidator {
 
     /** Immutable request-side closure for exactly one test point. */
     public record WorkItem(StructuredValidationRegistry registry, String functionKey, String testPointKey,
-            TestPointType testPointType, Basis basis, List<String> requirementFactKeys, List<String> evidenceKeys) {
+            TestPointType testPointType, Basis basis, List<String> requirementFactKeys, List<String> evidenceKeys,
+            List<String> missingInformation) {
         public WorkItem {
             registry = Objects.requireNonNull(registry, "registry must not be null");
             required(functionKey, "functionKey");
@@ -87,10 +102,12 @@ public final class FunctionalTestcaseResultValidator {
             if (testPointType == null || basis == null) throw new IllegalArgumentException("testPointType and basis must not be null");
             requirementFactKeys = requiredList(requirementFactKeys, "requirementFactKeys");
             evidenceKeys = requiredList(evidenceKeys, "evidenceKeys");
+            missingInformation = requiredList(missingInformation, "missingInformation");
             registry.require(StructuredKeyType.FUNCTION, functionKey);
             registry.require(StructuredKeyType.TEST_POINT, testPointKey);
             requireSubset(requirementFactKeys, requirementFactKeys, StructuredKeyType.REQUIREMENT_FACT, registry, "requirement fact");
             for (String evidenceKey : evidenceKeys) registry.requireEvidence(evidenceKey);
+            if (basis == Basis.GENERAL_EXPERIENCE) requireNonblankItems(missingInformation, "missingInformation");
         }
     }
 

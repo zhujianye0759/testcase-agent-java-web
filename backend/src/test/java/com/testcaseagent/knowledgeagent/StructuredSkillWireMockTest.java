@@ -54,6 +54,29 @@ class StructuredSkillWireMockTest {
                 .hasMessageContaining("forbidden").hasMessageNotContaining("secret");
     }
 
+    /** [Req-ID]: REQ-SKI-005 */
+    @Test
+    void rejectsNon2xxBodiesThatForgeSuccessButStillClassifiesValidErrorEnvelopes() {
+        kee.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill"))
+                .inScenario("http-status-gate")
+                .whenScenarioStateIs(com.github.tomakehurst.wiremock.stubbing.Scenario.STARTED)
+                .willSetStateTo("error-envelope")
+                .willReturn(com.github.tomakehurst.wiremock.client.WireMock.aResponse().withStatus(502)
+                        .withHeader("Content-Type", "application/json").withBody(success())));
+        kee.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill"))
+                .inScenario("http-status-gate").whenScenarioStateIs("error-envelope")
+                .willReturn(com.github.tomakehurst.wiremock.client.WireMock.aResponse().withStatus(403)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("{\"success\":false,\"error\":{\"details\":{\"type\":\"forbidden\"}}}")));
+
+        assertThatThrownBy(() -> adapter().reviewRequirementMaterial(invocation()))
+                .isInstanceOfSatisfying(StructuredSkillExecutionException.class,
+                        failure -> assertThat(failure.type()).isEqualTo(StructuredSkillErrorType.STRUCTURED_OUTPUT_INVALID));
+        assertThatThrownBy(() -> adapter().reviewRequirementMaterial(invocation()))
+                .isInstanceOfSatisfying(StructuredSkillExecutionException.class,
+                        failure -> assertThat(failure.type()).isEqualTo(StructuredSkillErrorType.FORBIDDEN));
+    }
+
     /** [Req-ID]: REQ-SKI-002, REQ-SKI-005 */
     @Test
     void rejectsAnOversizedRequestBeforeAnyNetworkCall() {

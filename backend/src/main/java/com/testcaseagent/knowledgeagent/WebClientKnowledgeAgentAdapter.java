@@ -171,6 +171,7 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
                     .exchangeToMono(clientResponse -> clientResponse.bodyToMono(String.class).defaultIfEmpty("")
                             .map(value -> new StructuredHttpResponse(clientResponse.statusCode().is2xxSuccessful(), value))).block(timeout);
             if (response == null) throw new StructuredSkillExecutionException(StructuredSkillErrorType.MODEL_EXECUTION_FAILED, false);
+            if (!response.successful()) throw nonSuccessStructuredResponse(response.body());
             return parseStructuredResponse(response.body(), skillName, resultType);
         } catch (StructuredSkillExecutionException exception) {
             throw exception;
@@ -204,6 +205,24 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
             throw exception;
         } catch (Exception exception) {
             throw invalidStructuredResponse();
+        }
+    }
+
+    /** Rejects non-2xx responses unless their fixed failure envelope provides a safe stable type. */
+    private StructuredSkillExecutionException nonSuccessStructuredResponse(String response) {
+        if (response.getBytes(StandardCharsets.UTF_8).length > 4 * 1024 * 1024) {
+            return new StructuredSkillExecutionException(StructuredSkillErrorType.RESPONSE_TOO_LARGE, false);
+        }
+        try {
+            JsonNode root = structuredObjectMapper.readTree(response);
+            if (root == null || !root.isObject() || !root.path("success").isBoolean() || root.path("success").booleanValue()) {
+                return invalidStructuredResponse();
+            }
+            return structuredFailure(root);
+        } catch (StructuredSkillExecutionException exception) {
+            return exception;
+        } catch (Exception exception) {
+            return invalidStructuredResponse();
         }
     }
 
