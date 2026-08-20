@@ -4,6 +4,10 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.testcaseagent.export.WorkbookArtifact;
+import com.testcaseagent.export.StructuredReviewRow;
+import com.testcaseagent.export.StructuredTestCaseRow;
+import com.testcaseagent.export.StructuredTestStep;
+import com.testcaseagent.export.StructuredWorkbookExportRequest;
 import com.testcaseagent.featureaudit.AuditWorkClaim;
 import com.testcaseagent.featureaudit.FeatureReviewConclusion;
 import com.testcaseagent.featureaudit.FeatureReviewConclusionType;
@@ -27,6 +31,7 @@ import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -1125,6 +1130,111 @@ public final class GenerationTaskRepository {
                     acceptedMarkdownRows(taskId),
                     request, businessProgress(taskId, row.taskMode(), row.status(), request),
                     structuredResult(taskId, row.structuredProcessingStatus(), row.structuredCoverageStatus()));
+        });
+    }
+
+    /** Reads the same committed structured tables as task detail and maps them directly to the fixed workbook. */
+    public StructuredWorkbookExportRequest structuredWorkbookRequest(String taskId) {
+        List<StructuredReviewRow> reviewRows = new ArrayList<>();
+        reviewRows.addAll(jdbcTemplate.query("""
+                SELECT w.id, f.finding_key, w.source_label, f.issue_type, f.description,
+                       f.current_project_recommendation
+                FROM structured_review_finding f
+                JOIN structured_generation_work_item w ON w.id = f.work_item_id
+                WHERE f.task_id = ? AND w.status = 'COMPLETED' AND w.accepted_result_sha256 IS NOT NULL
+                ORDER BY w.created_at, f.finding_key
+                """, (row, index) -> new StructuredReviewRow(row.getString("id") + ":finding:" + row.getString("finding_key"),
+                index + 1, StructuredReviewRow.Source.REQUIREMENT_MATERIAL_REVIEW,
+                readerSafeText(orDefault(row.getString("source_label"), "需求材料")), readerSafeText(row.getString("issue_type")),
+                readerSafeText(row.getString("description") + "；" + row.getString("current_project_recommendation")), true), taskId));
+        int offset = reviewRows.size();
+        reviewRows.addAll(jdbcTemplate.query("""
+                SELECT r.work_item_id, r.reconciliation_key, r.classification, r.scope_recommendation
+                FROM structured_feature_reconciliation r
+                JOIN structured_generation_work_item w ON w.id = r.work_item_id
+                WHERE r.task_id = ? AND w.status = 'COMPLETED' AND w.accepted_result_sha256 IS NOT NULL
+                ORDER BY w.created_at, r.reconciliation_key
+                """, (row, index) -> {
+            String workItemId = row.getString("work_item_id");
+            String key = row.getString("reconciliation_key");
+            List<String> subjects = new ArrayList<>(reconciliationFunctionListPaths(taskId, workItemId, key));
+            subjects.addAll(reconciliationRequirementFunctions(taskId, workItemId, key));
+            return new StructuredReviewRow(workItemId + ":reconciliation:" + key, offset + index + 1,
+                    StructuredReviewRow.Source.FEATURE_RECONCILIATION,
+                    readerSafeText(subjects.isEmpty() ? "功能范围" : String.join(" / ", subjects)),
+                    readerSafeText(row.getString("classification")), readerSafeText(row.getString("scope_recommendation")), true);
+        }, taskId));
+        List<StructuredTestCaseRow> cases = jdbcTemplate.query("""
+                SELECT c.work_item_id, c.case_key, c.title, c.preconditions_json, c.case_status,
+                       c.missing_information_json, p.function_name
+                FROM structured_test_case c
+                JOIN structured_test_point p ON p.work_item_id = c.work_item_id
+                JOIN structured_generation_work_item w ON w.id = c.work_item_id
+                WHERE c.task_id = ? AND w.status = 'COMPLETED' AND w.accepted_result_sha256 IS NOT NULL
+                ORDER BY w.created_at, c.case_key
+                """, (row, ignored) -> {
+            String workItemId = row.getString("work_item_id");
+            String caseKey = row.getString("case_key");
+            List<StructuredTestStep> steps = structuredTestcaseSteps(workItemId, caseKey).stream()
+                    .map(step -> new StructuredTestStep(step.stepNo(), step.action(), step.expected())).toList();
+            return new StructuredTestCaseRow(workItemId + ":case:" + caseKey, readerSafeText(row.getString("title")),
+                    readerSafeText(row.getString("function_name")), StructuredTestCaseRow.Status.valueOf(row.getString("case_status")),
+                    readerSafeList(row.getString("preconditions_json")), steps,
+                    testcaseRequirementSummaries(taskId, workItemId, caseKey),
+                    readerSafeList(row.getString("missing_information_json")), true);
+        }, taskId);
+        return new StructuredWorkbookExportRequest(taskId, reviewRows, cases);
+    }
+
+    /** Atomically publishes structured task axes and optional validated workbook metadata. */
+    public void completeStructuredTask(String taskId, WorkbookArtifact artifact,
+            StructuredProcessingStatus processingStatus, StructuredCoverageStatus coverageStatus) {
+        if (artifact == null) throw new IllegalArgumentException("Validated structured workbook artifact is required");
+        if (processingStatus != StructuredProcessingStatus.COMPLETED) {
+            throw new IllegalArgumentException("Structured completion requires COMPLETED processing");
+        }
+        transactionTemplate.executeWithoutResult(ignored -> {
+            requireTaskStatus(taskId, GenerationTaskStatus.VALIDATING);
+            int changed = jdbcTemplate.update("""
+                    UPDATE generation_task
+                    SET status = 'COMPLETED', structured_processing_status = ?, structured_coverage_status = ?,
+                        artifact_id = ?, artifact_sha256 = ?, artifact_path = ?
+                    WHERE id = ? AND status = 'VALIDATING'
+                    """, processingStatus.name(), coverageStatus.name(), artifact.artifactId(),
+                    artifact.sha256(), artifact.path().toString(), taskId);
+            if (changed != 1) throw new IllegalStateException("Structured completion did not update exactly one task");
+        });
+    }
+
+    /** Fails the structured route without invoking Markdown finalization or retaining an artifact. */
+    public void failStructuredTask(String taskId, StructuredCoverageStatus coverageStatus) {
+        int changed = jdbcTemplate.update("""
+                UPDATE generation_task
+                SET status = 'FAILED', structured_processing_status = 'FAILED', structured_coverage_status = ?,
+                    artifact_id = NULL, artifact_sha256 = NULL, artifact_path = NULL
+                WHERE id = ? AND status IN ('AUDITING','GENERATING','VALIDATING')
+                """, coverageStatus.name(), taskId);
+        if (changed != 1) throw new IllegalStateException("Structured failure did not update exactly one task");
+    }
+
+    /** Publishes user cancellation on the structured processing axis without retaining an artifact. */
+    public void cancelStructuredTask(String taskId, StructuredCoverageStatus coverageStatus) {
+        transactionTemplate.executeWithoutResult(ignored -> {
+            List<GenerationTaskStatus> statuses = jdbcTemplate.query(
+                    "SELECT status FROM generation_task WHERE id = ? FOR UPDATE",
+                    (row, index) -> GenerationTaskStatus.valueOf(row.getString(1)), taskId);
+            if (statuses.isEmpty()) throw new GenerationTaskNotFoundException(taskId);
+            if (statuses.get(0) == GenerationTaskStatus.CANCELLED) return;
+            if (statuses.get(0).isTerminal()) {
+                throw new IllegalStateException("A terminal structured task cannot be cancelled");
+            }
+            int changed = jdbcTemplate.update("""
+                    UPDATE generation_task
+                    SET status = 'CANCELLED', structured_processing_status = 'CANCELLED',
+                        structured_coverage_status = ?, artifact_id = NULL, artifact_sha256 = NULL, artifact_path = NULL
+                    WHERE id = ? AND status IN ('AUDITING','GENERATING','VALIDATING')
+                    """, coverageStatus.name(), taskId);
+            if (changed != 1) throw new IllegalStateException("Structured cancellation did not update exactly one task");
         });
     }
 

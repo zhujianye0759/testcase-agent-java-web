@@ -37,6 +37,19 @@ public final class StructuredValidationRegistry {
         return this;
     }
 
+    /**
+     * Rehydrates an identity already accepted by the durable store, or verifies the live store already published it.
+     *
+     * <p>This operation is intentionally idempotent because a fresh acceptance and a restart rebuild share the same
+     * production path. It does not validate an unpersisted model key; callers must invoke it only for committed rows.</p>
+     */
+    public StructuredValidationRegistry requireOrRegister(StructuredKeyType type, String key) {
+        Objects.requireNonNull(type, "type must not be null");
+        String checkedKey = required(key, "key");
+        keys.computeIfAbsent(type, ignored -> new LinkedHashMap<>()).putIfAbsent(checkedKey, checkedKey);
+        return this;
+    }
+
     /** Registers a resolved evidence key once. Evidence from another task is rejected immediately. */
     public StructuredValidationRegistry registerEvidence(StructuredEvidence value) {
         StructuredEvidence checked = Objects.requireNonNull(value, "evidence must not be null");

@@ -73,6 +73,43 @@ public final class TaskExecutionQueue {
 
     private void recoverExpiredClaimsInTransaction(boolean startupRecovery) {
         if (startupRecovery) {
+            // Structured ALL tasks have no legacy generation_batch lease. A process restart is therefore the
+            // authoritative crash boundary: invalidate only the still-running structured attempt, preserve every
+            // completed accepted row, release the shared slot, and let the normal bounded retry reclaim the work.
+            jdbcTemplate.update("""
+                    UPDATE structured_generation_attempt attempt
+                    JOIN structured_generation_work_item work ON work.id = attempt.work_item_id
+                    JOIN generation_task task ON task.id = work.task_id
+                    SET attempt.status = 'FAILED', attempt.failure_type = 'model_execution_failed',
+                        attempt.completed_at = CURRENT_TIMESTAMP(6)
+                    WHERE attempt.status = 'RUNNING' AND work.status = 'RUNNING'
+                      AND task.structured_processing_status = 'RUNNING'
+                      AND task.status IN ('AUDITING','GENERATING','VALIDATING')
+                      AND NOT EXISTS (SELECT 1 FROM generation_batch batch WHERE batch.task_id = task.id)
+                    """);
+            jdbcTemplate.update("""
+                    UPDATE structured_generation_work_item work
+                    JOIN generation_task task ON task.id = work.task_id
+                    SET work.status = 'FAILED', work.lease_owner = NULL, work.lease_expires_at = NULL
+                    WHERE work.status = 'RUNNING' AND task.structured_processing_status = 'RUNNING'
+                      AND task.status IN ('AUDITING','GENERATING','VALIDATING')
+                      AND NOT EXISTS (SELECT 1 FROM generation_batch batch WHERE batch.task_id = task.id)
+                    """);
+            jdbcTemplate.update("""
+                    UPDATE task_execution_slot slot
+                    JOIN generation_task task ON task.id = slot.task_id
+                    SET slot.task_id = NULL
+                    WHERE task.structured_processing_status = 'RUNNING'
+                      AND task.status IN ('AUDITING','GENERATING','VALIDATING')
+                      AND NOT EXISTS (SELECT 1 FROM generation_batch batch WHERE batch.task_id = task.id)
+                    """);
+            jdbcTemplate.update("""
+                    UPDATE generation_task task
+                    SET task.status = 'QUEUED', task.structured_processing_status = 'PENDING'
+                    WHERE task.structured_processing_status = 'RUNNING'
+                      AND task.status IN ('AUDITING','GENERATING','VALIDATING')
+                      AND NOT EXISTS (SELECT 1 FROM generation_batch batch WHERE batch.task_id = task.id)
+                    """);
             // The process-start runner alone recovers an AUDITING claim with no running batch. It covers both the
             // unplanned audit phase and the committed-frozen-plan window, without treating live workers as dead.
             jdbcTemplate.update("""

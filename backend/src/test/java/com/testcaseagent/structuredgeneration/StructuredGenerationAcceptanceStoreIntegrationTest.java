@@ -3,6 +3,7 @@ package com.testcaseagent.structuredgeneration;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.testcaseagent.validation.FeatureReconciliationValidator;
 import com.testcaseagent.validation.RequirementMaterialReviewValidator;
 import com.testcaseagent.validation.StructuredEvidence;
 import com.testcaseagent.validation.StructuredKeyType;
@@ -71,6 +72,62 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT source_label FROM structured_generation_work_item WHERE id = ?", String.class, workId)).isEqualTo("requirements slice 33-64");
         RequirementMaterialReviewValidator.Result changed = new RequirementMaterialReviewValidator.Result(List.of(fact("fact-1", "changed function")), List.of());
         assertThatThrownBy(() -> store.acceptReview(claim, validator, item, changed)).isInstanceOf(IllegalStateException.class);
+    }
+
+    /** [Req-ID]: REQ-STG-001, REQ-STG-003, REQ-STG-006 */
+    @Test
+    void rebuildsPublishedKeysIdempotentlyAndRestoresConfirmedFunctionMappingsAfterRestart() {
+        StructuredValidationRegistry liveRegistry = StructuredValidationRegistry.forTask("task-1")
+                .register(StructuredKeyType.MATERIAL, "material-1")
+                .registerEvidence(new StructuredEvidence("evidence-1", "task-1", "material-1", false, false, true))
+                .registerEvidence(new StructuredEvidence("evidence-2", "task-1", "material-1", false, false, true));
+        store.register(reviewWork("1".repeat(64)));
+        StructuredGenerationAcceptanceStore.WorkClaim review = store.claimNext("task-1", "worker-1").orElseThrow();
+        store.acceptReview(review, new RequirementMaterialReviewValidator(),
+                new RequirementMaterialReviewValidator.WorkItem(
+                        liveRegistry, "material-1", "requirements_spec", List.of("evidence-1")),
+                new RequirementMaterialReviewValidator.Result(List.of(fact("fact-confirmed", "事实显示名称")), List.of()));
+
+        store.register(new StructuredGenerationAcceptanceStore.WorkRegistration("task-1", "2".repeat(64),
+                "feature-scope-reconciliation", "FEATURE_SCOPE_EXTRACT", 2, 2, "material-1", "功能清单切片",
+                List.of("evidence-2"), null, null));
+        StructuredGenerationAcceptanceStore.WorkClaim extraction = store.claimNext("task-1", "worker-1").orElseThrow();
+        store.acceptFunctionListItems(extraction, liveRegistry, List.of(
+                new StructuredGenerationAcceptanceStore.FunctionListItem(
+                        "fli-confirmed", "订单/最终功能", "已确认功能", List.of("evidence-2"))));
+
+        StructuredGenerationAcceptanceStore.AcceptedInputs accepted = store.acceptedInputs("task-1");
+        accepted.facts().forEach(row -> liveRegistry.requireOrRegister(StructuredKeyType.REQUIREMENT_FACT, row.factKey()));
+        accepted.functionItems().forEach(row -> liveRegistry.requireOrRegister(StructuredKeyType.FUNCTION_LIST_ITEM, row.itemKey()));
+        StructuredValidationRegistry restartedRegistry = StructuredValidationRegistry.forTask("task-1")
+                .registerEvidence(new StructuredEvidence("evidence-1", "task-1", "material-1", false, false, true))
+                .registerEvidence(new StructuredEvidence("evidence-2", "task-1", "material-1", false, false, true));
+        accepted.facts().forEach(row -> restartedRegistry.requireOrRegister(StructuredKeyType.REQUIREMENT_FACT, row.factKey()));
+        accepted.functionItems().forEach(row -> restartedRegistry.requireOrRegister(StructuredKeyType.FUNCTION_LIST_ITEM, row.itemKey()));
+
+        store.register(new StructuredGenerationAcceptanceStore.WorkRegistration("task-1", "3".repeat(64),
+                "feature-scope-reconciliation", "FEATURE_SCOPE_RECONCILIATION", null, null, null, "核对",
+                List.of("evidence-1", "evidence-2"), null, null));
+        StructuredGenerationAcceptanceStore.WorkClaim reconciliation = store.claimNext("task-1", "worker-1").orElseThrow();
+        FeatureReconciliationValidator.Result result = new FeatureReconciliationValidator.Result(List.of(
+                new FeatureReconciliationValidator.Reconciliation("reconciliation-confirmed",
+                        List.of("fli-confirmed"), List.of("fact-confirmed"),
+                        FeatureReconciliationValidator.Classification.EXACT_MATCH,
+                        List.of("evidence-1", "evidence-2"), "保持范围",
+                        FeatureReconciliationValidator.ConfirmationStatus.CONFIRMED)));
+        store.acceptReconciliation(reconciliation, new FeatureReconciliationValidator(),
+                new FeatureReconciliationValidator.WorkItem(restartedRegistry, List.of("fli-confirmed"),
+                        List.of("fact-confirmed"), List.of("evidence-1", "evidence-2")), result);
+
+        StructuredGenerationAcceptanceStore restartedStore = new StructuredGenerationAcceptanceStore(
+                jdbc, new TransactionTemplate(transactionManager), Clock.systemUTC());
+        assertThat(restartedStore.acceptedConfirmedFunctions("task-1")).singleElement().satisfies(mapping -> {
+            assertThat(mapping.reconciliationKey()).isEqualTo("reconciliation-confirmed");
+            assertThat(mapping.functionItems()).extracting(StructuredGenerationAcceptanceStore.AcceptedFunctionItem::path)
+                    .containsExactly("订单/最终功能");
+            assertThat(mapping.facts()).extracting(StructuredGenerationAcceptanceStore.AcceptedFact::factKey)
+                    .containsExactly("fact-confirmed");
+        });
     }
 
     /** [Req-ID]: REQ-STG-006 */
@@ -211,6 +268,24 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
 
     /** [Req-ID]: REQ-STG-006 */
     @Test
+    void retriesOnlyTheRequestedTransientlyFailedWorkWithoutClaimingAnotherQueuedIdentity() {
+        String requestedWork = store.register(reviewWork("a".repeat(64)));
+        String otherWork = store.register(reviewWork("b".repeat(64)));
+        StructuredGenerationAcceptanceStore.WorkClaim first = store.claimRegistered(
+                "task-1", requestedWork, "worker-1").orElseThrow();
+        store.fail(first, "model_unavailable");
+
+        StructuredGenerationAcceptanceStore.WorkClaim retry = store.claimRegistered(
+                "task-1", requestedWork, "worker-2").orElseThrow();
+
+        assertThat(retry.workItemId()).isEqualTo(requestedWork);
+        assertThat(retry.attemptNumber()).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT status FROM structured_generation_work_item WHERE id = ?",
+                String.class, otherWork)).isEqualTo("QUEUED");
+    }
+
+    /** [Req-ID]: REQ-STG-006 */
+    @Test
     void rejectsUnknownFailureTypesWithoutChangingTheRunningClaim() {
         StructuredGenerationAcceptanceStore.WorkClaim claim = claimReviewWork();
 
@@ -233,7 +308,7 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
                 .register(StructuredKeyType.MATERIAL, "material-1")
                 .registerEvidence(new StructuredEvidence("evidence-1", "task-other", "material-1", false, false, true));
         RequirementMaterialReviewValidator.WorkItem foreign = new RequirementMaterialReviewValidator.WorkItem(
-                otherTaskRegistry, "material-1", "requirements_spec");
+                otherTaskRegistry, "material-1", "requirements_spec", List.of("evidence-1"));
 
         assertThatThrownBy(() -> store.acceptReview(claim, new RequirementMaterialReviewValidator(), foreign,
                 new RequirementMaterialReviewValidator.Result(List.of(fact("fact-1")), List.of())))
@@ -453,7 +528,8 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
 
     private static StructuredGenerationAcceptanceStore.WorkRegistration reviewWork(String identityKey) {
         return new StructuredGenerationAcceptanceStore.WorkRegistration("task-1", identityKey,
-                "requirement-material-quality-review", 33, 64, "material-1", "requirements slice 33-64", null, null);
+                "requirement-material-quality-review", 33, 64, "material-1", "requirements slice 33-64",
+                List.of("evidence-1"), null, null);
     }
     private StructuredGenerationAcceptanceStore.WorkClaim claimReviewWork() {
         store.register(reviewWork("a".repeat(64)));
@@ -463,7 +539,7 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
         StructuredValidationRegistry registry = StructuredValidationRegistry.forTask("task-1")
                 .register(StructuredKeyType.MATERIAL, "material-1")
                 .registerEvidence(new StructuredEvidence("evidence-1", "task-1", "material-1", false, false, true));
-        return new RequirementMaterialReviewValidator.WorkItem(registry, "material-1", "requirements_spec");
+        return new RequirementMaterialReviewValidator.WorkItem(registry, "material-1", "requirements_spec", List.of("evidence-1"));
     }
     private static RequirementMaterialReviewValidator.RequirementFact fact(String key) {
         return fact(key, "功能");

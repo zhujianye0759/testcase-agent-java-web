@@ -52,6 +52,23 @@ class StructuredWorkbookExporterTest {
     }
 
     @Test
+    void exportsAndVerifiesTheFixedTwoSheetsWhenNoBusinessRowsWereGenerated() throws Exception {
+        WorkbookArtifact artifact = new ApachePoiWorkbookExporter(artifactRoot).exportStructured(
+                new StructuredWorkbookExportRequest("task-empty", List.of(), List.of()));
+
+        try (XSSFWorkbook workbook = new XSSFWorkbook(artifact.path().toFile())) {
+            assertThat(workbook.getNumberOfSheets()).isEqualTo(2);
+            assertThat(java.util.stream.IntStream.range(0, workbook.getNumberOfSheets())
+                    .mapToObj(workbook::getSheetName).toList())
+                    .containsExactly("需求与功能清单审查发现", "测试用例");
+            assertThat(workbook.getSheetAt(0).getLastRowNum()).isZero();
+            assertThat(workbook.getSheetAt(1).getLastRowNum()).isZero();
+            assertThat(headers(workbook, 0)).containsExactly("序号", "来源", "对象/功能点", "问题分类/核对结论", "说明");
+            assertThat(headers(workbook, 1)).containsExactly("用例名称", "功能模块", "状态", "前提约束", "执行步骤", "预期结果", "对应需求内容", "缺失信息");
+        }
+    }
+
+    @Test
     void rejectsDuplicateReviewAndTestcaseSourceIdentitiesInsteadOfSilentlyDroppingRows() {
         ApachePoiWorkbookExporter exporter = new ApachePoiWorkbookExporter(artifactRoot);
         StructuredReviewRow review = new StructuredReviewRow("review-1", 1,

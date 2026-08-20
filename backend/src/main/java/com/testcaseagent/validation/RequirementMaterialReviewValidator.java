@@ -32,7 +32,7 @@ public final class RequirementMaterialReviewValidator {
         List<String> evidence = requiredList(fact.evidenceKeys(), "fact evidenceKeys");
         if (evidence.isEmpty()) throw new IllegalArgumentException("A formal requirement fact requires evidence");
         requireDistinct(evidence, "fact evidenceKey");
-        evidence.forEach(key -> item.registry().requireEvidence(key, item.materialKey()));
+        evidence.forEach(key -> item.requireSliceEvidence(key));
     }
 
     private static void validateFinding(WorkItem item, ReviewFinding finding) {
@@ -40,7 +40,7 @@ public final class RequirementMaterialReviewValidator {
         if (finding.handlingLevel() == null) throw new IllegalArgumentException("handlingLevel must not be null");
         List<String> evidence = requiredList(finding.evidenceKeys(), "finding evidenceKeys");
         requireDistinct(evidence, "finding evidenceKey");
-        evidence.forEach(key -> item.registry().requireEvidence(key, item.materialKey()));
+        evidence.forEach(key -> item.requireSliceEvidence(key));
     }
 
     private static void requireDistinct(List<String> values, String field) {
@@ -59,7 +59,8 @@ public final class RequirementMaterialReviewValidator {
     }
 
     /** Frozen material coordinates for exactly one review invocation. */
-    public record WorkItem(StructuredValidationRegistry registry, String materialKey, String contentTypeKey) {
+    public record WorkItem(StructuredValidationRegistry registry, String materialKey, String contentTypeKey,
+            List<String> allowedEvidenceKeys) {
         public WorkItem {
             registry = Objects.requireNonNull(registry, "registry must not be null");
             required(materialKey, "materialKey");
@@ -68,6 +69,18 @@ public final class RequirementMaterialReviewValidator {
                 throw new IllegalArgumentException("Unsupported requirement material content type");
             }
             registry.require(StructuredKeyType.MATERIAL, materialKey);
+            List<String> checkedEvidence = requiredList(allowedEvidenceKeys, "allowedEvidenceKeys");
+            if (checkedEvidence.isEmpty()) throw new IllegalArgumentException("allowedEvidenceKeys must not be empty");
+            requireDistinct(checkedEvidence, "allowedEvidenceKey");
+            for (String key : checkedEvidence) registry.requireEvidence(key, materialKey);
+            allowedEvidenceKeys = checkedEvidence;
+        }
+
+        private void requireSliceEvidence(String evidenceKey) {
+            if (!allowedEvidenceKeys.contains(evidenceKey)) {
+                throw new IllegalArgumentException("Review evidence is outside the current parsed-unit slice");
+            }
+            registry.requireEvidence(evidenceKey, materialKey);
         }
 
         boolean supplementaryMaterial() {

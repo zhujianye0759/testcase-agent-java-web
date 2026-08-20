@@ -11,6 +11,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.testcaseagent.structuredgeneration.StructuredCoverageStatus;
+import com.testcaseagent.structuredgeneration.StructuredProcessingStatus;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -50,5 +52,17 @@ class GenerationTaskRepositoryRetryTest {
         verify(transactionManager, never()).commit(transactionStatus);
         verify(jdbcTemplate, never()).update(contains("SET artifact_id = NULL"), eq(TASK_ID));
         verify(jdbcTemplate, never()).update(contains("UPDATE generation_task SET status"), any(), any(), any());
+    }
+
+    /** [Req-ID]: REQ-STG-007 */
+    @Test
+    void rejectsStructuredCompletionWithoutAValidatedWorkbookArtifact() {
+        GenerationTaskRepository repository = new GenerationTaskRepository(
+                mock(JdbcTemplate.class), new ObjectMapper(), mock(PlatformTransactionManager.class));
+
+        assertThatThrownBy(() -> repository.completeStructuredTask(TASK_ID, null,
+                StructuredProcessingStatus.COMPLETED, StructuredCoverageStatus.UNABLE_TO_GENERATE))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("artifact");
     }
 }

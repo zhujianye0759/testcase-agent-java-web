@@ -8,6 +8,9 @@ import com.testcaseagent.featureaudit.FrozenFeatureService;
 import com.testcaseagent.featureaudit.RequirementMaterialTraversalService;
 import com.testcaseagent.knowledgeagent.KnowledgeAgentProperties;
 import com.testcaseagent.knowledgeagent.KnowledgeAgentPort;
+import com.testcaseagent.knowledgeagent.StructuredSkillExecutionPort;
+import com.testcaseagent.knowledgeagent.StructuredSkillSessionPort;
+import com.testcaseagent.structuredgeneration.StructuredGenerationAcceptanceStore;
 import com.testcaseagent.knowledgeagent.WebClientKnowledgeAgentAdapter;
 import com.testcaseagent.knowledgeagent.WebClientKnowledgeScopeCatalogAdapter;
 import com.testcaseagent.scope.DynamicScopeCatalogService;
@@ -82,6 +85,18 @@ public class GenerationTaskConfiguration {
     }
 
     @Bean
+    StructuredSkillExecutionPort structuredSkillExecutionPort(KnowledgeAgentPort knowledgeAgentPort) {
+        if (knowledgeAgentPort instanceof StructuredSkillExecutionPort structured) return structured;
+        throw new IllegalStateException("Configured KnowledgeAgentPort does not provide isolated structured Skill execution");
+    }
+
+    @Bean
+    StructuredSkillSessionPort structuredSkillSessionPort(KnowledgeAgentPort knowledgeAgentPort) {
+        if (knowledgeAgentPort instanceof StructuredSkillSessionPort sessions) return sessions;
+        throw new IllegalStateException("Configured KnowledgeAgentPort does not provide structured session coordinates");
+    }
+
+    @Bean
     GenerationTaskRepository generationTaskRepository(
             JdbcTemplate jdbcTemplate, ObjectMapper objectMapper, PlatformTransactionManager transactionManager) {
         return new GenerationTaskRepository(jdbcTemplate, objectMapper, transactionManager);
@@ -101,6 +116,13 @@ public class GenerationTaskConfiguration {
     @Bean
     TaskExecutionQueue taskExecutionQueue(JdbcTemplate jdbcTemplate, PlatformTransactionManager transactionManager) {
         return new TaskExecutionQueue(jdbcTemplate, transactionManager);
+    }
+
+    @Bean
+    StructuredGenerationAcceptanceStore structuredGenerationAcceptanceStore(JdbcTemplate jdbcTemplate,
+            PlatformTransactionManager transactionManager, ObjectMapper objectMapper) {
+        return new StructuredGenerationAcceptanceStore(jdbcTemplate,
+                new org.springframework.transaction.support.TransactionTemplate(transactionManager), Clock.systemUTC(), objectMapper);
     }
 
     @Bean
@@ -133,6 +155,17 @@ public class GenerationTaskConfiguration {
     }
 
     @Bean
+    StructuredAllGenerationCoordinator structuredAllGenerationCoordinator(GenerationTaskRepository repository,
+            RequirementMaterialTraversalService traversalService,
+            @Qualifier("structuredSkillExecutionPort") StructuredSkillExecutionPort executionPort,
+            @Qualifier("structuredSkillSessionPort") StructuredSkillSessionPort sessionPort,
+            StructuredGenerationAcceptanceStore acceptanceStore,
+            WorkbookExporter workbookExporter, ObjectMapper objectMapper) {
+        return new DefaultStructuredAllGenerationCoordinator(repository, traversalService, executionPort,
+                sessionPort, acceptanceStore, workbookExporter, objectMapper);
+    }
+
+    @Bean
     GenerationWorkflow generationWorkflow(
             GenerationTaskRepository repository,
             KnowledgeAgentPort knowledgeAgentPort,
@@ -142,9 +175,11 @@ public class GenerationTaskConfiguration {
             TaskExecutor generationTaskExecutor,
             RequirementMaterialTraversalService materialTraversalService,
             FeatureAuditService featureAuditService,
-            FrozenFeatureService frozenFeatureService) {
+            FrozenFeatureService frozenFeatureService,
+            StructuredAllGenerationCoordinator structuredAllCoordinator) {
         return new GenerationWorkflow(repository, knowledgeAgentPort, workbookExporter, objectMapper,
-                taskExecutionQueue, generationTaskExecutor, materialTraversalService, featureAuditService, frozenFeatureService);
+                taskExecutionQueue, generationTaskExecutor, materialTraversalService, featureAuditService,
+                frozenFeatureService, structuredAllCoordinator);
     }
 
     @Bean

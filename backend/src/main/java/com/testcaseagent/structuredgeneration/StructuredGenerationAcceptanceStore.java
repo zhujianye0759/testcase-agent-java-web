@@ -15,7 +15,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -37,7 +39,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 public final class StructuredGenerationAcceptanceStore {
     public static final int MAX_ATTEMPTS = 2;
     private static final Set<String> FAILURE_TYPES = Set.of("invalid_request", "request_too_large", "session_not_found", "forbidden", "unsupported_skill",
-            "skill_unavailable", "model_unavailable", "model_execution_failed", "structured_output_invalid", "response_too_large");
+            "skill_unavailable", "model_unavailable", "model_execution_failed", "structured_output_invalid", "response_too_large",
+            "scope_validation_failed", "business_validation_failed");
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transaction;
     private final Clock clock;
@@ -126,12 +129,77 @@ public final class StructuredGenerationAcceptanceStore {
         });
     }
 
+    /**
+     * Claims one exact registered identity for its first attempt or its single allowed transient retry.
+     *
+     * <p>The coordinator uses this targeted form so retrying one failed Skill call cannot accidentally lease a
+     * different queued work item.</p>
+     */
+    public Optional<WorkClaim> claimRegistered(String taskId, String workItemId, String owner) {
+        require(taskId, "taskId"); require(workItemId, "workItemId"); require(owner, "owner");
+        return transaction.execute(status -> {
+            Instant now = clock.instant();
+            List<TargetWorkRow> rows = jdbc.query("""
+                    SELECT id, identity_key, skill_name, operation_name, status, ordinal_start, ordinal_end,
+                           material_key, allowed_evidence_keys_json, lease_expires_at
+                    FROM structured_generation_work_item
+                    WHERE task_id = ? AND id = ? FOR UPDATE
+                    """, (row, ignored) -> new TargetWorkRow(row.getString("id"), row.getString("identity_key"),
+                    row.getString("skill_name"), row.getString("operation_name"), row.getString("status"),
+                    asInteger(row.getObject("ordinal_start")), asInteger(row.getObject("ordinal_end")),
+                    row.getString("material_key"), stringList(row.getString("allowed_evidence_keys_json")),
+                    row.getTimestamp("lease_expires_at") == null ? null : row.getTimestamp("lease_expires_at").toInstant()),
+                    taskId, workItemId);
+            if (rows.isEmpty()) return Optional.empty();
+            TargetWorkRow row = rows.get(0);
+            String currentStatus = row.status();
+            if ("RUNNING".equals(currentStatus) && row.leaseExpiresAt() != null
+                    && !row.leaseExpiresAt().isAfter(now)) {
+                jdbc.update("UPDATE structured_generation_attempt SET status = 'FAILED', failure_type = 'model_execution_failed', completed_at = ? "
+                        + "WHERE work_item_id = ? AND status = 'RUNNING'", now, workItemId);
+                jdbc.update("UPDATE structured_generation_work_item SET status = 'FAILED', lease_owner = NULL, lease_expires_at = NULL WHERE id = ?",
+                        workItemId);
+                currentStatus = "FAILED";
+            }
+            int attempts = count("SELECT COUNT(*) FROM structured_generation_attempt WHERE work_item_id = ?", workItemId);
+            if ("FAILED".equals(currentStatus)) {
+                List<String> failures = jdbc.queryForList("""
+                        SELECT failure_type FROM structured_generation_attempt
+                        WHERE work_item_id = ? ORDER BY attempt_number DESC LIMIT 1
+                        """, String.class, workItemId);
+                if (attempts >= MAX_ATTEMPTS || failures.isEmpty()
+                        || !("model_unavailable".equals(failures.get(0))
+                        || "model_execution_failed".equals(failures.get(0)))) return Optional.empty();
+            } else if (!"QUEUED".equals(currentStatus)) {
+                return Optional.empty();
+            }
+            int attemptNumber = attempts + 1;
+            String attemptId = UUID.randomUUID().toString();
+            Instant expires = now.plus(Duration.ofMinutes(5));
+            if (jdbc.update("""
+                    UPDATE structured_generation_work_item SET status = 'RUNNING', lease_owner = ?, lease_expires_at = ?
+                    WHERE id = ? AND status = ?
+                    """, owner, expires, workItemId, currentStatus) != 1) {
+                throw new IllegalStateException("Structured work claim was lost");
+            }
+            jdbc.update("INSERT INTO structured_generation_attempt (id, work_item_id, attempt_number, status) VALUES (?, ?, ?, 'RUNNING')",
+                    attemptId, workItemId, attemptNumber);
+            return Optional.of(new WorkClaim(row.id(), attemptId, taskId, row.identityKey(), row.skillName(),
+                    row.operationName(), attemptNumber, row.ordinalStart(), row.ordinalEnd(), row.materialKey(),
+                    row.allowedEvidenceKeys(), owner));
+        });
+    }
+
     /** Validates and atomically saves a material-review projection. */
     public void acceptReview(WorkClaim claim, RequirementMaterialReviewValidator validator,
             RequirementMaterialReviewValidator.WorkItem workItem, RequirementMaterialReviewValidator.Result result) {
         requireTask(claim, workItem.registry().taskId());
         Objects.requireNonNull(validator, "validator must not be null").validate(workItem, result);
-        accept(claim, result, null, "REQUIREMENT_MATERIAL_REVIEW", ignored -> {
+        accept(claim, result, null, "REQUIREMENT_MATERIAL_REVIEW", frozen -> {
+            if (!workItem.materialKey().equals(frozen.materialKey())
+                    || !workItem.allowedEvidenceKeys().equals(frozen.allowedEvidenceKeys())) {
+                throw new IllegalStateException("Review validation closure does not match frozen work");
+            }
             for (RequirementMaterialReviewValidator.RequirementFact fact : result.requirementFacts()) {
                 insertTaskScoped("requirement fact", () -> jdbc.update("""
                         INSERT INTO structured_requirement_fact (work_item_id, task_id, fact_key, function_name, roles_json,
@@ -163,7 +231,10 @@ public final class StructuredGenerationAcceptanceStore {
             FeatureReconciliationValidator.WorkItem workItem, FeatureReconciliationValidator.Result result) {
         requireTask(claim, workItem.registry().taskId());
         Objects.requireNonNull(validator, "validator must not be null").validate(workItem, result);
-        accept(claim, result, null, "FEATURE_SCOPE_RECONCILIATION", ignored -> {
+        accept(claim, result, null, "FEATURE_SCOPE_RECONCILIATION", frozen -> {
+            if (!workItem.allowedEvidenceKeys().equals(frozen.allowedEvidenceKeys())) {
+                throw new IllegalStateException("Reconciliation evidence closure does not match frozen work");
+            }
             for (FeatureReconciliationValidator.Reconciliation row : result.reconciliations()) {
                 insertTaskScoped("feature reconciliation", () -> jdbc.update("""
                         INSERT INTO structured_feature_reconciliation
@@ -215,7 +286,12 @@ public final class StructuredGenerationAcceptanceStore {
         FunctionalTestcaseResultValidator.ValidationOutcome outcome = Objects.requireNonNull(validator, "validator must not be null").validate(workItem, result);
         String coverageStatus = workItem.basis() == FunctionalTestcaseResultValidator.Basis.FORMAL_REQUIREMENT
                 ? "SATISFIED" : "NOT_APPLICABLE";
-        accept(claim, result, coverageStatus, "FUNCTIONAL_TESTCASE_DESIGN", ignored -> {
+        accept(claim, result, coverageStatus, "FUNCTIONAL_TESTCASE_DESIGN", frozen -> {
+            if (!workItem.functionKey().equals(frozen.functionKey())
+                    || !workItem.testPointKey().equals(frozen.testPointKey())
+                    || !workItem.evidenceKeys().equals(frozen.allowedEvidenceKeys())) {
+                throw new IllegalStateException("Test-point validation closure does not match frozen work");
+            }
             insertTaskScoped("test point", () -> jdbc.update("""
                     INSERT INTO structured_test_point
                     (work_item_id, task_id, test_point_key, function_key, function_name, test_point_type, basis, description, missing_information_json, formal_coverage_satisfied)
@@ -280,6 +356,97 @@ public final class StructuredGenerationAcceptanceStore {
                 }, taskId).stream().filter(Objects::nonNull).findFirst();
     }
 
+    /** Rebuilds accepted formal facts and task-unique function items after a worker restart. */
+    public AcceptedInputs acceptedInputs(String taskId) {
+        require(taskId, "taskId");
+        List<AcceptedFact> facts = jdbc.query("""
+                SELECT f.work_item_id, f.fact_key, f.function_name, f.inputs_json, f.business_rules_json,
+                       f.permissions_json, f.state_changes_json, f.exception_handling_json, f.external_dependencies_json
+                FROM structured_requirement_fact f
+                JOIN structured_generation_work_item w ON w.id = f.work_item_id
+                WHERE f.task_id = ? AND w.status = 'COMPLETED' AND w.accepted_result_sha256 IS NOT NULL
+                ORDER BY w.created_at, f.fact_key
+                """, (row, ignored) -> new AcceptedFact(row.getString("fact_key"), row.getString("function_name"),
+                stringList(row.getString("inputs_json")), stringList(row.getString("business_rules_json")),
+                stringList(row.getString("permissions_json")), stringList(row.getString("state_changes_json")),
+                stringList(row.getString("exception_handling_json")), stringList(row.getString("external_dependencies_json")),
+                referenceKeys(row.getString("work_item_id"), row.getString("fact_key"), "REQUIREMENT_FACT", "EVIDENCE")), taskId);
+        List<AcceptedFunctionItem> items = jdbc.query("""
+                SELECT item.work_item_id, item.item_key, item.path_text, item.description
+                FROM structured_function_list_item item
+                JOIN structured_generation_work_item w ON w.id = item.work_item_id
+                WHERE item.task_id = ? AND w.status = 'COMPLETED' AND w.accepted_result_sha256 IS NOT NULL
+                ORDER BY item.path_text, item.item_key
+                """, (row, ignored) -> new AcceptedFunctionItem(row.getString("item_key"), row.getString("path_text"),
+                row.getString("description"), referenceKeys(row.getString("work_item_id"), row.getString("item_key"),
+                        "FUNCTION_LIST_ITEM", "EVIDENCE")), taskId);
+        return new AcceptedInputs(facts, items);
+    }
+
+    /**
+     * Rebuilds each confirmed final-function mapping from committed reconciliation bindings.
+     *
+     * <p>The caller receives the persisted function-list identities together with their linked formal facts. It must
+     * not infer a function merely by grouping unrelated facts that happen to share display text.</p>
+     */
+    public List<AcceptedConfirmedFunction> acceptedConfirmedFunctions(String taskId) {
+        require(taskId, "taskId");
+        AcceptedInputs accepted = acceptedInputs(taskId);
+        Map<String, AcceptedFunctionItem> itemsByKey = new LinkedHashMap<>();
+        accepted.functionItems().forEach(item -> itemsByKey.put(item.itemKey(), item));
+        Map<String, AcceptedFact> factsByKey = new LinkedHashMap<>();
+        accepted.facts().forEach(fact -> factsByKey.put(fact.factKey(), fact));
+        List<AcceptedReconciliation> reconciliations = jdbc.query("""
+                SELECT reconciliation.work_item_id, reconciliation.reconciliation_key
+                FROM structured_feature_reconciliation reconciliation
+                JOIN structured_generation_work_item work ON work.id = reconciliation.work_item_id
+                WHERE reconciliation.task_id = ? AND reconciliation.confirmation_status = 'CONFIRMED'
+                  AND work.status = 'COMPLETED' AND work.accepted_result_sha256 IS NOT NULL
+                ORDER BY work.created_at, reconciliation.reconciliation_key
+                """, (row, ignored) -> new AcceptedReconciliation(
+                row.getString("work_item_id"), row.getString("reconciliation_key")), taskId);
+        return reconciliations.stream().map(reconciliation -> {
+            List<AcceptedFunctionItem> items = referenceKeys(reconciliation.workItemId(),
+                    reconciliation.reconciliationKey(), "RECONCILIATION", "FUNCTION_LIST_ITEM").stream()
+                    .map(key -> requiredAccepted(itemsByKey, key, "function-list item")).toList();
+            List<AcceptedFact> facts = referenceKeys(reconciliation.workItemId(),
+                    reconciliation.reconciliationKey(), "RECONCILIATION", "REQUIREMENT_FACT").stream()
+                    .map(key -> requiredAccepted(factsByKey, key, "requirement fact")).toList();
+            if (items.isEmpty() && facts.isEmpty()) {
+                throw new IllegalStateException("Confirmed reconciliation has no persisted source identity");
+            }
+            return new AcceptedConfirmedFunction(reconciliation.reconciliationKey(), items, facts);
+        }).toList();
+    }
+
+    private static <T> T requiredAccepted(Map<String, T> accepted, String key, String type) {
+        T value = accepted.get(key);
+        if (value == null) throw new IllegalStateException("Confirmed reconciliation references an unavailable " + type);
+        return value;
+    }
+
+    /** Reads durable aggregate counts used by the independent processing/coverage completion gate. */
+    public AggregateState aggregateState(String taskId) {
+        require(taskId, "taskId");
+        int totalReview = count("SELECT COUNT(*) FROM structured_generation_work_item WHERE task_id = ? AND operation_name = 'REQUIREMENT_MATERIAL_REVIEW'", taskId);
+        int completedReview = count("SELECT COUNT(*) FROM structured_generation_work_item WHERE task_id = ? AND operation_name = 'REQUIREMENT_MATERIAL_REVIEW' AND status = 'COMPLETED'", taskId);
+        int formalPoints = count("SELECT COUNT(*) FROM structured_test_point WHERE task_id = ? AND basis = 'FORMAL_REQUIREMENT'", taskId);
+        int coveredFormal = count("SELECT COUNT(*) FROM structured_test_point WHERE task_id = ? AND basis = 'FORMAL_REQUIREMENT' AND formal_coverage_satisfied = TRUE", taskId);
+        int pendingCases = count("SELECT COUNT(*) FROM structured_test_case WHERE task_id = ? AND case_status = 'PENDING_CONFIRMATION'", taskId);
+        int acceptedWork = count("SELECT COUNT(*) FROM structured_generation_work_item WHERE task_id = ? AND status = 'COMPLETED'", taskId);
+        int failedWork = count("SELECT COUNT(*) FROM structured_generation_work_item WHERE task_id = ? AND status = 'FAILED'", taskId);
+        int nonterminal = count("SELECT COUNT(*) FROM structured_generation_work_item WHERE task_id = ? AND status IN ('QUEUED','RUNNING')", taskId);
+        return new AggregateState(totalReview, completedReview, formalPoints, coveredFormal, pendingCases,
+                acceptedWork, failedWork, nonterminal == 0);
+    }
+
+    /** Returns whether an exact registered work identity already has an accepted hash. */
+    public boolean isCompleted(String workItemId) {
+        require(workItemId, "workItemId");
+        return count("SELECT COUNT(*) FROM structured_generation_work_item WHERE id = ? AND status = 'COMPLETED' AND accepted_result_sha256 IS NOT NULL",
+                workItemId) == 1;
+    }
+
     private void accept(WorkClaim claim, Object result, String coverageStatus, String operationName, Consumer<FrozenWork> rows) {
         requireClaim(claim); String resultSha256 = sha256(result);
         transaction.executeWithoutResult(status -> {
@@ -309,6 +476,19 @@ public final class StructuredGenerationAcceptanceStore {
                 INSERT INTO structured_reference_binding (work_item_id, subject_key, subject_type, reference_type, reference_key)
                 VALUES (?, ?, ?, ?, ?)
                 """, workItemId, subjectKey, subjectType, referenceType, reference);
+    }
+
+    private List<String> referenceKeys(String workItemId, String subjectKey, String subjectType, String referenceType) {
+        return jdbc.queryForList("""
+                SELECT reference_key FROM structured_reference_binding
+                WHERE work_item_id = ? AND subject_key = ? AND subject_type = ? AND reference_type = ?
+                ORDER BY reference_key
+                """, String.class, workItemId, subjectKey, subjectType, referenceType);
+    }
+
+    private int count(String sql, String value) {
+        Integer result = jdbc.queryForObject(sql, Integer.class, value);
+        return result == null ? 0 : result;
     }
 
     private void bindIdempotently(String workItemId, String subjectKey, String subjectType,
@@ -351,11 +531,12 @@ public final class StructuredGenerationAcceptanceStore {
     private FrozenWork lockedWork(String workItemId) {
         List<FrozenWork> rows = jdbc.query("""
                 SELECT id, task_id, identity_key, skill_name, operation_name, status, material_key, allowed_evidence_keys_json,
+                       function_key, test_point_key,
                        lease_owner, lease_expires_at, accepted_result_sha256
                 FROM structured_generation_work_item WHERE id = ? FOR UPDATE
                 """, (row, ignored) -> new FrozenWork(row.getString("id"), row.getString("task_id"), row.getString("identity_key"),
                 row.getString("skill_name"), row.getString("operation_name"), row.getString("status"), row.getString("material_key"),
-                stringList(row.getString("allowed_evidence_keys_json")), row.getString("lease_owner"),
+                stringList(row.getString("allowed_evidence_keys_json")), row.getString("function_key"), row.getString("test_point_key"), row.getString("lease_owner"),
                 row.getTimestamp("lease_expires_at") == null ? null : row.getTimestamp("lease_expires_at").toInstant(),
                 row.getString("accepted_result_sha256")), workItemId);
         if (rows.isEmpty()) throw new IllegalStateException("Structured work item does not exist");
@@ -477,6 +658,36 @@ public final class StructuredGenerationAcceptanceStore {
     }
     /** Application-created function-list record; its stable key is verified against Java's registry, never model-generated. */
     public record FunctionListItem(String itemKey, String path, String description, List<String> evidenceKeys) { }
+    /** Accepted workflow inputs reconstructed from task-owned tables, never from raw model output. */
+    public record AcceptedInputs(List<AcceptedFact> facts, List<AcceptedFunctionItem> functionItems) {
+        public AcceptedInputs {
+            facts = List.copyOf(facts);
+            functionItems = List.copyOf(functionItems);
+        }
+    }
+    /** Formal fact fields required to reconstruct deterministic test points. */
+    public record AcceptedFact(String factKey, String function, List<String> inputs, List<String> businessRules,
+            List<String> permissions, List<String> stateChanges, List<String> exceptionHandling,
+            List<String> externalDependencies, List<String> evidenceKeys) { }
+    /** One task-unique function-list item and its merged evidence. */
+    public record AcceptedFunctionItem(String itemKey, String path, String description, List<String> evidenceKeys) { }
+
+    /** One confirmed persisted mapping that defines the final function identity used for testcase planning. */
+    public record AcceptedConfirmedFunction(String reconciliationKey, List<AcceptedFunctionItem> functionItems,
+            List<AcceptedFact> facts) {
+        public AcceptedConfirmedFunction {
+            require(reconciliationKey, "reconciliationKey");
+            functionItems = List.copyOf(Objects.requireNonNull(functionItems, "functionItems must not be null"));
+            facts = List.copyOf(Objects.requireNonNull(facts, "facts must not be null"));
+            if (functionItems.isEmpty() && facts.isEmpty()) {
+                throw new IllegalArgumentException("A confirmed function requires at least one persisted source identity");
+            }
+        }
+    }
+    /** Durable counts for completion and formal coverage. */
+    public record AggregateState(int totalReviewWork, int completedReviewWork, int formalPointTotal,
+            int coveredFormalPointCount, int pendingCandidateCount, int acceptedWorkCount,
+            int failedWorkCount, boolean allWorkTerminal) { }
     private record WorkRow(String id, String identityKey, String skillName, String operationName, Integer ordinalStart, Integer ordinalEnd,
             String materialKey, List<String> allowedEvidenceKeys) { }
     private record RegistrationRow(String id, String skillName, String operationName, Integer ordinalStart, Integer ordinalEnd,
@@ -490,7 +701,12 @@ public final class StructuredGenerationAcceptanceStore {
         }
     }
     private record FrozenWork(String id, String taskId, String identityKey, String skillName, String operationName, String status,
-            String materialKey, List<String> allowedEvidenceKeys, String leaseOwner, Instant leaseExpiresAt, String acceptedResultSha256) { }
+            String materialKey, List<String> allowedEvidenceKeys, String functionKey, String testPointKey,
+            String leaseOwner, Instant leaseExpiresAt, String acceptedResultSha256) { }
     private record CompletedRow(String status, String hash) { }
     private record StoredFunctionItem(String workItemId, String path, String description) { }
+    private record AcceptedReconciliation(String workItemId, String reconciliationKey) { }
+    private record TargetWorkRow(String id, String identityKey, String skillName, String operationName, String status,
+            Integer ordinalStart, Integer ordinalEnd, String materialKey, List<String> allowedEvidenceKeys,
+            Instant leaseExpiresAt) { }
 }

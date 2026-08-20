@@ -48,4 +48,15 @@ class StructuredValidationRegistryTest {
         assertThrows(IllegalArgumentException.class,
                 () -> registry.require(StructuredKeyType.TESTCASE, "shared-key"));
     }
+
+    @Test
+    void idempotentlyRebuildsPersistedKeysWhetherOrNotTheLiveStoreAlreadyPublishedThem() {
+        StructuredValidationRegistry liveRegistry = StructuredValidationRegistry.forTask("task-1")
+                .register(StructuredKeyType.REQUIREMENT_FACT, "fact-1");
+
+        assertDoesNotThrow(() -> liveRegistry.requireOrRegister(StructuredKeyType.REQUIREMENT_FACT, "fact-1"));
+        StructuredValidationRegistry restartedRegistry = StructuredValidationRegistry.forTask("task-1");
+        assertDoesNotThrow(() -> restartedRegistry.requireOrRegister(StructuredKeyType.REQUIREMENT_FACT, "fact-1"));
+        assertDoesNotThrow(() -> restartedRegistry.require(StructuredKeyType.REQUIREMENT_FACT, "fact-1"));
+    }
 }

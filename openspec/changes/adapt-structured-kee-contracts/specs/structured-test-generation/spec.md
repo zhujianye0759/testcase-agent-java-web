@@ -26,6 +26,8 @@ Java SHALL 接受各 0..200 的 `requirement_facts` 和 `review_findings`，但�
 ### Requirement: [REQ-STG-003] 功能双向核对覆盖所有输入来源
 Java SHALL 先对每个 `extract_function_list` 结果验证 evidence key 属于当前功能清单材料和当前切片；只有全部条目通过后才为条目生成任务内稳定 `item_key`，并在跨切片聚合时按稳定业务内容和证据进行确定性去重。稳定身份的每个 UTF-8 字段 MUST 使用固定宽度长度前缀后再参与哈希，MUST NOT 使用字段内也可出现的 NUL 或其他哨兵字符拼接边界。模型输出 MUST NOT 决定 item key，Java MUST NOT 解析或猜测 Excel Sheet/行/列层级。`function_list_items` 为空 SHALL 作为该切片的合法完整终态。新 item key 只有在该工作项数据库事务提交成功后才 MAY 发布到任务注册表；回滚 MUST 保持其不可见。随后 Java SHALL 验证每个 `reconcile` reconciliation 的来源 key、证据 key、classification 和 confirmation_status，并 SHALL 使当前核对工作项中的每个功能清单条目和需求事实进入可追溯终态。`pending_confirmation`、`insufficient_evidence`、冲突、拆分、合并和重复 MUST 保留其原始状态，不得自动提升为已确认精确匹配。
 
+测试点规划 SHALL 从已持久化的 `confirmed` reconciliation 及其 function-list item / requirement-fact 引用绑定恢复最终功能身份。Java MUST NOT 仅按 `requirement_fact.function` 显示文本分组来猜测最终功能，也 MUST NOT 直接使用尚未提交的内存 Skill 结果跨阶段推进。进程重启后，已提交 key 的 registry 重建 SHALL 为幂等 require-or-register；同一次进程内提交后发布与重启加载 MUST NOT 因重复注册而失败。
+
 #### Scenario: 功能清单切片形成稳定条目
 - **WHEN** `extract_function_list` 返回的每个条目只引用当前功能清单切片的合法 evidence key
 - **THEN** Java SHALL 生成稳定任务内 item key 并原子接收该切片
@@ -46,6 +48,11 @@ Java SHALL 先对每个 `extract_function_list` 结果验证 evidence key 属于
 #### Scenario: 任一来源未处置
 - **WHEN** 至少一个输入条目或事实没有任何合法终态关系
 - **THEN** Java SHALL 拒绝该结果且不得冻结最终功能范围
+
+#### Scenario: 核对提交后进程重启
+- **WHEN** reconciliation 已原子提交但测试点阶段尚未完成
+- **THEN** Java SHALL 从持久化 confirmed mapping 恢复最终功能身份与正式事实引用
+- **AND** SHALL 跳过已完成工作且不得按事实显示文本猜测功能或重复业务行
 
 ### Requirement: [REQ-STG-004] Java 按需求事实形成非固定数量测试点
 Java SHALL 根据已验证需求事实、业务规则、边界、权限、状态、异常和依赖形成数量不固定的测试点，不得按功能数推导固定 `2N`。同一事实字段包含多个非空值时，Java SHALL 为每个值分别形成测试点或形成显式包含全部值的可审计聚合，MUST NOT 静默丢弃第 2..N 项；稳定测试点 key SHALL 包含该值或聚合的稳定身份，并 SHALL 对每个 UTF-8 身份字段使用固定宽度长度前缀编码，禁止 NUL 分隔歧义。测试点 type MUST 属于冻结的七类，basis SHALL 为 `formal_requirement` 或 `general_experience`，且缺失信息 SHALL 显式保留。
@@ -81,6 +88,8 @@ Java SHALL 在同一事务中保存一个已完整通过业务校验的 Skill �
 数据库工作项中冻结的 skill、operation、material key、切片 evidence closure、lease owner 和 lease expiry SHALL 是接收授权的唯一真相。Java SHALL 在 accept/fail 的同一锁定事务中重读并验证这些值，MUST NOT 信任调用方可构造的 claim 字段扩大权限。`feature-scope-reconciliation` 工作项 MUST 区分 `extract_function_list` 与 `reconcile`；extract 注册缺少材料、来源标签或非空切片 evidence closure 时 SHALL 失败关闭。
 
 Java SHALL 对工作项重试设置固定最大尝试数，并只允许 `model_unavailable` 和 `model_execution_failed` 这两类短暂模型依赖错误最多再次领取一次。`structured_output_invalid` 已包含 KEE 单次调用内的格式修复，Java MUST NOT 再次领取；`invalid_request`、`forbidden`、scope/业务校验失败及其他非白名单失败也 SHALL 终止当前工作项。持久化的 `failure_type` SHALL 来自固定枚举/白名单，MUST NOT 接受任意异常文本、材料、凭据或其他潜在敏感值。
+
+生产 coordinator SHALL 在首个短暂失败落库后定向领取同一 `work_item_id` 的第二次尝试，并仅在该次成功后继续后续阶段；MUST NOT 使用全局 next 查询误领其他 queued work。首次非白名单失败或第二次短暂失败 SHALL 立即终止任务且不得回退 Markdown。
 
 过期 RUNNING 租约 SHALL 被原子回收，旧 attempt 随即失效；过期、owner 错误或已被新 attempt 替代的 claim MUST NOT accept/fail。相同 task+identity 的并发注册 SHALL 原子收敛为同一 work id 和一行，不得把唯一约束冲突暴露为调用失败。相同 task+identity 的重放只有在 skill、operation、ordinal 范围、material、source label、evidence closure、function key 和 test-point key 等全部冻结业务坐标逐项相同时才可返回原 work id；任一坐标不同 SHALL 作为幂等冲突失败关闭，并且不得修改原工作项。
 
@@ -123,6 +132,11 @@ Java SHALL 对工作项重试设置固定最大尝试数，并只允许 `model_u
 - **WHEN** KEE 在其一次格式修复后仍返回 `structured_output_invalid`
 - **THEN** Java SHALL 终止当前工作项且不得再次领取
 
+#### Scenario: 短暂模型错误在第二次成功
+- **WHEN** 同一工作项首次返回 `model_unavailable` 或 `model_execution_failed` 且第二次返回合法结果
+- **THEN** Java SHALL 只对原 `work_item_id` 再调用一次 KEE 并原子接收成功结果
+- **AND** SHALL NOT 领取同任务的其他 queued work 代替该重试
+
 #### Scenario: 未知失败类型
 - **WHEN** 调用方尝试保存白名单外的 failure type 或异常文本
 - **THEN** Java SHALL 在更新数据库前拒绝该值并保持当前 claim 状态不变
@@ -143,6 +157,12 @@ Java SHALL 使用独立字段表示处理状态和覆盖结果。任务级处理
 #### Scenario: 任务取消
 - **WHEN** 结构化任务在终态前被用户取消
 - **THEN** structured processing status SHALL 为 `CANCELLED`
+- **AND** Java SHALL 停止后续 Skill 和导出、不得发布制品或记录为业务失败
+
+#### Scenario: 进程在结构化任务中途退出
+- **WHEN** 无 legacy generation batch 的 structured ALL 任务以 `RUNNING` 停在 `AUDITING`、`GENERATING` 或 `VALIDATING`
+- **THEN** 启动恢复 SHALL 释放执行 slot、将任务重新排队并使旧 RUNNING attempt 以固定 `model_execution_failed` 失效
+- **AND** 已 `COMPLETED` 的 work 与业务行 SHALL 保持不变并在恢复执行时跳过
 
 ### Requirement: [REQ-STG-008] 任务材料必须满足项目、正式来源和文件唯一性前置条件
 Java SHALL 只冻结同一知识库、系统、版本和非空项目下的材料。每个任务 MUST 包含 `function_list`，并 MUST 至少包含 `requirements_spec` 或 `work_order_plan` 之一作为正式需求材料；`prototype` 和 `requirement_list` 只能补充，不得替代上述正式材料。Java SHALL 使用 KEE 文档元数据中的文件 SHA-256 对任务内全部材料做唯一性校验；哈希缺失或重复 MUST 在调用结构化 Skill 前失败关闭，同内容重复材料不得增加证据权重。

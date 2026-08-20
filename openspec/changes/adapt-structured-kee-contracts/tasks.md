@@ -23,22 +23,22 @@
 
 ## 4. 耐久状态与原子接收
 
-- [ ] 4.1 设计并添加最小 Flyway 迁移，分别持久化材料审查事实/发现、功能清单条目、核对关系、测试点、结构化用例、引用绑定、处理状态和覆盖结果；引用绑定的 `subject_type` 必须进入主键/查询，不得复用 KEE 数据库或保存原始模型 JSON/Markdown。验证：Testcontainers 迁移测试。 `[Req-ID]: REQ-STG-001~007`
-- [ ] 4.2 为四类工作项实现事务性接收：validator、业务行、带 subject type 的引用和尝试终态全成功才提交，任何异常回滚全部写入；accept/fail 在锁事务内以数据库冻结的 skill/operation/material/slice/owner/lease 为授权真相，新 stable item key 仅在提交成功后发布。所有可引用业务 key 以 `(task_id,key)` 保证耐久唯一；功能清单跨切片相同文本采用原子 upsert 后锁读并合并授权 evidence，模型 key 冲突和稳定文本冲突均回滚。验证：伪造 claim、跨材料/切片、跨片重复与重启 registry、并发首次稳定 key 写入、模型 key 冲突、operation 错配、中途回滚和 registry 可见性 MySQL 测试。 `[Req-ID]: REQ-STG-006`
-- [ ] 4.3 实现稳定切片/工作项幂等身份、有界可重试白名单和租约恢复，保留 parsed-units 全局 ordinal；只允许 `model_unavailable|model_execution_failed` 最多再领一次，`structured_output_invalid` 和其他非白名单失败终止；failure type 严格枚举。过期 attempt 失效，达到最大尝试数不再领取；同 task+identity 并发注册返回同一 ID，但相同 identity 的任一冻结载荷坐标不一致必须拒绝且不修改旧行。验证：并发注册/认领、不同 operation/evidence closure 重放、未知 failure type、结构无效不重试、过期恢复、stale claim 和尝试上限测试。 `[Req-ID]: REQ-SKI-003, REQ-STG-006`
+- [x] 4.1 设计并添加最小 Flyway 迁移，分别持久化材料审查事实/发现、功能清单条目、核对关系、测试点、结构化用例、引用绑定、处理状态和覆盖结果；引用绑定的 `subject_type` 必须进入主键/查询，不得复用 KEE 数据库或保存原始模型 JSON/Markdown。验证：Testcontainers 迁移测试。 `[Req-ID]: REQ-STG-001~007`
+- [x] 4.2 为四类工作项实现事务性接收：validator、业务行、带 subject type 的引用和尝试终态全成功才提交，任何异常回滚全部写入；accept/fail 在锁事务内以数据库冻结的 skill/operation/material/slice/owner/lease 为授权真相，新 stable item key 仅在提交成功后发布。所有可引用业务 key 以 `(task_id,key)` 保证耐久唯一；功能清单跨切片相同文本采用原子 upsert 后锁读并合并授权 evidence，模型 key 冲突和稳定文本冲突均回滚。验证：伪造 claim、跨材料/切片、跨片重复与重启 registry、并发首次稳定 key 写入、模型 key 冲突、operation 错配、中途回滚和 registry 可见性 MySQL 测试。 `[Req-ID]: REQ-STG-006`
+- [x] 4.3 实现稳定切片/工作项幂等身份、有界可重试白名单和租约恢复，保留 parsed-units 全局 ordinal；只允许 `model_unavailable|model_execution_failed` 最多再领一次，生产 coordinator 必须按同一 work ID 定向领取，`structured_output_invalid` 和其他非白名单失败终止且不回退 Markdown；failure type 严格枚举。过期 attempt 失效，达到最大尝试数不再领取；同 task+identity 并发注册返回同一 ID，但相同 identity 的任一冻结载荷坐标不一致必须拒绝且不修改旧行。验证：并发注册/认领、不同 operation/evidence closure 重放、未知 failure type、两类短暂错误同 work 重试、结构无效不重试、过期恢复、stale claim 和尝试上限测试。 `[Req-ID]: REQ-SKI-003, REQ-STG-006`
 
 ## 5. 结构化生成工作流与完成门禁
 
-- [ ] 5.1 将材料完整遍历后的单元按 1..32 连续全局 ordinal 切片，逐材料执行 `requirement-material-quality-review`，所有切片终态后才进入核对阶段。验证：`GenerationWorkflowStructuredReviewTest`。 `[Req-ID]: REQ-SKI-001, REQ-SKI-003, REQ-STG-002`
-- [ ] 5.2 先对功能清单 parsed units 按 1..32 全局连续切片调用 `feature-scope-reconciliation(operation=extract_function_list)`，校验证据后由 Java 生成稳定 item_key 并跨片聚合/去重；再以已验证功能清单条目和需求事实调用同一 Skill 的 `operation=reconcile`，全部来源终态后原子冻结最终功能集合。取消旧 Markdown bulk/singleton 补偿对新路径的影响，不猜 Excel 层级。验证：`GenerationWorkflowStructuredReconciliationTest`。 `[Req-ID]: REQ-STG-003`
-- [ ] 5.3 由 Java 根据正式事实的每个非空规则值建立稳定、非固定数量测试点并逐点调用 `functional-testcase-design`；stable key 使用 UTF-8 长度前缀字段编码，不得静默丢弃多值，移除固定正反两条和 `2N` 作为新路径完成条件。验证：`GenerationWorkflowStructuredTestcaseTest`。 `[Req-ID]: REQ-STG-004, REQ-STG-005`
-- [ ] 5.4 分离处理状态与覆盖结果并统一 DB/wire enum：processing=`PENDING|RUNNING|COMPLETED|FAILED|CANCELLED`，coverage=`PENDING|COMPLETE|PARTIAL|UNABLE_TO_GENERATE`；全部计划工作无执行失败地终态即为 `COMPLETED`，覆盖不足独立标记，`PARTIAL` 不得出现在 structured processing 轴，取消和执行失败分别保留。验证：状态机、持久化与页面测试。 `[Req-ID]: REQ-STG-007, REQ-SGD-002`
+- [x] 5.1 将材料完整遍历后的单元按 1..32 连续全局 ordinal 切片，逐材料执行 `requirement-material-quality-review`，所有切片终态后才进入核对阶段。验证：`GenerationWorkflowStructuredReviewTest`。 `[Req-ID]: REQ-SKI-001, REQ-SKI-003, REQ-STG-002`
+- [x] 5.2 先对功能清单 parsed units 按 1..32 全局连续切片调用 `feature-scope-reconciliation(operation=extract_function_list)`，校验证据后由 Java 生成稳定 item_key 并跨片聚合/去重；再以已验证功能清单条目和需求事实调用同一 Skill 的 `operation=reconcile`，全部来源终态后原子冻结最终功能集合。阶段三必须从数据库 confirmed mapping 恢复最终功能身份和事实引用，registry 以幂等 require-or-register 重建；不得按 fact.function 猜功能或直接传递内存结果。取消旧 Markdown bulk/singleton 补偿对新路径的影响，不猜 Excel 层级。验证：生产 coordinator、真实 Store 重启与重复执行测试。 `[Req-ID]: REQ-STG-003`
+- [x] 5.3 由 Java 根据正式事实的每个非空规则值建立稳定、非固定数量测试点并逐点调用 `functional-testcase-design`；stable key 使用 UTF-8 长度前缀字段编码，不得静默丢弃多值，移除固定正反两条和 `2N` 作为新路径完成条件。验证：`GenerationWorkflowStructuredTestcaseTest`。 `[Req-ID]: REQ-STG-004, REQ-STG-005`
+- [x] 5.4 分离处理状态与覆盖结果并统一 DB/wire enum：processing=`PENDING|RUNNING|COMPLETED|FAILED|CANCELLED`，coverage=`PENDING|COMPLETE|PARTIAL|UNABLE_TO_GENERATE`；全部计划工作无执行失败地终态即为 `COMPLETED`，覆盖不足独立标记，`PARTIAL` 不得出现在 structured processing 轴。遍历和各阶段边界取消必须停止后续 KEE/导出并持久化 CANCELLED；启动恢复必须重排无 legacy batch 的 structured AUDITING/GENERATING/VALIDATING、释放 slot、失效旧 RUNNING attempt，同时保留 COMPLETED work。验证：状态机、取消、启动恢复、持久化与页面测试。 `[Req-ID]: REQ-STG-007, REQ-SGD-002`
 
 ## 6. 页面与固定双 Sheet 交付
 
-- [ ] 6.1 将任务详情 DTO 改为已持久化的结构化审查、核对、测试点、用例、处理状态和覆盖投影；禁止原始 JSON、Markdown、内部 key/凭据/URL/栈进入响应。验证：`GenerationTaskDetailTest`。 `[Req-ID]: REQ-SGD-001, REQ-SGD-002`
+- [x] 6.1 将任务详情 DTO 改为已持久化的结构化审查、核对、测试点、用例、处理状态和覆盖投影；禁止原始 JSON、Markdown、内部 key/凭据/URL/栈进入响应。验证：`GenerationTaskDetailTest`。 `[Req-ID]: REQ-SGD-001, REQ-SGD-002`
 - [ ] 6.2 更新 PC 任务详情页面及状态测试，分别展示处理进度、正式覆盖和待确认候选，保留 loading/ready/empty/no-results/error/forbidden/not-found、键盘焦点和过期响应保护。验证：`npm --prefix frontend run test -- --run TaskDetailView.spec.ts`，并在 1440x820 及相关宽度执行视觉检查。 `[Req-ID]: REQ-SGD-001, REQ-SGD-002`
-- [ ] 6.3 重构 Excel 输入为与页面相同的已持久化结构化投影，仍恰好生成“需求与功能清单审查发现”“测试用例”两个 Sheet，区分 formal/pending_confirmation 并保持公式安全、哈希和回读；重复 stable source ID 必须失败关闭，不得静默少行。验证：`StructuredWorkbookExporterTest`。 `[Req-ID]: REQ-SGD-003, REQ-SGD-004`
+- [x] 6.3 重构 Excel 输入为与页面相同的已持久化结构化投影，仍恰好生成“需求与功能清单审查发现”“测试用例”两个 Sheet，区分 formal/pending_confirmation 并保持公式安全、哈希和回读；零功能/零用例时仍生成并回读两个表头 Sheet，完成 API 拒绝 null artifact；重复 stable source ID 必须失败关闭，不得静默少行。验证：`StructuredWorkbookExporterTest`。 `[Req-ID]: REQ-SGD-003, REQ-SGD-004`
 
 ## 7. 迁移、兼容回归与外部验收
 

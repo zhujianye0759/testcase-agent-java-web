@@ -69,6 +69,9 @@ class TaskExecutionQueueIntegrationTest {
 
     @BeforeEach
     void cleanDatabase() {
+        jdbcTemplate.update("DELETE FROM structured_reference_binding");
+        jdbcTemplate.update("DELETE FROM structured_generation_attempt");
+        jdbcTemplate.update("DELETE FROM structured_generation_work_item");
         jdbcTemplate.update("DELETE FROM generation_attempt");
         jdbcTemplate.update("DELETE FROM generation_batch");
         jdbcTemplate.update("DELETE FROM generation_task");
@@ -182,6 +185,70 @@ class TaskExecutionQueueIntegrationTest {
         assertThat(jdbcTemplate.queryForObject("SELECT task_id FROM task_execution_slot WHERE slot_number = ?", String.class,
                 crashedClaim.slotNumber())).isNull();
         assertThat(queue.claimNext()).hasValueSatisfying(replacement -> assertThat(replacement.taskId()).isEqualTo(taskId));
+    }
+
+    @Test
+    void startupRecoveryRequeuesGeneratingAndValidatingStructuredTasksAndInvalidatesOnlyRunningAttempts() {
+        String generatingTask = "structured-generating";
+        String validatingTask = "structured-validating";
+        repository.createTask(generatingTask, request("structured-g"));
+        repository.createTask(validatingTask, request("structured-v"));
+        jdbcTemplate.update("""
+                UPDATE generation_task SET status = 'GENERATING', structured_processing_status = 'RUNNING',
+                    structured_coverage_status = 'PENDING' WHERE id = ?
+                """, generatingTask);
+        jdbcTemplate.update("""
+                UPDATE generation_task SET status = 'VALIDATING', structured_processing_status = 'RUNNING',
+                    structured_coverage_status = 'PENDING' WHERE id = ?
+                """, validatingTask);
+        jdbcTemplate.update("UPDATE task_execution_slot SET task_id = ? WHERE slot_number = 1", generatingTask);
+        jdbcTemplate.update("UPDATE task_execution_slot SET task_id = ? WHERE slot_number = 2", validatingTask);
+        insertStructuredRunningWork(generatingTask, "work-generating", "attempt-generating", "1".repeat(64));
+        insertStructuredRunningWork(validatingTask, "work-validating", "attempt-validating", "2".repeat(64));
+        jdbcTemplate.update("""
+                INSERT INTO structured_generation_work_item
+                    (id, task_id, identity_key, skill_name, operation_name, status, allowed_evidence_keys_json,
+                     accepted_result_sha256)
+                VALUES ('work-completed', ?, ?, 'requirement-material-quality-review',
+                    'REQUIREMENT_MATERIAL_REVIEW', 'COMPLETED', JSON_ARRAY(), ?)
+                """, generatingTask, "3".repeat(64), "4".repeat(64));
+
+        queue.recoverAtStartup();
+
+        assertThat(jdbcTemplate.queryForList("""
+                SELECT status FROM generation_task WHERE id IN (?, ?) ORDER BY id
+                """, String.class, generatingTask, validatingTask)).containsOnly("QUEUED");
+        assertThat(jdbcTemplate.queryForList("""
+                SELECT structured_processing_status FROM generation_task WHERE id IN (?, ?) ORDER BY id
+                """, String.class, generatingTask, validatingTask)).containsOnly("PENDING");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM task_execution_slot WHERE task_id IN (?, ?)", Integer.class,
+                generatingTask, validatingTask)).isZero();
+        assertThat(jdbcTemplate.queryForList("""
+                SELECT status FROM structured_generation_work_item WHERE id IN ('work-generating','work-validating')
+                """, String.class)).containsOnly("FAILED");
+        assertThat(jdbcTemplate.queryForList("""
+                SELECT failure_type FROM structured_generation_attempt
+                WHERE id IN ('attempt-generating','attempt-validating')
+                """, String.class)).containsOnly("model_execution_failed");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT status FROM structured_generation_work_item WHERE id = 'work-completed'", String.class))
+                .isEqualTo("COMPLETED");
+        assertThat(queue.claimNext()).isPresent();
+    }
+
+    private void insertStructuredRunningWork(String taskId, String workId, String attemptId, String identity) {
+        jdbcTemplate.update("""
+                INSERT INTO structured_generation_work_item
+                    (id, task_id, identity_key, skill_name, operation_name, status, allowed_evidence_keys_json,
+                     lease_owner, lease_expires_at)
+                VALUES (?, ?, ?, 'requirement-material-quality-review', 'REQUIREMENT_MATERIAL_REVIEW',
+                    'RUNNING', JSON_ARRAY(), 'crashed-worker', DATE_ADD(CURRENT_TIMESTAMP(6), INTERVAL 5 MINUTE))
+                """, workId, taskId, identity);
+        jdbcTemplate.update("""
+                INSERT INTO structured_generation_attempt (id, work_item_id, attempt_number, status)
+                VALUES (?, ?, 1, 'RUNNING')
+                """, attemptId, workId);
     }
 
     private Callable<Optional<TaskExecutionClaim>> claimAfter(CyclicBarrier start) {

@@ -18,6 +18,8 @@
 ### Requirement: [REQ-SGD-003] Excel 固定为两个业务 Sheet
 导出器 SHALL 只生成“需求与功能清单审查发现”和“测试用例”两个 Sheet。第一 Sheet SHALL 来源于已验证的材料审查与功能核对记录；第二 Sheet SHALL 来源于已验证的正式和待确认用例，并 SHALL 清晰区分其状态。导出器 MUST 保持确定顺序、公式注入防护、文件哈希和回读验证，且 MUST NOT 增加原始 JSON、Markdown 或技术证据 Sheet。页面与 Excel SHALL 读取同一份已验证持久化投影并保持业务记录数量一致；重复稳定 source ID SHALL 作为数据一致性错误失败关闭，MUST NOT 在导出时静默去重或少行。
 
+即使最终功能集合或测试用例为零，只要任务按业务规则以 `COMPLETED` 终止，Java 仍 SHALL 从同一持久化投影生成并回读验证恰好两个 Sheet 的工作簿；两个 Sheet MAY 只有固定表头。`completeStructuredTask` MUST 拒绝空 artifact，MUST NOT 出现“无制品但处理成功”。
+
 #### Scenario: 生成合法工作簿
 - **WHEN** 任务满足允许导出的业务门禁
 - **THEN** 工作簿 SHALL 恰好包含两个指定名称的 Sheet
@@ -26,6 +28,11 @@
 #### Scenario: 未验证结果尝试导出
 - **WHEN** 任一待导出记录未通过业务校验或引用绑定
 - **THEN** 导出器 SHALL 失败关闭且不得发布制品
+
+#### Scenario: 合法任务没有功能或用例行
+- **WHEN** 所有计划工作合法终止但持久化投影没有测试用例行
+- **THEN** 导出器 SHALL 生成并回读验证两个仅含固定表头的 Sheet
+- **AND** 任务完成 SHALL 发布非空 artifact 元数据
 
 ### Requirement: [REQ-SGD-004] 交付物不得夸大解析证据与部署状态
 页面、Excel 和验收记录 SHALL 将 parsed-units 结论表述为“持久化解析文本的完整、确定遍历”，不得表述为原始 PDF/Word/Excel 版面或坐标完整。KEE 代码未验收或未部署时，交付状态 MUST NOT 声称真实结构化接口联调通过。

@@ -3,6 +3,11 @@ package com.testcaseagent.web;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.testcaseagent.featureaudit.RequirementMaterialTraversalService;
+import com.testcaseagent.task.GenerationWorkflow;
+import com.testcaseagent.task.GenerationTaskRepository;
+import com.testcaseagent.task.StructuredAllGenerationCoordinator;
+import com.testcaseagent.structuredgeneration.StructuredCoverageStatus;
+import com.testcaseagent.structuredgeneration.StructuredGenerationAcceptanceStore;
 import java.sql.SQLException;
 
 import javax.sql.DataSource;
@@ -40,6 +45,9 @@ class ApplicationDatabaseMigrationTest {
         registry.add("spring.datasource.username", MYSQL::getUsername);
         registry.add("spring.datasource.password", MYSQL::getPassword);
         registry.add("app.artifacts.root", () -> "./var/test-artifacts");
+        registry.add("app.knowledge-agent.enabled", () -> "true");
+        registry.add("app.knowledge-agent.api-base-url", () -> "http://127.0.0.1:1");
+        registry.add("app.knowledge-agent.api-key", () -> "test-only-api-key");
     }
 
     @Test
@@ -96,6 +104,40 @@ class ApplicationDatabaseMigrationTest {
                 "uq_structured_function_list_task_item",
                 "uq_structured_test_point_task_key",
                 "uq_structured_test_case_task_key");
+    }
+
+    /** [Req-ID]: REQ-STG-001 */
+    @Test
+    void productionContextRequiresTheRealStructuredAllCoordinator(
+            @Autowired GenerationWorkflow workflow,
+            @Autowired StructuredAllGenerationCoordinator coordinator,
+            @Autowired StructuredGenerationAcceptanceStore acceptanceStore) {
+        assertThat(workflow).isNotNull();
+        assertThat(coordinator).isInstanceOf(com.testcaseagent.task.DefaultStructuredAllGenerationCoordinator.class);
+        assertThat(acceptanceStore).isNotNull();
+    }
+
+    /** [Req-ID]: REQ-STG-007 */
+    @Test
+    void persistsStructuredCancellationOnTheIndependentProcessingAxis(
+            @Autowired JdbcTemplate jdbcTemplate, @Autowired GenerationTaskRepository repository) {
+        jdbcTemplate.update("DELETE FROM generation_task WHERE id = 'task-structured-cancel'");
+        jdbcTemplate.update("""
+                INSERT INTO generation_task (id, task_mode, status, request_snapshot,
+                    structured_processing_status, structured_coverage_status)
+                VALUES ('task-structured-cancel', 'ALL', 'GENERATING', JSON_OBJECT(), 'RUNNING', 'PENDING')
+                """);
+
+        repository.cancelStructuredTask("task-structured-cancel", StructuredCoverageStatus.PENDING);
+
+        assertThat(jdbcTemplate.queryForMap("""
+                SELECT status, structured_processing_status, structured_coverage_status, artifact_id
+                FROM generation_task WHERE id = 'task-structured-cancel'
+                """))
+                .containsEntry("status", "CANCELLED")
+                .containsEntry("structured_processing_status", "CANCELLED")
+                .containsEntry("structured_coverage_status", "PENDING")
+                .containsEntry("artifact_id", null);
     }
 
     private static java.util.List<String> tableNames(JdbcTemplate jdbcTemplate) {

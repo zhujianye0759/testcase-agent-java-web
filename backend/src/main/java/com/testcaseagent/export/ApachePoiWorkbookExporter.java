@@ -60,9 +60,7 @@ public final class ApachePoiWorkbookExporter implements WorkbookExporter {
      * parse, construct, or route through Markdown.</p>
      */
     @Override public WorkbookArtifact exportStructured(StructuredWorkbookExportRequest request) {
-        if (request == null || request.testCaseRows().isEmpty()) {
-            throw new WorkbookExportException("Validated structured test-case rows are required");
-        }
+        if (request == null) throw new WorkbookExportException("Structured export request is required");
         List<StructuredReviewRow> reviews = distinctReviews(request.reviewRows());
         List<StructuredTestCaseRow> testcases = distinctTestcases(request.testCaseRows());
         reviews.forEach(this::requireSafeReview);

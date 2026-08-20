@@ -24,6 +24,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
@@ -53,6 +54,7 @@ public final class GenerationWorkflow {
     private final RequirementMaterialTraversalService materialTraversalService;
     private final FeatureAuditService featureAuditService;
     private final FrozenFeatureService frozenFeatureService;
+    private final StructuredAllGenerationCoordinator structuredAllCoordinator;
     private final FrozenFeatureBatchAcceptanceValidator frozenFeatureBatchAcceptanceValidator = new FrozenFeatureBatchAcceptanceValidator();
     private final MarkdownGenerationResultParser markdownParser = new MarkdownGenerationResultParser();
 
@@ -60,6 +62,25 @@ public final class GenerationWorkflow {
             WorkbookExporter workbookExporter, ObjectMapper objectMapper, TaskExecutionQueue executionQueue,
             TaskExecutor taskExecutor, RequirementMaterialTraversalService materialTraversalService,
             FeatureAuditService featureAuditService, FrozenFeatureService frozenFeatureService) {
+        this(repository, knowledgeAgentPort, workbookExporter, objectMapper, executionQueue, taskExecutor,
+                materialTraversalService, featureAuditService, frozenFeatureService, null, false);
+    }
+
+    /** Production constructor with the isolated structured ALL route. */
+    public GenerationWorkflow(GenerationTaskRepository repository, KnowledgeAgentPort knowledgeAgentPort,
+            WorkbookExporter workbookExporter, ObjectMapper objectMapper, TaskExecutionQueue executionQueue,
+            TaskExecutor taskExecutor, RequirementMaterialTraversalService materialTraversalService,
+            FeatureAuditService featureAuditService, FrozenFeatureService frozenFeatureService,
+            StructuredAllGenerationCoordinator structuredAllCoordinator) {
+        this(repository, knowledgeAgentPort, workbookExporter, objectMapper, executionQueue, taskExecutor,
+                materialTraversalService, featureAuditService, frozenFeatureService, structuredAllCoordinator, true);
+    }
+
+    private GenerationWorkflow(GenerationTaskRepository repository, KnowledgeAgentPort knowledgeAgentPort,
+            WorkbookExporter workbookExporter, ObjectMapper objectMapper, TaskExecutionQueue executionQueue,
+            TaskExecutor taskExecutor, RequirementMaterialTraversalService materialTraversalService,
+            FeatureAuditService featureAuditService, FrozenFeatureService frozenFeatureService,
+            StructuredAllGenerationCoordinator structuredAllCoordinator, boolean requireStructuredCoordinator) {
         this.repository = repository;
         this.knowledgeAgentPort = knowledgeAgentPort;
         this.workbookExporter = workbookExporter;
@@ -69,6 +90,9 @@ public final class GenerationWorkflow {
         this.materialTraversalService = materialTraversalService;
         this.featureAuditService = featureAuditService;
         this.frozenFeatureService = frozenFeatureService;
+        this.structuredAllCoordinator = requireStructuredCoordinator
+                ? Objects.requireNonNull(structuredAllCoordinator, "structuredAllCoordinator must not be null")
+                : structuredAllCoordinator;
     }
 
     public String create(CreateGenerationTaskRequest request) {
@@ -100,6 +124,11 @@ public final class GenerationWorkflow {
     void executeClaimed(TaskExecutionClaim claim) {
         CreateGenerationTaskRequest request = repository.request(claim.taskId());
         try {
+            if (request.taskMode() == GenerationTaskMode.ALL && request.featureIds().isEmpty()
+                    && structuredAllCoordinator != null) {
+                structuredAllCoordinator.execute(claim.taskId(), request);
+                return;
+            }
             if (request.taskMode() == GenerationTaskMode.ALL && request.featureIds().isEmpty()) {
                 request = freezeAllFeatures(claim.taskId(), request);
                 // An all-ineligible frozen set is a durable audit result, not a failed discovery. No batch exists

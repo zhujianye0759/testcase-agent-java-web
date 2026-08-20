@@ -45,7 +45,7 @@ class RequirementMaterialReviewValidatorTest {
                 .register(StructuredKeyType.MATERIAL, "material-1")
                 .registerEvidence(new StructuredEvidence("evidence-1", "task-1", "material-1", false, false, true))
                 .registerEvidence(new StructuredEvidence("evidence-other", "task-1", "material-2", false, false, true));
-        return new RequirementMaterialReviewValidator.WorkItem(registry, "material-1", contentType);
+        return new RequirementMaterialReviewValidator.WorkItem(registry, "material-1", contentType, List.of("evidence-1"));
     }
 
     private static RequirementMaterialReviewValidator.RequirementFact fact() {
