@@ -179,6 +179,20 @@ class FunctionalTestcaseResultValidatorTest {
     }
 
     @Test
+    void doesNotTreatTheConfirmedFunctionProjectionAsFormalTitleSupport() {
+        FunctionalTestcaseResultValidator.WorkItem workItem = new FunctionalTestcaseResultValidator.WorkItem(
+                registry(), "function-1", "用户中心/手机号登录入口", "point-1", "账号登录",
+                FunctionalTestcaseResultValidator.TestPointType.NORMAL_BEHAVIOR,
+                FunctionalTestcaseResultValidator.Basis.FORMAL_REQUIREMENT,
+                List.of("fact-1"), List.of("evidence-1"), List.of(), List.of(controlledFormalSupport()));
+        FunctionalTestcaseResultValidator.Testcase testcase = controlledFormalCase(
+                "用户中心/手机号登录入口", List.of("用户必须已注册且状态正常"),
+                "用户在登录页提交账号和正确密码", "系统进入首页并显示当前用户名称");
+
+        assertThrows(IllegalArgumentException.class, () -> validator.validate(workItem, controlledResult(testcase)));
+    }
+
+    @Test
     void acceptsLiveFixtureFormalCaseWhenEveryVisibleBusinessFragmentIsDirectlySupported() {
         FunctionalTestcaseResultValidator.Testcase testcase = controlledFormalCase(
                 "账号登录",

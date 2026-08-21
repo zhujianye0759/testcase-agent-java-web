@@ -19,3 +19,11 @@
 
 - [x] 4.1 运行 validator/coordinator/acceptance store/详情/Excel 聚焦测试及相关 MySQL/Testcontainers 回归。 `[Req-ID]: REQ-FTG-001, REQ-FTG-002, REQ-FTG-003`
 - [x] 4.2 运行 `openspec validate enforce-formal-testcase-grounding --strict`、`git diff --check` 和敏感信息形态检查；未全部通过前不提交、部署或创建新验收任务。 `[Req-ID]: all`
+
+## 5. KEE 正式支持正文输入
+
+- [x] 5.1 建立 DTO、HTTP wire 和生产 coordinator RED：证明当前 `functional-testcase-design` 请求缺少 `formal_supports`，且失败任务 `58218593-cdbe-4f80-9e2d-17bce1bf1f86` 已因 KEE 无法得到完整正式正文而由 Java 以 `business_validation_failed` 零接收。不得读取或保存模型原始响应。 `[Req-ID]: REQ-FTG-004`
+- [x] 5.2 定义独立不可变 input `FormalSupport`，扩充 `FunctionalTestcaseDesignInput` 严格合同和 WebClient 请求；只增加 `formal_supports`，不改变结果、数据库或普通 Agent。 `[Req-ID]: REQ-FTG-004`
+- [x] 5.3 由 coordinator 从当前测试点绑定的耐久 `AcceptedFact` 构造确定顺序支持正文；限制 fact/evidence 闭包，缺失/空/越界在网络前失败关闭，不信任 test point description。 `[Req-ID]: REQ-FTG-003, REQ-FTG-004`
+- [x] 5.4 保持现有 formal validator、pending/coverage、`business_validation_failed` 非重试和原子零接收语义；增加账号/手机号、Token 正反控制及重启恢复一致性测试。 `[Req-ID]: REQ-FTG-001~004`
+- [x] 5.5 运行 input contract、wire、coordinator、validator、MySQL 聚焦，以及 `openspec validate enforce-formal-testcase-grounding --strict`、`git diff --check` 和敏感信息形态检查；KEE 对应资产 GREEN 前不得部署或创建新验收任务。 `[Req-ID]: all`

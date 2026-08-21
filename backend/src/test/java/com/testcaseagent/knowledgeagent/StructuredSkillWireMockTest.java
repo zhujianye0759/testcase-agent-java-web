@@ -10,6 +10,7 @@ import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.tomakehurst.wiremock.junit5.WireMockExtension;
 import com.testcaseagent.scope.RequirementDocumentCoordinate;
 import com.testcaseagent.scope.RequirementScope;
@@ -80,6 +81,27 @@ class StructuredSkillWireMockTest {
                         failure -> assertThat(failure.type()).isEqualTo(StructuredSkillErrorType.STRUCTURED_OUTPUT_INVALID));
     }
 
+    /** [Req-ID]: REQ-FTG-004 */
+    @Test
+    void sendsTheCompleteBoundFormalSupportsInTheTestcaseDesignRequest() throws Exception {
+        kee.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill"))
+                .willReturn(okJson(testcaseSuccess())));
+        FunctionalTestcaseDesignInput input = new ObjectMapper().readValue(formalSupportInputJson(),
+                FunctionalTestcaseDesignInput.class);
+        var scope = new RequirementScope("kb-1", "system-1", "version-1", "requirements_spec", "project-1",
+                List.of(new RequirementDocumentCoordinate("doc-1")));
+
+        adapter().designFunctionalTestcases(new FunctionalTestcaseDesignInvocation(
+                "session-1", "agent-1", scope, input));
+
+        kee.verify(postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill"))
+                .withRequestBody(matchingJsonPath("$.skill_name", equalTo("functional-testcase-design")))
+                .withRequestBody(matchingJsonPath("$.input.formal_supports[0].fact_key", equalTo("fact-1")))
+                .withRequestBody(matchingJsonPath("$.input.formal_supports[0].inputs[0]", equalTo("账号")))
+                .withRequestBody(matchingJsonPath("$.input.formal_supports[0].evidence_texts[1]",
+                        equalTo("登录成功后进入首页"))));
+    }
+
     /** [Req-ID]: REQ-SKI-005 */
     @Test
     void mapsOnlyTheStableErrorTypeWithoutRetainingErrorText() {
@@ -145,6 +167,32 @@ class StructuredSkillWireMockTest {
                         "需求", units));
 
         assertThatThrownBy(() -> adapter().reviewRequirementMaterial(oversized))
+                .isInstanceOfSatisfying(StructuredSkillExecutionException.class,
+                        failure -> assertThat(failure.type()).isEqualTo(StructuredSkillErrorType.REQUEST_TOO_LARGE));
+        kee.verify(0, postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill")));
+    }
+
+    /** [Req-ID]: REQ-FTG-004 */
+    @Test
+    void rejectsOversizedFormalSupportsBeforeAnyNetworkCall() {
+        List<String> factKeys = new ArrayList<>();
+        List<FormalSupport> supports = new ArrayList<>();
+        String maximumText = "x".repeat(16_384);
+        for (int index = 1; index <= 100; index++) {
+            String factKey = "fact-" + index;
+            factKeys.add(factKey);
+            supports.add(new FormalSupport(factKey, maximumText, List.of(), List.of(), List.of(), List.of(),
+                    List.of(), List.of(), List.of(), List.of(), List.of(), List.of(maximumText)));
+        }
+        var point = new FunctionalTestcaseDesignInput.TestPoint("point-1",
+                FunctionalTestcaseDesignInput.TestPointType.NORMAL_BEHAVIOR, "账号登录", factKeys,
+                List.of("unit-1"), FunctionalTestcaseDesignInput.Basis.FORMAL_REQUIREMENT, List.of());
+        var scope = new RequirementScope("kb-1", "system-1", "version-1", "requirements_spec", "project-1",
+                List.of(new RequirementDocumentCoordinate("doc-1")));
+        var invocation = new FunctionalTestcaseDesignInvocation("session-1", "agent-1", scope,
+                new FunctionalTestcaseDesignInput("function-1", "账号登录", point, supports));
+
+        assertThatThrownBy(() -> adapter().designFunctionalTestcases(invocation))
                 .isInstanceOfSatisfying(StructuredSkillExecutionException.class,
                         failure -> assertThat(failure.type()).isEqualTo(StructuredSkillErrorType.REQUEST_TOO_LARGE));
         kee.verify(0, postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill")));
@@ -225,4 +273,8 @@ class StructuredSkillWireMockTest {
     private static String success() { return "{\"success\":true,\"data\":{\"schema_version\":\"1.0\",\"skill_name\":\"requirement-material-quality-review\",\"repair_attempted\":false,\"result\":{\"requirement_facts\":[],\"review_findings\":[{\"finding_key\":\"finding-1\",\"issue_type\":\"missing\",\"description\":\"描述\",\"evidence_keys\":[],\"test_design_impact\":\"影响\",\"current_project_recommendation\":\"建议\",\"design_center_guideline_recommendation\":\"规范建议\",\"handling_level\":\"improvement\"}]}}}"; }
     private static String extractSuccess() { return "{\"success\":true,\"data\":{\"schema_version\":\"1.0\",\"skill_name\":\"feature-scope-reconciliation\",\"repair_attempted\":false,\"result\":{\"operation\":\"extract_function_list\",\"function_list_items\":[{\"path\":\"订单/提交\",\"description\":\"提交订单\",\"evidence_keys\":[\"unit-33\"]}]}}}"; }
     private static String reconcileOperationWithExtractResult() { return "{\"success\":true,\"data\":{\"schema_version\":\"1.0\",\"skill_name\":\"feature-scope-reconciliation\",\"repair_attempted\":false,\"result\":{\"operation\":\"reconcile\",\"function_list_items\":[]}}}"; }
+    private static String testcaseSuccess() { return "{\"success\":true,\"data\":{\"schema_version\":\"1.0\",\"skill_name\":\"functional-testcase-design\",\"repair_attempted\":false,\"result\":{\"function_key\":\"function-1\",\"test_point_key\":\"point-1\",\"testcases\":[{\"case_key\":\"case-1\",\"title\":\"账号登录\",\"preconditions\":[\"已注册用户\"],\"steps\":[{\"step_no\":1,\"action\":\"用户提交账号和正确密码\",\"expected\":\"进入首页\"}],\"requirement_fact_keys\":[\"fact-1\"],\"evidence_keys\":[\"unit-1\",\"unit-2\"],\"case_status\":\"formal\",\"missing_information\":[]}]}}}"; }
+    private static String formalSupportInputJson() { return """
+            {"function_key":"function-1","function_name":"账号登录","test_point":{"test_point_key":"point-1","type":"normal_behavior","description":"用户提交账号和正确密码后进入首页","requirement_fact_keys":["fact-1"],"evidence_keys":["unit-1","unit-2"],"basis":"formal_requirement","missing_information":[]},"formal_supports":[{"fact_key":"fact-1","function":"账号登录","roles":["已注册用户"],"trigger_conditions":["用户提交账号和正确密码"],"inputs":["账号","正确密码"],"business_rules":[],"outputs":["进入首页"],"permissions":[],"state_changes":["匿名变为已登录"],"exception_handling":[],"external_dependencies":[],"evidence_texts":["用户提交账号和正确密码","登录成功后进入首页"]}]}
+            """; }
 }

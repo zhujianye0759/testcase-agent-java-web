@@ -15,6 +15,7 @@ import com.testcaseagent.knowledgeagent.FunctionListExtractionInput;
 import com.testcaseagent.knowledgeagent.FunctionListExtractionInvocation;
 import com.testcaseagent.knowledgeagent.FunctionalTestcaseDesignInput;
 import com.testcaseagent.knowledgeagent.FunctionalTestcaseDesignInvocation;
+import com.testcaseagent.knowledgeagent.FormalSupport;
 import com.testcaseagent.knowledgeagent.MaterialContentTypeKey;
 import com.testcaseagent.knowledgeagent.RequirementMaterialQualityReviewInput;
 import com.testcaseagent.knowledgeagent.RequirementMaterialQualityReviewInvocation;
@@ -37,9 +38,12 @@ import com.testcaseagent.validation.StructuredKeyType;
 import com.testcaseagent.validation.StructuredValidationRegistry;
 import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.function.Function;
 
@@ -203,8 +207,9 @@ public final class DefaultStructuredAllGenerationCoordinator implements Structur
             registry.register(StructuredKeyType.FUNCTION, functionKey);
             var definition = new StructuredTestPointPlanner.FunctionDefinition(functionKey, functionName,
                     confirmed.facts().stream().map(DefaultStructuredAllGenerationCoordinator::formalFact).toList(), List.of());
-            for (FunctionalTestcaseDesignInput input : testPointPlanner.plan(definition)) {
+            for (FunctionalTestcaseDesignInput planned : testPointPlanner.plan(definition)) {
                 cancellationCheckpoint(taskId);
+                FunctionalTestcaseDesignInput input = attachFormalSupports(confirmed, planned);
                 registry.register(StructuredKeyType.TEST_POINT, input.testPoint().testPointKey());
                 List<String> evidence = input.testPoint().evidenceKeys();
                 String identity = identity(taskId, "FUNCTIONAL_TESTCASE_DESIGN", input);
@@ -237,6 +242,48 @@ public final class DefaultStructuredAllGenerationCoordinator implements Structur
                 StructuredGenerationAcceptanceStore.AcceptedFact::function).distinct().sorted().toList();
         if (factFunctions.isEmpty()) throw new IllegalStateException("Confirmed function has no reader-facing identity");
         return String.join(" / ", factFunctions);
+    }
+
+    private static FunctionalTestcaseDesignInput attachFormalSupports(
+            StructuredGenerationAcceptanceStore.AcceptedConfirmedFunction confirmed,
+            FunctionalTestcaseDesignInput planned) {
+        if (planned.testPoint().basis() == FunctionalTestcaseDesignInput.Basis.GENERAL_EXPERIENCE) {
+            return new FunctionalTestcaseDesignInput(
+                    planned.functionKey(), planned.functionName(), planned.testPoint(), List.of());
+        }
+        Map<String, StructuredGenerationAcceptanceStore.AcceptedFact> factsByKey = new LinkedHashMap<>();
+        for (StructuredGenerationAcceptanceStore.AcceptedFact fact : confirmed.facts()) {
+            if (factsByKey.put(fact.factKey(), fact) != null) {
+                throw new IllegalStateException("Persisted confirmed mapping contains duplicate fact keys");
+            }
+        }
+        Set<String> resolvedEvidenceKeys = new LinkedHashSet<>();
+        List<FormalSupport> supports = new ArrayList<>();
+        for (String factKey : planned.testPoint().requirementFactKeys()) {
+            StructuredGenerationAcceptanceStore.AcceptedFact fact = factsByKey.get(factKey);
+            if (fact == null) {
+                throw new IllegalStateException("Test point references a fact outside the persisted confirmed mapping");
+            }
+            LinkedHashSet<String> evidenceTexts = new LinkedHashSet<>();
+            for (String evidenceKey : planned.testPoint().evidenceKeys()) {
+                String evidenceText = fact.evidenceTexts().get(evidenceKey);
+                if (evidenceText != null) {
+                    resolvedEvidenceKeys.add(evidenceKey);
+                    evidenceTexts.add(evidenceText);
+                }
+            }
+            if (evidenceTexts.isEmpty()) {
+                throw new IllegalStateException("Formal fact has no evidence text in the current test-point closure");
+            }
+            supports.add(new FormalSupport(fact.factKey(), fact.function(), fact.roles(), fact.triggerConditions(),
+                    fact.inputs(), fact.businessRules(), fact.outputs(), fact.permissions(), fact.stateChanges(),
+                    fact.exceptionHandling(), fact.externalDependencies(), List.copyOf(evidenceTexts)));
+        }
+        if (!resolvedEvidenceKeys.equals(new LinkedHashSet<>(planned.testPoint().evidenceKeys()))) {
+            throw new IllegalStateException("Test point evidence is outside the persisted formal support closure");
+        }
+        return new FunctionalTestcaseDesignInput(
+                planned.functionKey(), planned.functionName(), planned.testPoint(), supports);
     }
 
     private void complete(String taskId, boolean reconciled, boolean noFunctionItems) {

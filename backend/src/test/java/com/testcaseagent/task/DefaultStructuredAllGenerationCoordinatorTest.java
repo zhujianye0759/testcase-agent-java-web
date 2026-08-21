@@ -334,6 +334,12 @@ class DefaultStructuredAllGenerationCoordinatorTest {
         when(skills.designFunctionalTestcases(any())).thenAnswer(invocation -> {
             var input = invocation.getArgument(0,
                     com.testcaseagent.knowledgeagent.FunctionalTestcaseDesignInvocation.class).input();
+            assertThat(input.formalSupports()).singleElement().satisfies(support -> {
+                assertThat(support.inputs()).containsExactly("账号", "正确密码");
+                assertThat(support.evidenceTexts()).containsExactly("已注册用户提交账号和正确密码后进入首页");
+                assertThat(support.inputs()).noneMatch(value -> value.contains("手机号"));
+                assertThat(support.evidenceTexts()).noneMatch(value -> value.contains("Token"));
+            });
             return success("functional-testcase-design", new FunctionalTestcaseDesignResult(
                     input.functionKey(), input.testPoint().testPointKey(), List.of(
                             new FunctionalTestcaseDesignResult.Testcase("case-grounding", "手机号登录", List.of("已绑定手机号"),
@@ -475,6 +481,16 @@ class DefaultStructuredAllGenerationCoordinatorTest {
                     com.testcaseagent.knowledgeagent.FunctionalTestcaseDesignInvocation.class).input();
             assertThat(input.functionName()).isEqualTo("订单/持久化确认功能");
             assertThat(input.testPoint().requirementFactKeys()).containsExactly("fact-persisted");
+            var wireInput = new ObjectMapper().valueToTree(input);
+            assertThat(wireInput.path("formal_supports")).hasSize(1);
+            assertThat(wireInput.path("formal_supports").path(0).path("fact_key").asText())
+                    .isEqualTo("fact-persisted");
+            assertThat(wireInput.path("formal_supports").path(0).path("trigger_conditions"))
+                    .extracting(node -> node.asText()).containsExactly("执行");
+            assertThat(wireInput.path("formal_supports").path(0).path("outputs"))
+                    .extracting(node -> node.asText()).containsExactly("成功");
+            assertThat(wireInput.path("formal_supports").path(0).path("evidence_texts"))
+                    .extracting(node -> node.asText()).containsExactly("执行后成功");
             return success("functional-testcase-design", new FunctionalTestcaseDesignResult(
                     input.functionKey(), input.testPoint().testPointKey(), List.of(
                             new FunctionalTestcaseDesignResult.Testcase("restart-case", "不用于猜测功能名", List.of(),

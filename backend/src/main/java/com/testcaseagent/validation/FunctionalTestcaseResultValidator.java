@@ -66,7 +66,7 @@ public final class FunctionalTestcaseResultValidator {
             WorkItem item, Testcase testcase, List<String> factKeys, List<String> evidenceKeys) {
         List<FormalSupport> supports = item.formalSupports().stream()
                 .filter(support -> factKeys.contains(support.factKey())).toList();
-        requireDirectSupport(testcase.title(), "case title", titleSources(item, supports), evidenceKeys, supports,
+        requireDirectSupport(testcase.title(), "case title", titleSources(supports), evidenceKeys, supports,
                 TITLE_WRAPPERS, true);
         for (String precondition : testcase.preconditions()) {
             List<String> sources = new ArrayList<>();
@@ -100,9 +100,8 @@ public final class FunctionalTestcaseResultValidator {
         }
     }
 
-    private static List<String> titleSources(WorkItem item, List<FormalSupport> supports) {
+    private static List<String> titleSources(List<FormalSupport> supports) {
         List<String> sources = new ArrayList<>();
-        sources.add(item.functionName());
         supports.forEach(support -> sources.add(support.function()));
         return sources;
     }

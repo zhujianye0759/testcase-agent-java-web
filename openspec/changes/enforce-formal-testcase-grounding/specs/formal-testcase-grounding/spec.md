@@ -42,3 +42,22 @@ Java SHALL 从同一 task 已验收的完整 requirement fact 字段和绑定 pa
 #### Scenario: 一个读者字段越界
 - **WHEN** 同一 Skill 结果中任一 formal 用例的任一受检读者字段无法直接支持
 - **THEN** Java SHALL 在写入前拒绝完整结果，任务详情和 Excel SHALL 不出现该结果的任何业务行
+
+### Requirement: [REQ-FTG-004] KEE 用例设计输入必须携带当前正式支持正文
+Java SHALL 在 `functional-testcase-design.input` 中发送 `formal_supports` 数组。每项 SHALL 精确且仅包含 `fact_key`、`function`、`roles`、`trigger_conditions`、`inputs`、`business_rules`、`outputs`、`permissions`、`state_changes`、`exception_handling`、`external_dependencies`、`evidence_texts`。该字段只属于 Java→KEE 的业务输入，MUST NOT 改变结果字段、数据库结构或普通 KEE Agent 请求。
+
+Java SHALL 只从同一 task 已验收 `AcceptedFact` 及其绑定 parsed-unit 正文构造支持项，并 SHALL 只选择当前 `test_point.requirement_fact_keys` 和 `test_point.evidence_keys` 授权闭包内的数据。支持项按当前 fact key 顺序确定排列；`evidence_texts` 按当前 evidence key 顺序选择并去重。Java MUST NOT 使用 `testPoint.description` 代替正式正文，MUST NOT 接受调用方扩大事实或证据闭包。
+
+KEE 与 Java SHALL 使用相同的字段类别：title 对应 `function`；preconditions 对应 `roles`、`trigger_conditions`、`business_rules`、`permissions`、`state_changes`；action 对应 `trigger_conditions`、`inputs`；expected 对应 `outputs`、`state_changes`、`exception_handling`、`external_dependencies`。任一字段 MAY 逐字复制一个 bound `evidence_texts` 中完整出现的片段，但 MUST NOT 拼接零散片段或以一个类别中的词授权另一类别新增的业务含义。
+
+#### Scenario: 正式正文进入 KEE 输入
+- **WHEN** 当前正式测试点绑定一个已验收 requirement fact 和两个授权 evidence keys
+- **THEN** Java SHALL 在同一次 KEE 请求的 `formal_supports` 中发送该事实的全部正式字段以及这两个 key 对应的确定顺序证据正文
+
+#### Scenario: 只发送当前测试点的支持闭包
+- **WHEN** confirmed function 还包含当前测试点未引用的其他 fact 或 evidence
+- **THEN** Java SHALL 排除未引用数据，且事实、证据或正文缺失时 SHALL 在网络调用前失败关闭
+
+#### Scenario: 重启后输入保持相同
+- **WHEN** 上游已完成且新 coordinator 从数据库恢复尚未执行的测试用例工作
+- **THEN** Java SHALL 从耐久 `AcceptedFact` 重建与首次执行字节语义相同的 `formal_supports`，不得依赖进程内 test point 描述或模型响应

@@ -4,7 +4,7 @@
 
 受控任务 `a422272c-a993-4553-8c46-58a89e39c20b` 证明合法引用键不能证明正文有依据：绑定事实和 parsed-unit 原文只明确“账号、正确密码、进入首页、显示用户名称”，已接收的 formal 用例却增加用户名/手机号/邮箱、Token/Session、登录接口和受保护资源。API 详情与 XLSX 一致，说明越界内容已在验收后持久化，不是导出层生成。
 
-KEE 已加强直接依据的 Skill 约束，但未改变 JSON 字段。Java 仍拥有最终业务规则校验和入库责任，不能把提示词遵循当作信任边界。
+KEE 已加强直接依据的 Skill 约束，但运行失败证明现有 `functional-testcase-design` 输入只有 fact/evidence key 和测试点描述，没有把已验收正式事实正文传给模型。Java 仍拥有最终业务规则校验和入库责任，不能把提示词遵循当作信任边界；同时 KEE 也不能执行“直接复用来源片段”的合同，除非调用方提供当前授权正文。
 
 ## Goals / Non-Goals
 
@@ -19,7 +19,7 @@ KEE 已加强直接依据的 Skill 约束，但未改变 JSON 字段。Java 仍�
 
 - 不使用全局业务关键词黑名单，也不新增模型、中文分词器或外部依赖。
 - 不让 Java 自动改写 formal 为 pending，不自动补 missing_information。
-- 不修改 KEE 请求/返回字段，不修改既有任务业务数据，也不为复现创建第二个任务。
+- 除新增 `functional-testcase-design.input.formal_supports` 外，不修改 KEE 顶层请求、其他 Skill 输入或任何结果字段；不修改既有任务业务数据，也不为复现创建第二个任务。
 - 不在 Excel 或页面末端清洗已经错误接收的业务内容。
 
 ## Decisions
@@ -54,6 +54,16 @@ KEE 已在现有 Skill 内加强直接依据约束，模型可以在首次结果
 
 同一 artifact 的 OfficeCLI 读取显示 H2:H9 均为空。原始 OOXML 的 `<v>33</v>` 是 shared-string 索引 33，解析后对应空字符串；H 列宽为 35。artifact-tool 把共享字符串索引当作值渲染，Java exporter 不作修改。
 
+### 6. 将正式支持正文作为独立、最小的 KEE 业务输入
+
+`FunctionalTestcaseDesignInput` 增加 `formal_supports` 数组，并定义独立不可变 input `FormalSupport`。每项严格包含 `fact_key`、`function`、`roles`、`trigger_conditions`、`inputs`、`business_rules`、`outputs`、`permissions`、`state_changes`、`exception_handling`、`external_dependencies` 和 `evidence_texts`；不得混入 validator、数据库或投影字段。
+
+coordinator 只从同一 task 已验收的 `AcceptedFact` 构造该数组。支持项按当前 `test_point.requirement_fact_keys` 的确定顺序选择；`evidence_texts` 只包含该事实已绑定且同时属于当前 `test_point.evidence_keys` 闭包的 parsed-unit 正文，按冻结 evidence key 顺序去重。缺失 fact、空 formal supports、越界 evidence key 或正文缺失均在调用 KEE 前失败关闭。`testPoint.description` 只描述测试点，不是正式正文来源。
+
+KEE 与 Java 使用同一类别映射：title 只从 `function` 复制；preconditions 只从 `roles`、`trigger_conditions`、`business_rules`、`permissions`、`state_changes` 复制；action 只从 `trigger_conditions`、`inputs` 复制；expected 只从 `outputs`、`state_changes`、`exception_handling`、`external_dependencies` 复制。任一读者字段也可逐字复制一个 bound `evidence_texts` 中完整出现的片段，但不得拼接或跨类别搬入新增业务含义。
+
+该字段只帮助 KEE 首次生成时执行 direct-copy 合同。Java 仍按现有 `FunctionalTestcaseResultValidator` 对 title、precondition、action 和 expected 逐字段失败关闭；不得自动降级 formal、不得把 `business_validation_failed` 加入模型重试白名单，也不得把原始模型响应持久化。
+
 ## Risks / Trade-offs
 
 - **合法同义改写被拒绝** → 这是失败关闭的预期代价；模型可保留为待确认候选，正式内容使用来源直接片段。
@@ -63,7 +73,7 @@ KEE 已在现有 Skill 内加强直接依据约束，模型可以在首次结果
 
 ## Migration Plan
 
-无需数据库迁移。先加入 RED，再扩充 Java 内部恢复投影和 validator；通过聚焦与 MySQL/Testcontainers 回归后才能提交。既有完成任务和制品不重写，新规则只约束后续接收。
+无需数据库迁移。先加入 RED，再扩充 Java→KEE 输入 DTO、HTTP 合同和 coordinator 正文装配；现有内部恢复投影和 validator 保持最终验收职责。通过聚焦与 MySQL/Testcontainers 回归且 KEE 对应资产 GREEN 后才能部署。既有完成任务和制品不重写，新规则只约束后续接收。
 
 ## Open Questions
 
