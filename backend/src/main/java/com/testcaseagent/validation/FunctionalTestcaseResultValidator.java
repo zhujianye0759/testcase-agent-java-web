@@ -1,12 +1,21 @@
 package com.testcaseagent.validation;
 
+import java.text.Normalizer;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
-/** Validates one test-point result and returns coverage without altering any candidate case. [Req-ID]: REQ-STG-001, REQ-STG-004, REQ-STG-005 */
+/** Validates one test-point result and returns coverage without altering any candidate case. [Req-ID]: REQ-STG-001, REQ-STG-004, REQ-STG-005, REQ-FTG-001, REQ-FTG-002 */
 public final class FunctionalTestcaseResultValidator {
+    private static final List<String> TITLE_WRAPPERS = List.of("验证", "确认", "正常");
+    private static final List<String> PRECONDITION_WRAPPERS = List.of("前提:", "前置条件:");
+    private static final List<String> ACTION_WRAPPERS = List.of("操作:", "执行:");
+    private static final List<String> EXPECTED_WRAPPERS = List.of("预期:", "预期结果:");
 
     /** Validates the exact echoed target, reference closure, statuses, and consecutive step numbering. */
     public ValidationOutcome validate(WorkItem workItem, Result result) {
@@ -35,6 +44,7 @@ public final class FunctionalTestcaseResultValidator {
                 if (factKeys.isEmpty() || evidenceKeys.isEmpty()) {
                     throw new IllegalArgumentException("A formal testcase requires nonempty requirement-fact and evidence closures");
                 }
+                validateFormalGrounding(item, row, factKeys, evidenceKeys);
                 hasFormalCoverage = true;
             }
             List<String> missingInformation = requiredList(row.missingInformation(), "case missingInformation");
@@ -50,6 +60,93 @@ public final class FunctionalTestcaseResultValidator {
             throw new IllegalArgumentException("A formal requirement test point requires at least one formal testcase");
         }
         return new ValidationOutcome(checked, item.basis() == Basis.FORMAL_REQUIREMENT && hasFormalCoverage);
+    }
+
+    private static void validateFormalGrounding(
+            WorkItem item, Testcase testcase, List<String> factKeys, List<String> evidenceKeys) {
+        List<FormalSupport> supports = item.formalSupports().stream()
+                .filter(support -> factKeys.contains(support.factKey())).toList();
+        requireDirectSupport(testcase.title(), "case title", titleSources(item, supports), evidenceKeys, supports,
+                TITLE_WRAPPERS, true);
+        for (String precondition : testcase.preconditions()) {
+            List<String> sources = new ArrayList<>();
+            supports.forEach(support -> {
+                sources.addAll(support.roles());
+                sources.addAll(support.triggerConditions());
+                sources.addAll(support.businessRules());
+                sources.addAll(support.permissions());
+                sources.addAll(support.stateChanges());
+            });
+            requireDirectSupport(precondition, "case precondition", sources, evidenceKeys, supports,
+                    PRECONDITION_WRAPPERS, false);
+        }
+        for (Step step : testcase.steps()) {
+            List<String> actionSources = new ArrayList<>();
+            supports.forEach(support -> {
+                actionSources.addAll(support.triggerConditions());
+                actionSources.addAll(support.inputs());
+            });
+            requireDirectSupport(step.action(), "step action", actionSources, evidenceKeys, supports,
+                    ACTION_WRAPPERS, false);
+            List<String> expectedSources = new ArrayList<>();
+            supports.forEach(support -> {
+                expectedSources.addAll(support.outputs());
+                expectedSources.addAll(support.stateChanges());
+                expectedSources.addAll(support.exceptionHandling());
+                expectedSources.addAll(support.externalDependencies());
+            });
+            requireDirectSupport(step.expected(), "step expected", expectedSources, evidenceKeys, supports,
+                    EXPECTED_WRAPPERS, false);
+        }
+    }
+
+    private static List<String> titleSources(WorkItem item, List<FormalSupport> supports) {
+        List<String> sources = new ArrayList<>();
+        sources.add(item.functionName());
+        supports.forEach(support -> sources.add(support.function()));
+        return sources;
+    }
+
+    private static void requireDirectSupport(String value, String field, List<String> typedSources,
+            List<String> evidenceKeys, List<FormalSupport> supports, List<String> wrappers, boolean repeatWrapper) {
+        String claim = normalize(stripFieldWrapper(value, field, wrappers, repeatWrapper));
+        if (claim.isEmpty()) throw new IllegalArgumentException(field + " has no business content after normalization");
+        if (typedSources.stream().map(FunctionalTestcaseResultValidator::normalize)
+                .anyMatch(source -> !source.isEmpty() && source.contains(claim))) return;
+        boolean supportedByEvidence = supports.stream()
+                .flatMap(support -> support.evidenceTexts().entrySet().stream())
+                .filter(entry -> evidenceKeys.contains(entry.getKey()))
+                .map(Map.Entry::getValue)
+                .map(FunctionalTestcaseResultValidator::normalize)
+                .anyMatch(source -> !source.isEmpty() && source.contains(claim));
+        if (!supportedByEvidence) {
+            throw new IllegalArgumentException(field + " is not directly supported by its bound formal facts or evidence");
+        }
+    }
+
+    private static String stripFieldWrapper(
+            String value, String field, List<String> wrappers, boolean repeatWrapper) {
+        String result = Normalizer.normalize(required(value, field), Normalizer.Form.NFKC).strip();
+        boolean removed;
+        do {
+            removed = false;
+            for (String wrapper : wrappers) {
+                if (result.startsWith(wrapper) && result.length() > wrapper.length()) {
+                    result = result.substring(wrapper.length()).strip();
+                    removed = true;
+                    break;
+                }
+            }
+        } while (removed && repeatWrapper);
+        return result;
+    }
+
+    private static String normalize(String value) {
+        String normalized = Normalizer.normalize(required(value, "grounding text"), Normalizer.Form.NFKC)
+                .toLowerCase(Locale.ROOT);
+        StringBuilder compact = new StringBuilder(normalized.length());
+        normalized.codePoints().filter(Character::isLetterOrDigit).forEach(compact::appendCodePoint);
+        return compact.toString();
     }
 
     private static void validateReferences(WorkItem item, List<String> factKeys, List<String> evidenceKeys) {
@@ -102,7 +199,7 @@ public final class FunctionalTestcaseResultValidator {
     /** Immutable request-side closure for exactly one test point. */
     public record WorkItem(StructuredValidationRegistry registry, String functionKey, String functionName, String testPointKey, String description,
             TestPointType testPointType, Basis basis, List<String> requirementFactKeys, List<String> evidenceKeys,
-            List<String> missingInformation) {
+            List<String> missingInformation, List<FormalSupport> formalSupports) {
         public WorkItem {
             registry = Objects.requireNonNull(registry, "registry must not be null");
             required(functionKey, "functionKey");
@@ -113,13 +210,73 @@ public final class FunctionalTestcaseResultValidator {
             requirementFactKeys = requiredList(requirementFactKeys, "requirementFactKeys");
             evidenceKeys = requiredList(evidenceKeys, "evidenceKeys");
             missingInformation = requiredList(missingInformation, "missingInformation");
+            formalSupports = requiredList(formalSupports, "formalSupports");
             ReaderFacingTextPolicy.requireSafeItems(missingInformation, "missingInformation");
             registry.require(StructuredKeyType.FUNCTION, functionKey);
             registry.require(StructuredKeyType.TEST_POINT, testPointKey);
             requireSubset(requirementFactKeys, requirementFactKeys, StructuredKeyType.REQUIREMENT_FACT, registry, "requirement fact");
             for (String evidenceKey : evidenceKeys) registry.requireEvidence(evidenceKey);
             if (basis == Basis.GENERAL_EXPERIENCE) requireNonblankItems(missingInformation, "missingInformation");
+            validateSupportClosure(basis, requirementFactKeys, evidenceKeys, formalSupports);
         }
+    }
+
+    private static void validateSupportClosure(Basis basis, List<String> factKeys, List<String> evidenceKeys,
+            List<FormalSupport> supports) {
+        if (basis == Basis.GENERAL_EXPERIENCE) return;
+        Set<String> supportedFacts = new LinkedHashSet<>();
+        Set<String> supportedEvidence = new LinkedHashSet<>();
+        for (FormalSupport support : supports) {
+            FormalSupport checked = Objects.requireNonNull(support, "formal support must not be null");
+            if (!factKeys.contains(checked.factKey()) || !supportedFacts.add(checked.factKey())) {
+                throw new IllegalArgumentException("Formal support facts must exactly match the test-point closure");
+            }
+            for (String evidenceKey : checked.evidenceTexts().keySet()) {
+                if (!evidenceKeys.contains(evidenceKey)) {
+                    throw new IllegalArgumentException("Formal support evidence is outside the test-point closure");
+                }
+                supportedEvidence.add(evidenceKey);
+            }
+        }
+        if (!supportedFacts.equals(new LinkedHashSet<>(factKeys))
+                || !supportedEvidence.equals(new LinkedHashSet<>(evidenceKeys))) {
+            throw new IllegalArgumentException("Formal support must cover every frozen fact and evidence key");
+        }
+    }
+
+    /** Persisted formal fact text and its exact parsed-unit evidence, never test-point narration. */
+    public record FormalSupport(String factKey, String function, List<String> roles, List<String> triggerConditions,
+            List<String> inputs, List<String> businessRules, List<String> outputs, List<String> permissions,
+            List<String> stateChanges, List<String> exceptionHandling, List<String> externalDependencies,
+            Map<String, String> evidenceTexts) {
+        public FormalSupport {
+            required(factKey, "formal support factKey");
+            required(function, "formal support function");
+            roles = safeCopy(roles, "formal support roles");
+            triggerConditions = safeCopy(triggerConditions, "formal support triggerConditions");
+            inputs = safeCopy(inputs, "formal support inputs");
+            businessRules = safeCopy(businessRules, "formal support businessRules");
+            outputs = safeCopy(outputs, "formal support outputs");
+            permissions = safeCopy(permissions, "formal support permissions");
+            stateChanges = safeCopy(stateChanges, "formal support stateChanges");
+            exceptionHandling = safeCopy(exceptionHandling, "formal support exceptionHandling");
+            externalDependencies = safeCopy(externalDependencies, "formal support externalDependencies");
+            Map<String, String> copiedEvidence = new java.util.LinkedHashMap<>();
+            Objects.requireNonNull(evidenceTexts, "formal support evidenceTexts must not be null").forEach((key, text) -> {
+                required(key, "formal support evidence key");
+                required(text, "formal support evidence text");
+                if (copiedEvidence.putIfAbsent(key, text) != null) {
+                    throw new IllegalArgumentException("formal support evidence keys must be unique");
+                }
+            });
+            evidenceTexts = Map.copyOf(copiedEvidence);
+        }
+    }
+
+    private static List<String> safeCopy(List<String> values, String field) {
+        List<String> copied = requiredList(values, field);
+        for (String value : copied) required(value, field);
+        return copied;
     }
 
     /** Exact Skill result for one test-point request. */

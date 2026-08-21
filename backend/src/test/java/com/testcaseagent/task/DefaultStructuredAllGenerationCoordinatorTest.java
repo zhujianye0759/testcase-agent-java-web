@@ -82,8 +82,10 @@ class DefaultStructuredAllGenerationCoordinatorTest {
                 new FunctionListExtractionResult(List.of(new FunctionListExtractionResult.FunctionListItem(
                         "订单/提交", "提交订单", List.of("fn-unit"))))));
         StructuredGenerationAcceptanceStore.AcceptedFact acceptedFact =
-                new StructuredGenerationAcceptanceStore.AcceptedFact("fact-task", "提交订单", List.of("订单"),
-                        List.of("金额大于零"), List.of(), List.of(), List.of(), List.of(), List.of("req-unit"));
+                new StructuredGenerationAcceptanceStore.AcceptedFact("fact-task", "提交订单", List.of(),
+                        List.of("提交"), List.of("订单"), List.of("金额大于零"), List.of("订单创建成功"),
+                        List.of(), List.of(), List.of(), List.of(), List.of("req-unit"),
+                        Map.of("req-unit", "提交订单，提交后订单创建成功"));
         StructuredGenerationAcceptanceStore.AcceptedFunctionItem acceptedItem =
                 new StructuredGenerationAcceptanceStore.AcceptedFunctionItem(
                         "fli-task", "订单/提交", "提交订单", List.of("fn-unit"));
@@ -282,6 +284,85 @@ class DefaultStructuredAllGenerationCoordinatorTest {
     }
 
     @Test
+    void doesNotRetryAFormalGroundingFailureOrPersistAnArtifact() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        RequirementMaterialTraversalService traversal = mock(RequirementMaterialTraversalService.class);
+        StructuredSkillExecutionPort skills = mock(StructuredSkillExecutionPort.class);
+        StructuredSkillSessionPort sessions = mock(StructuredSkillSessionPort.class);
+        StructuredGenerationAcceptanceStore store = mock(StructuredGenerationAcceptanceStore.class);
+        WorkbookExporter exporter = mock(WorkbookExporter.class);
+        CreateGenerationTaskRequest request = mock(CreateGenerationTaskRequest.class);
+        when(request.agentId()).thenReturn("agent-1");
+        when(request.requirementScope()).thenReturn(mock(RequirementScope.class));
+        when(sessions.openStructuredSession()).thenReturn("session-grounding");
+        when(traversal.traverse("task-grounding", request, false)).thenReturn(
+                new RequirementMaterialTraversalService.TraversalResult(List.of(
+                        material("requirement-1", "REQUIREMENT", "req-unit", "账号登录"),
+                        material("function-list-1", "FUNCTION_LIST", "fn-unit", "账号登录"))));
+        AtomicInteger sequence = new AtomicInteger();
+        Map<String, StructuredGenerationAcceptanceStore.WorkRegistration> registrations = new LinkedHashMap<>();
+        when(store.register(any())).thenAnswer(invocation -> {
+            StructuredGenerationAcceptanceStore.WorkRegistration registration = invocation.getArgument(0);
+            String workId = "grounding-work-" + sequence.incrementAndGet();
+            registrations.put(workId, registration);
+            return workId;
+        });
+        when(store.isCompleted(anyString())).thenAnswer(invocation -> !"FUNCTIONAL_TESTCASE_DESIGN".equals(
+                registrations.get(invocation.getArgument(0, String.class)).operationName()));
+        when(store.claimRegistered(org.mockito.ArgumentMatchers.eq("task-grounding"), anyString(),
+                org.mockito.ArgumentMatchers.eq("structured-all-worker"))).thenAnswer(invocation -> {
+            String workId = invocation.getArgument(1);
+            StructuredGenerationAcceptanceStore.WorkRegistration registration = registrations.get(workId);
+            return java.util.Optional.of(new StructuredGenerationAcceptanceStore.WorkClaim(
+                    workId, "grounding-attempt", "task-grounding", registration.identityKey(),
+                    registration.skillName(), registration.operationName(), 1, registration.ordinalStart(),
+                    registration.ordinalEnd(), registration.materialKey(), registration.allowedEvidenceKeys(),
+                    "structured-all-worker"));
+        });
+        StructuredGenerationAcceptanceStore.AcceptedFact fact = new StructuredGenerationAcceptanceStore.AcceptedFact(
+                "fact-grounding", "账号登录", List.of("已注册用户"), List.of("提交账号和正确密码"),
+                List.of("账号", "正确密码"), List.of(), List.of("进入首页"), List.of(), List.of(),
+                List.of(), List.of(), List.of("req-unit"), Map.of("req-unit", "已注册用户提交账号和正确密码后进入首页"));
+        StructuredGenerationAcceptanceStore.AcceptedFunctionItem item =
+                new StructuredGenerationAcceptanceStore.AcceptedFunctionItem(
+                        "item-grounding", "用户中心/账号登录", "账号登录", List.of("fn-unit"));
+        when(store.acceptedInputs("task-grounding")).thenReturn(
+                new StructuredGenerationAcceptanceStore.AcceptedInputs(List.of(fact), List.of(item)));
+        when(store.acceptedConfirmedFunctions("task-grounding")).thenReturn(List.of(
+                new StructuredGenerationAcceptanceStore.AcceptedConfirmedFunction(
+                        "reconciliation-grounding", List.of(item), List.of(fact))));
+        when(skills.designFunctionalTestcases(any())).thenAnswer(invocation -> {
+            var input = invocation.getArgument(0,
+                    com.testcaseagent.knowledgeagent.FunctionalTestcaseDesignInvocation.class).input();
+            return success("functional-testcase-design", new FunctionalTestcaseDesignResult(
+                    input.functionKey(), input.testPoint().testPointKey(), List.of(
+                            new FunctionalTestcaseDesignResult.Testcase("case-grounding", "手机号登录", List.of("已绑定手机号"),
+                                    List.of(new FunctionalTestcaseDesignResult.Step(1, "提交手机号和正确密码", "进入首页")),
+                                    input.testPoint().requirementFactKeys(), input.testPoint().evidenceKeys(),
+                                    FunctionalTestcaseDesignResult.CaseStatus.FORMAL, List.of()))));
+        });
+        org.mockito.Mockito.doAnswer(invocation -> {
+            com.testcaseagent.validation.FunctionalTestcaseResultValidator validator = invocation.getArgument(1);
+            validator.validate(invocation.getArgument(2), invocation.getArgument(3));
+            return null;
+        }).when(store).acceptTestcases(any(), any(), any(), any());
+
+        var coordinator = new DefaultStructuredAllGenerationCoordinator(repository, traversal, skills, sessions,
+                store, exporter, new ObjectMapper());
+
+        assertThatThrownBy(() -> coordinator.execute("task-grounding", request))
+                .isInstanceOf(IllegalArgumentException.class);
+        verify(skills).designFunctionalTestcases(any());
+        verify(store).claimRegistered(org.mockito.ArgumentMatchers.eq("task-grounding"), anyString(),
+                org.mockito.ArgumentMatchers.eq("structured-all-worker"));
+        verify(store).fail(any(), org.mockito.ArgumentMatchers.eq("business_validation_failed"));
+        verify(repository).failStructuredTask("task-grounding",
+                com.testcaseagent.structuredgeneration.StructuredCoverageStatus.PENDING);
+        verify(exporter, never()).exportStructured(any());
+        verify(exporter, never()).exportMarkdown(any());
+    }
+
+    @Test
     void recordsTraversalCancellationAsCancelledWithoutCallingKeeOrPublishingAnArtifact() {
         GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
         RequirementMaterialTraversalService traversal = mock(RequirementMaterialTraversalService.class);
@@ -378,8 +459,9 @@ class DefaultStructuredAllGenerationCoordinatorTest {
         });
         StructuredGenerationAcceptanceStore.AcceptedFact fact =
                 new StructuredGenerationAcceptanceStore.AcceptedFact("fact-persisted", "不用于猜测功能名",
-                        List.of("订单"), List.of("金额大于零"), List.of(), List.of(), List.of(), List.of(),
-                        List.of("req-unit"));
+                        List.of(), List.of("执行"), List.of("订单"), List.of("金额大于零"), List.of("成功"),
+                        List.of(), List.of(), List.of(), List.of(), List.of("req-unit"),
+                        Map.of("req-unit", "执行后成功"));
         StructuredGenerationAcceptanceStore.AcceptedFunctionItem item =
                 new StructuredGenerationAcceptanceStore.AcceptedFunctionItem(
                         "item-persisted", "订单/持久化确认功能", "确认功能", List.of("fn-unit"));
@@ -395,11 +477,25 @@ class DefaultStructuredAllGenerationCoordinatorTest {
             assertThat(input.testPoint().requirementFactKeys()).containsExactly("fact-persisted");
             return success("functional-testcase-design", new FunctionalTestcaseDesignResult(
                     input.functionKey(), input.testPoint().testPointKey(), List.of(
-                            new FunctionalTestcaseDesignResult.Testcase("restart-case", "恢复后继续生成", List.of(),
+                            new FunctionalTestcaseDesignResult.Testcase("restart-case", "不用于猜测功能名", List.of(),
                                     List.of(new FunctionalTestcaseDesignResult.Step(1, "执行", "成功")),
                                     input.testPoint().requirementFactKeys(), input.testPoint().evidenceKeys(),
                                     FunctionalTestcaseDesignResult.CaseStatus.FORMAL, List.of()))));
         });
+        org.mockito.Mockito.doAnswer(invocation -> {
+            com.testcaseagent.validation.FunctionalTestcaseResultValidator validator = invocation.getArgument(1);
+            com.testcaseagent.validation.FunctionalTestcaseResultValidator.WorkItem workItem = invocation.getArgument(2);
+            com.testcaseagent.validation.FunctionalTestcaseResultValidator.Result result = invocation.getArgument(3);
+            assertThat(workItem.description()).doesNotContain("执行后成功");
+            assertThat(workItem.formalSupports()).singleElement().satisfies(support -> {
+                assertThat(support.factKey()).isEqualTo("fact-persisted");
+                assertThat(support.triggerConditions()).containsExactly("执行");
+                assertThat(support.outputs()).containsExactly("成功");
+                assertThat(support.evidenceTexts()).containsEntry("req-unit", "执行后成功");
+            });
+            validator.validate(workItem, result);
+            return null;
+        }).when(store).acceptTestcases(any(), any(), any(), any());
         StructuredWorkbookExportRequest rows = new StructuredWorkbookExportRequest("task-restart", List.of(), List.of());
         WorkbookArtifact artifact = new WorkbookArtifact("artifact-restart", "d".repeat(64), Path.of("restart.xlsx"));
         when(repository.structuredWorkbookRequest("task-restart")).thenReturn(rows);

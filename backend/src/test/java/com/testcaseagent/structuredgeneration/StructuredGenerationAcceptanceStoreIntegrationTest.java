@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.testcaseagent.validation.FeatureReconciliationValidator;
+import com.testcaseagent.validation.FunctionalTestcaseResultValidator;
 import com.testcaseagent.validation.RequirementMaterialReviewValidator;
 import com.testcaseagent.validation.StructuredEvidence;
 import com.testcaseagent.validation.StructuredKeyType;
@@ -11,6 +12,7 @@ import com.testcaseagent.validation.StructuredValidationRegistry;
 import com.testcaseagent.web.TestCaseAgentApplication;
 import java.time.Clock;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -48,8 +50,24 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
         jdbc.update("DELETE FROM structured_test_case"); jdbc.update("DELETE FROM structured_test_point");
         jdbc.update("DELETE FROM structured_feature_reconciliation"); jdbc.update("DELETE FROM structured_review_finding");
         jdbc.update("DELETE FROM structured_requirement_fact"); jdbc.update("DELETE FROM structured_generation_attempt");
-        jdbc.update("DELETE FROM structured_generation_work_item"); jdbc.update("DELETE FROM generation_task");
+        jdbc.update("DELETE FROM structured_generation_work_item");
+        jdbc.update("DELETE FROM material_inventory_unit"); jdbc.update("DELETE FROM material_inventory_document");
+        jdbc.update("DELETE FROM generation_task");
         jdbc.update("INSERT INTO generation_task (id, task_mode, status, request_snapshot) VALUES ('task-1', 'FEATURE', 'QUEUED', JSON_OBJECT())");
+        jdbc.update("""
+                INSERT INTO material_inventory_document
+                (task_id, document_id, knowledge_id, document_role, total_units, complete)
+                VALUES ('task-1', 'document-1', 'knowledge-1', 'REQUIREMENT', 2, TRUE)
+                """);
+        jdbc.update("""
+                INSERT INTO material_inventory_unit
+                (task_id, document_id, unit_id, document_role, chunk_index, ordinal, content, start_at, end_at)
+                VALUES
+                ('task-1', 'document-1', 'evidence-1', 'REQUIREMENT', 0, 1,
+                 '已注册且状态正常的用户在登录页提交账号和正确密码后，系统进入首页并显示当前用户名称', 0, 43),
+                ('task-1', 'document-1', 'evidence-2', 'REQUIREMENT', 0, 2,
+                 '订单最终功能允许提交订单', 44, 56)
+                """);
         store = new StructuredGenerationAcceptanceStore(jdbc, new TransactionTemplate(transactionManager), Clock.systemUTC());
     }
 
@@ -127,7 +145,45 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
                     .containsExactly("订单/最终功能");
             assertThat(mapping.facts()).extracting(StructuredGenerationAcceptanceStore.AcceptedFact::factKey)
                     .containsExactly("fact-confirmed");
+            assertThat(mapping.facts().get(0)).satisfies(fact -> {
+                assertThat(fact.roles()).containsExactly("role");
+                assertThat(fact.evidenceTexts()).containsEntry("evidence-1",
+                        "已注册且状态正常的用户在登录页提交账号和正确密码后，系统进入首页并显示当前用户名称");
+            });
         });
+    }
+
+    /** [Req-ID]: REQ-FTG-001, REQ-FTG-003 */
+    @Test
+    void rejectsUngroundedFormalTextBeforeAnyTestcaseRowAndAcceptsGroundedTextAtomically() {
+        StructuredValidationRegistry registry = StructuredValidationRegistry.forTask("task-1")
+                .register(StructuredKeyType.FUNCTION, "function-1")
+                .register(StructuredKeyType.TEST_POINT, "point-1")
+                .register(StructuredKeyType.REQUIREMENT_FACT, "fact-1")
+                .registerEvidence(new StructuredEvidence("evidence-1", "task-1", "material-1", false, false, true));
+        store.register(new StructuredGenerationAcceptanceStore.WorkRegistration(
+                "task-1", "0".repeat(64), "functional-testcase-design", "FUNCTIONAL_TESTCASE_DESIGN",
+                null, null, null, "testcase", List.of("evidence-1"), "function-1", "point-1"));
+        StructuredGenerationAcceptanceStore.WorkClaim claim = store.claimNext("task-1", "worker-1").orElseThrow();
+        FunctionalTestcaseResultValidator.WorkItem workItem = groundedWorkItem(registry);
+        FunctionalTestcaseResultValidator.Result unsupported = testcaseResult(
+                "用户名、手机号或邮箱登录", "用户已设置用户名", "检查 Token/Session", "访问受保护资源");
+
+        assertThatThrownBy(() -> store.acceptTestcases(claim, new FunctionalTestcaseResultValidator(), workItem, unsupported))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_test_point", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_test_case", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_test_case_step", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_reference_binding", Integer.class)).isZero();
+
+        FunctionalTestcaseResultValidator.Result grounded = testcaseResult(
+                "账号登录", "用户必须已注册且状态正常", "用户在登录页提交账号和正确密码", "系统进入首页并显示当前用户名称");
+        store.acceptTestcases(claim, new FunctionalTestcaseResultValidator(), workItem, grounded);
+
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_test_point", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_test_case", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_test_case_step", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_reference_binding", Integer.class)).isEqualTo(4);
     }
 
     /** [Req-ID]: REQ-STG-006 */
@@ -524,6 +580,31 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
 
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_reference_binding WHERE subject_key = 'shared-key'", Integer.class)).isEqualTo(2);
         assertThat(jdbc.queryForObject("SELECT COUNT(DISTINCT subject_type) FROM structured_reference_binding WHERE subject_key = 'shared-key'", Integer.class)).isEqualTo(2);
+    }
+
+    private static FunctionalTestcaseResultValidator.WorkItem groundedWorkItem(StructuredValidationRegistry registry) {
+        FunctionalTestcaseResultValidator.FormalSupport support = new FunctionalTestcaseResultValidator.FormalSupport(
+                "fact-1", "用户中心→账号登录", List.of("已注册且状态正常的用户"),
+                List.of("用户在登录页提交账号和正确密码"), List.of("账号", "正确密码"),
+                List.of("用户必须已注册且状态正常", "密码必须正确"),
+                List.of("系统进入首页", "首页显示当前用户名称"), List.of(),
+                List.of("用户会话状态从匿名变为已登录"), List.of(), List.of(),
+                Map.of("evidence-1", "已注册且状态正常的用户在登录页提交账号和正确密码后，系统进入首页并显示当前用户名称"));
+        return new FunctionalTestcaseResultValidator.WorkItem(
+                registry, "function-1", "用户中心→账号登录", "point-1",
+                "已注册且状态正常的用户在登录页提交账号和正确密码后，系统进入首页并显示当前用户名称",
+                FunctionalTestcaseResultValidator.TestPointType.NORMAL_BEHAVIOR,
+                FunctionalTestcaseResultValidator.Basis.FORMAL_REQUIREMENT,
+                List.of("fact-1"), List.of("evidence-1"), List.of(), List.of(support));
+    }
+
+    private static FunctionalTestcaseResultValidator.Result testcaseResult(
+            String title, String precondition, String action, String expected) {
+        FunctionalTestcaseResultValidator.Testcase testcase = new FunctionalTestcaseResultValidator.Testcase(
+                "case-1", title, List.of(precondition),
+                List.of(new FunctionalTestcaseResultValidator.Step(1, action, expected)),
+                List.of("fact-1"), List.of("evidence-1"), FunctionalTestcaseResultValidator.CaseStatus.FORMAL, List.of());
+        return new FunctionalTestcaseResultValidator.Result("function-1", "point-1", List.of(testcase));
     }
 
     private static StructuredGenerationAcceptanceStore.WorkRegistration reviewWork(String identityKey) {

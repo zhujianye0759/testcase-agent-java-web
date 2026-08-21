@@ -34,7 +34,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * column or parameter for raw model JSON or Markdown. Validation happens before a transaction can
  * write business rows, and a transaction updates the attempt/work terminal state last.</p>
  *
- * [Req-ID]: REQ-STG-001, REQ-STG-006
+ * [Req-ID]: REQ-STG-001, REQ-STG-006, REQ-FTG-003
  */
 public final class StructuredGenerationAcceptanceStore {
     public static final int MAX_ATTEMPTS = 2;
@@ -359,18 +359,35 @@ public final class StructuredGenerationAcceptanceStore {
     /** Rebuilds accepted formal facts and task-unique function items after a worker restart. */
     public AcceptedInputs acceptedInputs(String taskId) {
         require(taskId, "taskId");
+        Map<String, String> taskEvidenceTexts = new LinkedHashMap<>();
+        jdbc.query("SELECT unit_id, content FROM material_inventory_unit WHERE task_id = ? ORDER BY document_id, ordinal, unit_id",
+                row -> {
+                    String key = row.getString("unit_id");
+                    String content = row.getString("content");
+                    String previous = taskEvidenceTexts.putIfAbsent(key, content);
+                    if (previous != null && !previous.equals(content)) {
+                        throw new IllegalStateException("Task evidence key resolves to conflicting persisted text");
+                    }
+                }, taskId);
         List<AcceptedFact> facts = jdbc.query("""
-                SELECT f.work_item_id, f.fact_key, f.function_name, f.inputs_json, f.business_rules_json,
-                       f.permissions_json, f.state_changes_json, f.exception_handling_json, f.external_dependencies_json
+                SELECT f.work_item_id, f.fact_key, f.function_name, f.roles_json, f.trigger_conditions_json,
+                       f.inputs_json, f.business_rules_json, f.outputs_json, f.permissions_json,
+                       f.state_changes_json, f.exception_handling_json, f.external_dependencies_json
                 FROM structured_requirement_fact f
                 JOIN structured_generation_work_item w ON w.id = f.work_item_id
                 WHERE f.task_id = ? AND w.status = 'COMPLETED' AND w.accepted_result_sha256 IS NOT NULL
                 ORDER BY w.created_at, f.fact_key
-                """, (row, ignored) -> new AcceptedFact(row.getString("fact_key"), row.getString("function_name"),
-                stringList(row.getString("inputs_json")), stringList(row.getString("business_rules_json")),
-                stringList(row.getString("permissions_json")), stringList(row.getString("state_changes_json")),
-                stringList(row.getString("exception_handling_json")), stringList(row.getString("external_dependencies_json")),
-                referenceKeys(row.getString("work_item_id"), row.getString("fact_key"), "REQUIREMENT_FACT", "EVIDENCE")), taskId);
+                """, (row, ignored) -> {
+                    List<String> evidenceKeys = referenceKeys(row.getString("work_item_id"), row.getString("fact_key"),
+                            "REQUIREMENT_FACT", "EVIDENCE");
+                    return new AcceptedFact(row.getString("fact_key"), row.getString("function_name"),
+                            stringList(row.getString("roles_json")), stringList(row.getString("trigger_conditions_json")),
+                            stringList(row.getString("inputs_json")), stringList(row.getString("business_rules_json")),
+                            stringList(row.getString("outputs_json")), stringList(row.getString("permissions_json")),
+                            stringList(row.getString("state_changes_json")), stringList(row.getString("exception_handling_json")),
+                            stringList(row.getString("external_dependencies_json")), evidenceKeys,
+                            requiredEvidenceTexts(evidenceKeys, taskEvidenceTexts));
+                }, taskId);
         List<AcceptedFunctionItem> items = jdbc.query("""
                 SELECT item.work_item_id, item.item_key, item.path_text, item.description
                 FROM structured_function_list_item item
@@ -381,6 +398,19 @@ public final class StructuredGenerationAcceptanceStore {
                 row.getString("description"), referenceKeys(row.getString("work_item_id"), row.getString("item_key"),
                         "FUNCTION_LIST_ITEM", "EVIDENCE")), taskId);
         return new AcceptedInputs(facts, items);
+    }
+
+    private static Map<String, String> requiredEvidenceTexts(
+            List<String> evidenceKeys, Map<String, String> taskEvidenceTexts) {
+        Map<String, String> result = new LinkedHashMap<>();
+        for (String key : evidenceKeys) {
+            String content = taskEvidenceTexts.get(key);
+            if (content == null || content.isBlank()) {
+                throw new IllegalStateException("Accepted requirement fact references unavailable persisted evidence text");
+            }
+            result.put(key, content);
+        }
+        return Map.copyOf(result);
     }
 
     /**
@@ -665,10 +695,30 @@ public final class StructuredGenerationAcceptanceStore {
             functionItems = List.copyOf(functionItems);
         }
     }
-    /** Formal fact fields required to reconstruct deterministic test points. */
-    public record AcceptedFact(String factKey, String function, List<String> inputs, List<String> businessRules,
-            List<String> permissions, List<String> stateChanges, List<String> exceptionHandling,
-            List<String> externalDependencies, List<String> evidenceKeys) { }
+    /** Complete persisted formal fact and exact parsed-unit evidence used for restart-safe testcase grounding. */
+    public record AcceptedFact(String factKey, String function, List<String> roles, List<String> triggerConditions,
+            List<String> inputs, List<String> businessRules, List<String> outputs, List<String> permissions,
+            List<String> stateChanges, List<String> exceptionHandling, List<String> externalDependencies,
+            List<String> evidenceKeys, Map<String, String> evidenceTexts) {
+        public AcceptedFact {
+            require(factKey, "factKey");
+            require(function, "function");
+            roles = List.copyOf(roles);
+            triggerConditions = List.copyOf(triggerConditions);
+            inputs = List.copyOf(inputs);
+            businessRules = List.copyOf(businessRules);
+            outputs = List.copyOf(outputs);
+            permissions = List.copyOf(permissions);
+            stateChanges = List.copyOf(stateChanges);
+            exceptionHandling = List.copyOf(exceptionHandling);
+            externalDependencies = List.copyOf(externalDependencies);
+            evidenceKeys = List.copyOf(evidenceKeys);
+            evidenceTexts = Map.copyOf(evidenceTexts);
+            if (!evidenceTexts.keySet().equals(Set.copyOf(evidenceKeys))) {
+                throw new IllegalArgumentException("Accepted fact evidence text must exactly match its evidence keys");
+            }
+        }
+    }
     /** One task-unique function-list item and its merged evidence. */
     public record AcceptedFunctionItem(String itemKey, String path, String description, List<String> evidenceKeys) { }
 

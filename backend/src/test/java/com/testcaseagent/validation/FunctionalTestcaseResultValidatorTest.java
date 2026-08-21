@@ -6,9 +6,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
-/** Tests test-point to testcase acceptance and formal-coverage rules. [Req-ID]: REQ-STG-001, REQ-STG-004, REQ-STG-005 */
+/** Tests test-point to testcase acceptance, grounding, and formal-coverage rules. [Req-ID]: REQ-STG-001, REQ-STG-004, REQ-STG-005, REQ-FTG-001, REQ-FTG-002 */
 class FunctionalTestcaseResultValidatorTest {
     private final FunctionalTestcaseResultValidator validator = new FunctionalTestcaseResultValidator();
 
@@ -78,7 +79,7 @@ class FunctionalTestcaseResultValidatorTest {
         StructuredValidationRegistry registry = registry();
         assertThrows(IllegalArgumentException.class, () -> new FunctionalTestcaseResultValidator.WorkItem(registry, "function-1", "Function one", "point-1", "boundary test",
                 FunctionalTestcaseResultValidator.TestPointType.BOUNDARY_VALUE, FunctionalTestcaseResultValidator.Basis.GENERAL_EXPERIENCE,
-                List.of("fact-1"), List.of("evidence-1"), List.of()));
+                List.of("fact-1"), List.of("evidence-1"), List.of(), List.of()));
 
         FunctionalTestcaseResultValidator.WorkItem workItem = workItem(FunctionalTestcaseResultValidator.Basis.GENERAL_EXPERIENCE);
         FunctionalTestcaseResultValidator.Testcase unexplained = new FunctionalTestcaseResultValidator.Testcase("case-1", "title", List.of(),
@@ -114,13 +115,196 @@ class FunctionalTestcaseResultValidatorTest {
                 result("function-1", "point-1", FunctionalTestcaseResultValidator.CaseStatus.FORMAL)));
     }
 
+    @Test
+    void rejectsLiveFixtureFormalTitleThatExpandsAccountIntoUnsupportedAccountTypes() {
+        FunctionalTestcaseResultValidator.Testcase testcase = controlledFormalCase(
+                "已注册且状态正常的用户使用用户名、手机号或邮箱登录",
+                List.of("用户必须已注册且状态正常"),
+                "用户在登录页提交账号和正确密码",
+                "系统进入首页并显示当前用户名称");
+
+        assertThrows(IllegalArgumentException.class, () -> validator.validate(controlledFormalWorkItem(),
+                controlledResult(testcase)));
+    }
+
+    @Test
+    void rejectsLiveFixtureFormalPreconditionThatInventsUsernameAndLoginEndpoint() {
+        FunctionalTestcaseResultValidator.Testcase testcase = controlledFormalCase(
+                "账号登录",
+                List.of("用户已设置用户名", "登录接口/页面可正常访问"),
+                "用户在登录页提交账号和正确密码",
+                "系统进入首页并显示当前用户名称");
+
+        assertThrows(IllegalArgumentException.class, () -> validator.validate(controlledFormalWorkItem(),
+                controlledResult(testcase)));
+    }
+
+    @Test
+    void rejectsLiveFixtureFormalActionThatInventsTokenAndSessionMechanics() {
+        FunctionalTestcaseResultValidator.Testcase testcase = controlledFormalCase(
+                "账号登录",
+                List.of("用户必须已注册且状态正常"),
+                "检查当前用户会话状态中的 Token/Session 标识",
+                "用户会话状态从匿名变为已登录");
+
+        assertThrows(IllegalArgumentException.class, () -> validator.validate(controlledFormalWorkItem(),
+                controlledResult(testcase)));
+    }
+
+    @Test
+    void rejectsLiveFixtureFormalExpectedThatInventsProtectedResourceAccess() {
+        FunctionalTestcaseResultValidator.Testcase testcase = controlledFormalCase(
+                "账号登录",
+                List.of("用户必须已注册且状态正常"),
+                "用户在登录页提交账号和正确密码",
+                "受保护资源可正常访问且不会被拒绝");
+
+        assertThrows(IllegalArgumentException.class, () -> validator.validate(controlledFormalWorkItem(),
+                controlledResult(testcase)));
+    }
+
+    @Test
+    void doesNotTreatThePossiblyOverreachingTestPointDescriptionAsFormalSupport() {
+        FunctionalTestcaseResultValidator.WorkItem workItem = new FunctionalTestcaseResultValidator.WorkItem(
+                registry(), "function-1", "用户中心→账号登录", "point-1",
+                "测试点叙述声称支持手机号登录和 Token/Session，但该叙述不是正式事实",
+                FunctionalTestcaseResultValidator.TestPointType.NORMAL_BEHAVIOR,
+                FunctionalTestcaseResultValidator.Basis.FORMAL_REQUIREMENT,
+                List.of("fact-1"), List.of("evidence-1"), List.of(), List.of(controlledFormalSupport()));
+        FunctionalTestcaseResultValidator.Testcase testcase = controlledFormalCase(
+                "手机号登录", List.of("用户必须已注册且状态正常"),
+                "检查 Token/Session", "用户会话状态从匿名变为已登录");
+
+        assertThrows(IllegalArgumentException.class, () -> validator.validate(workItem, controlledResult(testcase)));
+    }
+
+    @Test
+    void acceptsLiveFixtureFormalCaseWhenEveryVisibleBusinessFragmentIsDirectlySupported() {
+        FunctionalTestcaseResultValidator.Testcase testcase = controlledFormalCase(
+                "账号登录",
+                List.of("用户必须已注册且状态正常"),
+                "用户在登录页提交账号和正确密码",
+                "系统进入首页并显示当前用户名称");
+
+        assertDoesNotThrow(() -> validator.validate(controlledFormalWorkItem(), controlledResult(testcase)));
+    }
+
+    @Test
+    void acceptsPreviouslyAdversarialTermsWhenTheBoundFormalSourcesExplicitlyStateThem() {
+        StructuredValidationRegistry registry = registry();
+        FunctionalTestcaseResultValidator.FormalSupport support = new FunctionalTestcaseResultValidator.FormalSupport(
+                "fact-1", "手机号登录", List.of("已绑定手机号的用户"),
+                List.of("用户提交手机号和正确密码"), List.of("手机号", "正确密码"), List.of(),
+                List.of("系统签发 Token/Session 标识并允许访问受保护资源"), List.of(), List.of(),
+                List.of(), List.of(), Map.of("evidence-1",
+                        "已绑定手机号的用户提交手机号和正确密码后，系统签发 Token/Session 标识并允许访问受保护资源"));
+        FunctionalTestcaseResultValidator.WorkItem workItem = new FunctionalTestcaseResultValidator.WorkItem(
+                registry, "function-1", "手机号登录", "point-1", "正式材料明确说明手机号和会话机制",
+                FunctionalTestcaseResultValidator.TestPointType.NORMAL_BEHAVIOR,
+                FunctionalTestcaseResultValidator.Basis.FORMAL_REQUIREMENT,
+                List.of("fact-1"), List.of("evidence-1"), List.of(), List.of(support));
+        FunctionalTestcaseResultValidator.Testcase testcase = controlledFormalCase(
+                "手机号登录", List.of("已绑定手机号的用户"), "用户提交手机号和正确密码",
+                "系统签发 Token/Session 标识并允许访问受保护资源");
+
+        assertDoesNotThrow(() -> validator.validate(workItem, controlledResult(testcase)));
+    }
+
+    @Test
+    void acceptsNarrowFieldSpecificWrappersOnlyWhenTheRemainingWholeClaimIsDirectlySupported() {
+        FunctionalTestcaseResultValidator.Testcase testcase = controlledFormalCase(
+                "验证账号登录",
+                List.of("前置条件：用户必须已注册且状态正常"),
+                "操作：用户在登录页提交账号和正确密码",
+                "预期结果：系统进入首页并显示当前用户名称");
+
+        assertDoesNotThrow(() -> validator.validate(controlledFormalWorkItem(), controlledResult(testcase)));
+    }
+
+    @Test
+    void fieldWrappersCannotHideUnsupportedBusinessSpecifics() {
+        FunctionalTestcaseResultValidator.Testcase testcase = controlledFormalCase(
+                "验证账号登录",
+                List.of("前提：用户已设置用户名"),
+                "执行：检查 Token/Session 标识",
+                "预期：受保护资源可正常访问");
+
+        assertThrows(IllegalArgumentException.class, () -> validator.validate(controlledFormalWorkItem(), controlledResult(testcase)));
+    }
+
+    @Test
+    void retainsUnsupportedSpecificAsPendingOnlyWithMissingInformationAndWithoutFormalCoverageCredit() {
+        FunctionalTestcaseResultValidator.Testcase formal = controlledFormalCase(
+                "账号登录",
+                List.of("用户必须已注册且状态正常"),
+                "用户在登录页提交账号和正确密码",
+                "系统进入首页并显示当前用户名称");
+        FunctionalTestcaseResultValidator.Testcase pending = new FunctionalTestcaseResultValidator.Testcase(
+                "case-pending", "手机号登录候选", List.of("用户已绑定手机号"),
+                List.of(new FunctionalTestcaseResultValidator.Step(1, "输入手机号和正确密码", "登录成功")),
+                List.of("fact-1"), List.of("evidence-1"),
+                FunctionalTestcaseResultValidator.CaseStatus.PENDING_CONFIRMATION,
+                List.of("正式材料未说明账号是否包含手机号"));
+
+        FunctionalTestcaseResultValidator.ValidationOutcome outcome = validator.validate(controlledFormalWorkItem(),
+                new FunctionalTestcaseResultValidator.Result("function-1", "point-1", List.of(formal, pending)));
+
+        assertTrue(outcome.formalCoverageSatisfied());
+    }
+
     private static FunctionalTestcaseResultValidator.WorkItem workItem(FunctionalTestcaseResultValidator.Basis basis) {
         StructuredValidationRegistry registry = registry();
         List<String> missingInformation = basis == FunctionalTestcaseResultValidator.Basis.GENERAL_EXPERIENCE
                 ? List.of("No formal requirement evidence is available") : List.of();
         return new FunctionalTestcaseResultValidator.WorkItem(registry, "function-1", "Function one", "point-1", "boundary test",
                 FunctionalTestcaseResultValidator.TestPointType.BOUNDARY_VALUE, basis, List.of("fact-1"), List.of("evidence-1"),
-                missingInformation);
+                missingInformation, basis == FunctionalTestcaseResultValidator.Basis.FORMAL_REQUIREMENT
+                        ? List.of(genericFormalSupport()) : List.of());
+    }
+
+    /**
+     * Read-only fixture distilled from task a422272c-a993-4553-8c46-58a89e39c20b and artifact
+     * bc0972fc-f860-4f2a-8903-72c889434a76. It contains only the accepted formal fact wording,
+     * never the unsupported model expansion.
+     */
+    private static FunctionalTestcaseResultValidator.WorkItem controlledFormalWorkItem() {
+        StructuredValidationRegistry registry = registry();
+        return new FunctionalTestcaseResultValidator.WorkItem(registry, "function-1", "用户中心→账号登录",
+                "point-1", "已注册且状态正常的用户在登录页提交账号和正确密码后，系统进入首页并显示当前用户名称",
+                FunctionalTestcaseResultValidator.TestPointType.NORMAL_BEHAVIOR,
+                FunctionalTestcaseResultValidator.Basis.FORMAL_REQUIREMENT,
+                List.of("fact-1"), List.of("evidence-1"), List.of(), List.of(controlledFormalSupport()));
+    }
+
+    private static FunctionalTestcaseResultValidator.FormalSupport controlledFormalSupport() {
+        return new FunctionalTestcaseResultValidator.FormalSupport("fact-1", "用户中心→账号登录",
+                List.of("已注册且状态正常的用户"),
+                List.of("用户在登录页提交账号和正确密码"),
+                List.of("账号", "正确密码"),
+                List.of("用户必须已注册且状态正常", "密码必须正确"),
+                List.of("系统进入首页", "首页显示当前用户名称"),
+                List.of(), List.of("用户会话状态从匿名变为已登录"), List.of(), List.of(),
+                Map.of("evidence-1", "已注册且状态正常的用户在登录页提交账号和正确密码后，系统进入首页并显示当前用户名称"));
+    }
+
+    private static FunctionalTestcaseResultValidator.FormalSupport genericFormalSupport() {
+        return new FunctionalTestcaseResultValidator.FormalSupport("fact-1", "title",
+                List.of(), List.of("action"), List.of(), List.of(), List.of("expected"),
+                List.of(), List.of(), List.of(), List.of(),
+                Map.of("evidence-1", "title action expected"));
+    }
+
+    private static FunctionalTestcaseResultValidator.Testcase controlledFormalCase(
+            String title, List<String> preconditions, String action, String expected) {
+        return new FunctionalTestcaseResultValidator.Testcase("case-controlled", title, preconditions,
+                List.of(new FunctionalTestcaseResultValidator.Step(1, action, expected)),
+                List.of("fact-1"), List.of("evidence-1"),
+                FunctionalTestcaseResultValidator.CaseStatus.FORMAL, List.of());
+    }
+
+    private static FunctionalTestcaseResultValidator.Result controlledResult(
+            FunctionalTestcaseResultValidator.Testcase testcase) {
+        return new FunctionalTestcaseResultValidator.Result("function-1", "point-1", List.of(testcase));
     }
 
     private static StructuredValidationRegistry registry() {

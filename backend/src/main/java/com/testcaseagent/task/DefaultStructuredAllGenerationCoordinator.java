@@ -43,7 +43,7 @@ import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.function.Function;
 
-/** Production implementation of the parsed-units to structured two-sheet ALL workflow. [Req-ID]: REQ-STG-001~007 */
+/** Production implementation of the parsed-units to structured two-sheet ALL workflow. [Req-ID]: REQ-STG-001~007, REQ-FTG-003 */
 public final class DefaultStructuredAllGenerationCoordinator implements StructuredAllGenerationCoordinator {
     private static final String OWNER = "structured-all-worker";
     private final GenerationTaskRepository repository;
@@ -220,7 +220,8 @@ public final class DefaultStructuredAllGenerationCoordinator implements Structur
                             registry, input.functionKey(), input.functionName(), input.testPoint().testPointKey(), input.testPoint().description(),
                             FunctionalTestcaseResultValidator.TestPointType.valueOf(input.testPoint().type().name()),
                             FunctionalTestcaseResultValidator.Basis.valueOf(input.testPoint().basis().name()),
-                            input.testPoint().requirementFactKeys(), evidence, input.testPoint().missingInformation()), namespaced);
+                            input.testPoint().requirementFactKeys(), evidence, input.testPoint().missingInformation(),
+                            formalSupports(confirmed, input.testPoint().requirementFactKeys())), namespaced);
                     return null;
                 });
             }
@@ -362,6 +363,21 @@ public final class DefaultStructuredAllGenerationCoordinator implements Structur
     private static StructuredTestPointPlanner.FormalFact formalFact(StructuredGenerationAcceptanceStore.AcceptedFact fact) {
         return new StructuredTestPointPlanner.FormalFact(fact.factKey(), fact.function(), fact.inputs(), fact.businessRules(),
                 fact.permissions(), fact.stateChanges(), fact.exceptionHandling(), fact.externalDependencies(), fact.evidenceKeys());
+    }
+
+    private static List<FunctionalTestcaseResultValidator.FormalSupport> formalSupports(
+            StructuredGenerationAcceptanceStore.AcceptedConfirmedFunction confirmed, List<String> factKeys) {
+        List<FunctionalTestcaseResultValidator.FormalSupport> supports = confirmed.facts().stream()
+                .filter(fact -> factKeys.contains(fact.factKey()))
+                .map(fact -> new FunctionalTestcaseResultValidator.FormalSupport(
+                        fact.factKey(), fact.function(), fact.roles(), fact.triggerConditions(), fact.inputs(),
+                        fact.businessRules(), fact.outputs(), fact.permissions(), fact.stateChanges(),
+                        fact.exceptionHandling(), fact.externalDependencies(), fact.evidenceTexts()))
+                .toList();
+        if (supports.size() != factKeys.size()) {
+            throw new IllegalStateException("Test point references a fact outside the persisted confirmed mapping");
+        }
+        return supports;
     }
 
     private static List<String> distinctEvidence(StructuredGenerationAcceptanceStore.AcceptedInputs accepted) {
