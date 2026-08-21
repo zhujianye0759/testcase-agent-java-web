@@ -1,3 +1,4 @@
+-- V10 and V11 are reserved by already-applied task recovery and isolated-skill evidence changes.
 ALTER TABLE generation_task
     ADD COLUMN structured_processing_status VARCHAR(24) NULL AFTER status,
     ADD COLUMN structured_coverage_status VARCHAR(24) NULL AFTER structured_processing_status;

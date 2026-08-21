@@ -108,6 +108,18 @@ class ApplicationDatabaseMigrationTest {
 
     /** [Req-ID]: REQ-STG-001 */
     @Test
+    void structuredSchemaUsesTheFirstFreeSharedMigrationVersion(@Autowired JdbcTemplate jdbcTemplate) {
+        assertThat(jdbcTemplate.queryForMap("""
+                SELECT version, script
+                FROM flyway_schema_history
+                WHERE script = 'V12__persist_structured_generation_results.sql'
+                """))
+                .containsEntry("version", "12")
+                .containsEntry("script", "V12__persist_structured_generation_results.sql");
+    }
+
+    /** [Req-ID]: REQ-STG-001 */
+    @Test
     void productionContextRequiresTheRealStructuredAllCoordinator(
             @Autowired GenerationWorkflow workflow,
             @Autowired StructuredAllGenerationCoordinator coordinator,
