@@ -52,10 +52,10 @@
 
 - [x] 9.1 增加 API/投影 RED：显示高粒度 testcase、按根因合并 review、formal/pending 与中文来源，不暴露 raw JSON、内部枚举或机器键；保留旧 FEATURE/Markdown。 `[Req-ID]: REQ-FTG-007~009`
 - [x] 9.2 增加 exporter RED：两个固定 Sheet、评审合并字段、高粒度用例字段、步骤/预期/评价对应、公式注入防护和页面/Excel 数量一致。 `[Req-ID]: REQ-FTG-009`
-- [ ] 9.3 更新 Vue 详情页，复用现有 PC 详情模板和语义 token，覆盖 ready/empty/error、1440x820 与相关窄宽。 `[Req-ID]: REQ-FTG-009`
+- [x] 9.3 更新 Vue 详情页，复用现有 PC 详情模板和语义 token，覆盖 ready/empty/error、1440x820 与相关窄宽。 `[Req-ID]: REQ-FTG-009`
 
 ## 10. 验证、提交与部署
 
 - [x] 10.1 运行 DTO/Wire/validator/coordinator/acceptance/export/detail 聚焦测试及 MySQL/Testcontainers/Flyway 回归。 `[Req-ID]: REQ-FTG-006~009`
 - [x] 10.2 运行受影响后端回归、前端 unit/typecheck/lint/build、OpenSpec strict、git diff --check、敏感形态和主任务事务/权限/泄漏复审。 `[Req-ID]: all`
-- [ ] 10.3 本地提交、不推送不归档；从干净 worktree 构建并替换 Java 8082 和 5173，保存页面证据。不得创建或重试最终业务任务。 `[Req-ID]: all`
+- [x] 10.3 本地提交、不推送不归档；从干净 worktree 构建并替换 Java 8082 和 5173，保存页面证据。不得创建或重试最终业务任务。 `[Req-ID]: all`
