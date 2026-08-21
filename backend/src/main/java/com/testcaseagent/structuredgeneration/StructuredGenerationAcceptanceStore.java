@@ -15,6 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -34,7 +35,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * column or parameter for raw model JSON or Markdown. Validation happens before a transaction can
  * write business rows, and a transaction updates the attempt/work terminal state last.</p>
  *
- * [Req-ID]: REQ-STG-001, REQ-STG-006, REQ-FTG-003
+ * [Req-ID]: REQ-STG-001, REQ-STG-006, REQ-FTG-003, REQ-FTG-007, REQ-FTG-008, REQ-FTG-009
  */
 public final class StructuredGenerationAcceptanceStore {
     public static final int MAX_ATTEMPTS = 2;
@@ -212,14 +213,7 @@ public final class StructuredGenerationAcceptanceStore {
                 bind(claim.workItemId(), fact.factKey(), "REQUIREMENT_FACT", "EVIDENCE", fact.evidenceKeys());
             }
             for (RequirementMaterialReviewValidator.ReviewFinding finding : result.reviewFindings()) {
-                insertTaskScoped("review finding", () -> jdbc.update("""
-                        INSERT INTO structured_review_finding
-                        (work_item_id, task_id, finding_key, issue_type, description, test_design_impact, current_project_recommendation,
-                        design_center_guideline_recommendation, handling_level) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        claim.workItemId(), claim.taskId(), finding.findingKey(), finding.issueType(), finding.description(), finding.testDesignImpact(),
-                        finding.currentProjectRecommendation(), finding.designCenterGuidelineRecommendation(), finding.handlingLevel().name()));
-                bind(claim.workItemId(), finding.findingKey(), "REVIEW_FINDING", "EVIDENCE", finding.evidenceKeys());
+                persistReviewFinding(claim, finding);
             }
         });
         for (RequirementMaterialReviewValidator.RequirementFact fact : result.requirementFacts()) publishKey(workItem.registry(), StructuredKeyType.REQUIREMENT_FACT, fact.factKey());
@@ -303,13 +297,25 @@ public final class StructuredGenerationAcceptanceStore {
             for (FunctionalTestcaseResultValidator.Testcase testcase : result.testcases()) {
                 insertTaskScoped("test case", () -> jdbc.update("""
                         INSERT INTO structured_test_case
-                        (work_item_id, task_id, case_key, title, preconditions_json, case_status, missing_information_json)
-                        VALUES (?, ?, ?, ?, CAST(? AS JSON), ?, CAST(? AS JSON))""", claim.workItemId(), claim.taskId(), testcase.caseKey(), testcase.title(),
-                        json(testcase.preconditions()), testcase.caseStatus().name(), json(testcase.missingInformation())));
+                        (work_item_id, task_id, case_key, name_text, title, priority, preconditions_json,
+                         hardware_configuration_json, software_configuration_json, test_configuration_json, parameter_configuration_json,
+                         inputs_json, expected_results_json, evaluation_criteria, result_evaluation_criteria,
+                         termination_conditions_json, result_collection, author_name, author_date, case_status, missing_information_json)
+                        VALUES (?, ?, ?, ?, ?, ?, CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON),
+                                CAST(? AS JSON), CAST(? AS JSON), ?, ?, CAST(? AS JSON), ?, ?, ?, ?, CAST(? AS JSON))""",
+                        claim.workItemId(), claim.taskId(), testcase.caseKey(), testcase.name(), testcase.title(), testcase.priority().name(),
+                        json(testcase.preconditions()), json(testcase.initialization().hardwareConfiguration()),
+                        json(testcase.initialization().softwareConfiguration()), json(testcase.initialization().testConfiguration()),
+                        json(testcase.initialization().parameterConfiguration()), json(testcase.inputs()), json(testcase.expectedResults()),
+                        testcase.evaluationCriteria(), testcase.resultEvaluationCriteria(), json(testcase.terminationConditions()),
+                        testcase.resultCollection(), testcase.authoringInformation().author(), testcase.authoringInformation().date(),
+                        testcase.caseStatus().name(), json(testcase.missingInformation())));
                 for (FunctionalTestcaseResultValidator.Step step : testcase.steps()) jdbc.update("""
-                        INSERT INTO structured_test_case_step (work_item_id, case_key, step_no, action_text, expected_text)
-                        VALUES (?, ?, ?, ?, ?)
-                        """, claim.workItemId(), testcase.caseKey(), step.stepNo(), step.action(), step.expected());
+                        INSERT INTO structured_test_case_step
+                        (work_item_id, case_key, step_no, action_text, expected_text, evaluation_criteria, termination_or_error, result_collection)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """, claim.workItemId(), testcase.caseKey(), step.stepNo(), step.action(), step.expected(),
+                        step.evaluationCriteria(), step.terminationOrError(), step.resultCollection());
                 bind(claim.workItemId(), testcase.caseKey(), "TEST_CASE", "REQUIREMENT_FACT", testcase.requirementFactKeys());
                 bind(claim.workItemId(), testcase.caseKey(), "TEST_CASE", "EVIDENCE", testcase.evidenceKeys());
             }
@@ -514,6 +520,71 @@ public final class StructuredGenerationAcceptanceStore {
                 WHERE work_item_id = ? AND subject_key = ? AND subject_type = ? AND reference_type = ?
                 ORDER BY reference_key
                 """, String.class, workItemId, subjectKey, subjectType, referenceType);
+    }
+
+    /**
+     * Persists a review finding without letting a later bounded call create a second identity for one root cause.
+     *
+     * <p>The unique task/root-cause index is the only aggregation identity. The no-op upsert materializes (or locks)
+     * that identity before the explicit locking read, so a concurrent first write cannot be protected by a gap lock.
+     * A merged row retains its first verified bad example and pending proposal, while exact scope and evidence members
+     * are unioned without attempting to infer whether different descriptions mean the same business issue.</p>
+     */
+    private void persistReviewFinding(WorkClaim claim, RequirementMaterialReviewValidator.ReviewFinding finding) {
+        if (finding.rootCauseKind() == null) {
+            insertTaskScoped("review finding", () -> jdbc.update("""
+                    INSERT INTO structured_review_finding
+                    (work_item_id, task_id, finding_key, issue_type, description, test_design_impact, current_project_recommendation,
+                    design_center_guideline_recommendation, handling_level) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, claim.workItemId(), claim.taskId(), finding.findingKey(), finding.issueType(), finding.description(),
+                    finding.testDesignImpact(), finding.currentProjectRecommendation(),
+                    finding.designCenterGuidelineRecommendation(), finding.handlingLevel().name()));
+            bind(claim.workItemId(), finding.findingKey(), "REVIEW_FINDING", "EVIDENCE", finding.evidenceKeys());
+            return;
+        }
+        jdbc.update("""
+                INSERT INTO structured_review_finding
+                (work_item_id, task_id, finding_key, root_cause_kind, issue_type, description, test_design_impact,
+                 current_project_recommendation, design_center_guideline_recommendation, handling_level,
+                 affected_unit_keys_json, affected_scope_summary, bad_source_evidence_key, bad_source_quote,
+                 proposed_good_status, proposed_good_text)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE root_cause_kind = root_cause_kind
+                """, claim.workItemId(), claim.taskId(), finding.findingKey(), finding.rootCauseKind().name(),
+                finding.issueType(), finding.description(), finding.testDesignImpact(), finding.currentProjectRecommendation(),
+                finding.designCenterGuidelineRecommendation(), finding.handlingLevel().name(), json(finding.affectedScope().unitKeys()),
+                finding.affectedScope().summary(), finding.badSourceExample().evidenceKey(), finding.badSourceExample().quote(),
+                finding.proposedGoodExample().status().name(), finding.proposedGoodExample().text());
+        List<StoredReviewFinding> rows = jdbc.query("""
+                SELECT work_item_id, finding_key, affected_unit_keys_json, affected_scope_summary
+                FROM structured_review_finding
+                WHERE task_id = ? AND root_cause_kind = ? FOR UPDATE
+                """, (row, ignored) -> new StoredReviewFinding(row.getString("work_item_id"), row.getString("finding_key"),
+                stringList(row.getString("affected_unit_keys_json")), row.getString("affected_scope_summary")),
+                claim.taskId(), finding.rootCauseKind().name());
+        if (rows.size() != 1) {
+            throw new IllegalStateException("Task root-cause identity conflicts with an accepted review finding");
+        }
+        StoredReviewFinding stored = rows.get(0);
+        jdbc.update("""
+                UPDATE structured_review_finding
+                SET affected_unit_keys_json = CAST(? AS JSON), affected_scope_summary = ?
+                WHERE work_item_id = ? AND finding_key = ?
+                """, json(orderedUnion(stored.affectedUnitKeys(), finding.affectedScope().unitKeys())),
+                mergeExactText(stored.affectedScopeSummary(), finding.affectedScope().summary()),
+                stored.workItemId(), stored.findingKey());
+        bindIdempotently(stored.workItemId(), stored.findingKey(), "REVIEW_FINDING", "EVIDENCE", finding.evidenceKeys());
+    }
+
+    private static List<String> orderedUnion(List<String> first, List<String> second) {
+        LinkedHashSet<String> values = new LinkedHashSet<>(first);
+        values.addAll(second);
+        return values.stream().sorted().toList();
+    }
+
+    private static String mergeExactText(String first, String second) {
+        return java.util.stream.Stream.concat(first.lines(), second.lines())
+                .filter(value -> !value.isBlank()).distinct().sorted().collect(java.util.stream.Collectors.joining("\n"));
     }
 
     private int count(String sql, String value) {
@@ -755,6 +826,8 @@ public final class StructuredGenerationAcceptanceStore {
             String leaseOwner, Instant leaseExpiresAt, String acceptedResultSha256) { }
     private record CompletedRow(String status, String hash) { }
     private record StoredFunctionItem(String workItemId, String path, String description) { }
+    private record StoredReviewFinding(String workItemId, String findingKey, List<String> affectedUnitKeys,
+            String affectedScopeSummary) { }
     private record AcceptedReconciliation(String workItemId, String reconciliationKey) { }
     private record TargetWorkRow(String id, String identityKey, String skillName, String operationName, String status,
             Integer ordinalStart, Integer ordinalEnd, String materialKey, List<String> allowedEvidenceKeys,

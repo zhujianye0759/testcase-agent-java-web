@@ -15,6 +15,7 @@ import com.testcaseagent.web.TestCaseAgentApplication;
 import java.time.Clock;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -135,7 +136,7 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
     void acceptsObservedFact9439WhenEveryNarrativeItemIsACompleteParsedUnitFragment() {
         StructuredGenerationAcceptanceStore.WorkClaim claim = claimReviewWork();
         RequirementMaterialReviewValidator.RequirementFact grounded = new RequirementMaterialReviewValidator.RequirementFact(
-                "fact-943950fe000553b979502018f04c4c2f", "用户中心账号登录",
+                "fact-943950fe000553b979502018f04c4c2f", "用户中心→账号登录",
                 List.of("已注册且状态正常的用户"), List.of("用户在登录页提交账号和正确密码"),
                 List.of("账号", "正确密码"),
                 List.of("已注册且状态正常的用户在登录页提交账号和正确密码后，系统进入首页并显示当前用户名称"),
@@ -164,7 +165,8 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
         StructuredGenerationAcceptanceStore.WorkClaim review = store.claimNext("task-1", "worker-1").orElseThrow();
         store.acceptReview(review, new RequirementMaterialReviewValidator(),
                 new RequirementMaterialReviewValidator.WorkItem(
-                        liveRegistry, "material-1", "requirements_spec", List.of("evidence-1"), reviewEvidenceTexts()),
+                        liveRegistry, "material-1", "requirements_spec", List.of("evidence-1"),
+                        Map.of("evidence-1", reviewEvidenceTexts().get("evidence-1"))),
                 new RequirementMaterialReviewValidator.Result(List.of(fact("fact-confirmed", "事实显示名称")), List.of()));
 
         store.register(new StructuredGenerationAcceptanceStore.WorkRegistration("task-1", "2".repeat(64),
@@ -238,13 +240,149 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_reference_binding", Integer.class)).isZero();
 
         FunctionalTestcaseResultValidator.Result grounded = testcaseResult(
-                "账号登录", "用户必须已注册且状态正常", "用户在登录页提交账号和正确密码", "系统进入首页并显示当前用户名称");
+                "用户中心→账号登录", "用户必须已注册且状态正常", "用户在登录页提交账号和正确密码", "系统进入首页");
         store.acceptTestcases(claim, new FunctionalTestcaseResultValidator(), workItem, grounded);
 
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_test_point", Integer.class)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_test_case", Integer.class)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_test_case_step", Integer.class)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_reference_binding", Integer.class)).isEqualTo(4);
+    }
+
+    /** [Req-ID]: REQ-FTG-009 */
+    @Test
+    void persistsEveryFrozenHighGranularityTestcaseAndStepField() {
+        StructuredValidationRegistry registry = testcaseRegistry();
+        store.register(new StructuredGenerationAcceptanceStore.WorkRegistration(
+                "task-1", "7".repeat(64), "functional-testcase-design", "FUNCTIONAL_TESTCASE_DESIGN",
+                null, null, null, "testcase", List.of("evidence-1"), "function-1", "point-1"));
+        StructuredGenerationAcceptanceStore.WorkClaim claim = store.claimNext("task-1", "worker-1").orElseThrow();
+
+        FunctionalTestcaseResultValidator.Testcase testcase = highGranularityTestcase("case-high");
+
+        store.acceptTestcases(claim, new FunctionalTestcaseResultValidator(), groundedWorkItem(registry),
+                new FunctionalTestcaseResultValidator.Result("function-1", "point-1", List.of(testcase)));
+
+        assertSoftly(softly -> {
+            softly.assertThat(jdbc.queryForObject("SELECT name_text FROM structured_test_case WHERE case_key = 'case-high'", String.class))
+                    .isEqualTo("用户中心→账号登录");
+            softly.assertThat(jdbc.queryForObject("SELECT priority FROM structured_test_case WHERE case_key = 'case-high'", String.class))
+                    .isEqualTo("HIGH");
+            softly.assertThat(jdbc.queryForObject("SELECT inputs_json FROM structured_test_case WHERE case_key = 'case-high'", String.class))
+                    .contains("账号", "EQUIVALENCE_PARTITIONING");
+            softly.assertThat(jdbc.queryForObject("SELECT expected_results_json FROM structured_test_case WHERE case_key = 'case-high'", String.class))
+                    .contains("系统进入首页");
+            softly.assertThat(jdbc.queryForObject("SELECT evaluation_criteria FROM structured_test_case WHERE case_key = 'case-high'", String.class))
+                    .isEqualTo(FunctionalTestcaseResultValidator.EVALUATION);
+            softly.assertThat(jdbc.queryForObject("SELECT result_evaluation_criteria FROM structured_test_case WHERE case_key = 'case-high'", String.class))
+                    .isEqualTo(FunctionalTestcaseResultValidator.RESULT_EVALUATION);
+            softly.assertThat(jdbc.queryForObject("SELECT result_collection FROM structured_test_case WHERE case_key = 'case-high'", String.class))
+                    .isEqualTo(FunctionalTestcaseResultValidator.RESULT_COLLECTION);
+            softly.assertThat(jdbc.queryForObject("SELECT author_name FROM structured_test_case WHERE case_key = 'case-high'", String.class))
+                    .isEmpty();
+            softly.assertThat(jdbc.queryForObject("SELECT evaluation_criteria FROM structured_test_case_step WHERE case_key = 'case-high'", String.class))
+                    .isEqualTo(FunctionalTestcaseResultValidator.STEP_EVALUATION);
+            softly.assertThat(jdbc.queryForObject("SELECT termination_or_error FROM structured_test_case_step WHERE case_key = 'case-high'", String.class))
+                    .isEqualTo(FunctionalTestcaseResultValidator.TERMINATION_OR_ERROR);
+            softly.assertThat(jdbc.queryForObject("SELECT result_collection FROM structured_test_case_step WHERE case_key = 'case-high'", String.class))
+                    .isEqualTo(FunctionalTestcaseResultValidator.RESULT_COLLECTION);
+        });
+    }
+
+    /** [Req-ID]: REQ-FTG-009 */
+    @Test
+    void rollsBackTheTestPointAndEveryHighGranularityRowWhenCaseStorageFails() {
+        StructuredValidationRegistry registry = testcaseRegistry();
+        store.register(new StructuredGenerationAcceptanceStore.WorkRegistration(
+                "task-1", "8".repeat(64), "functional-testcase-design", "FUNCTIONAL_TESTCASE_DESIGN",
+                null, null, null, "testcase", List.of("evidence-1"), "function-1", "point-1"));
+        StructuredGenerationAcceptanceStore.WorkClaim claim = store.claimNext("task-1", "worker-1").orElseThrow();
+
+        assertThatThrownBy(() -> store.acceptTestcases(claim, new FunctionalTestcaseResultValidator(), groundedWorkItem(registry),
+                new FunctionalTestcaseResultValidator.Result("function-1", "point-1", List.of(highGranularityTestcase("x".repeat(129))))))
+                .isInstanceOf(RuntimeException.class);
+        assertSoftly(softly -> {
+            softly.assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_test_point", Integer.class)).isZero();
+            softly.assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_test_case", Integer.class)).isZero();
+            softly.assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_test_case_step", Integer.class)).isZero();
+            softly.assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_reference_binding", Integer.class)).isZero();
+        });
+    }
+
+    /** [Req-ID]: REQ-FTG-007, REQ-FTG-008 */
+    @Test
+    void mergesTheSameRootCauseAcrossSlicesAndStoreRestartWithoutLosingEvidenceOrScope() {
+        StructuredGenerationAcceptanceStore.WorkClaim first = claimReviewWork();
+        store.acceptReview(first, new RequirementMaterialReviewValidator(), reviewItem("evidence-1"),
+                reviewResult("finding-first", RequirementMaterialReviewValidator.RootCauseKind.MISSING_BUSINESS_RULE, "evidence-1"));
+        store.register(reviewWork("b".repeat(64), "evidence-2"));
+        StructuredGenerationAcceptanceStore.WorkClaim second = store.claimNext("task-1", "worker-2").orElseThrow();
+        StructuredGenerationAcceptanceStore restarted = new StructuredGenerationAcceptanceStore(
+                jdbc, new TransactionTemplate(transactionManager), Clock.systemUTC());
+        restarted.acceptReview(second, new RequirementMaterialReviewValidator(), reviewItem("evidence-2"),
+                reviewResult("finding-second", RequirementMaterialReviewValidator.RootCauseKind.MISSING_BUSINESS_RULE, "evidence-2"));
+
+        assertSoftly(softly -> {
+            softly.assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_review_finding WHERE task_id = 'task-1' "
+                    + "AND root_cause_kind = 'MISSING_BUSINESS_RULE'", Integer.class)).isEqualTo(1);
+            softly.assertThat(jdbc.queryForObject("SELECT affected_unit_keys_json FROM structured_review_finding "
+                    + "WHERE task_id = 'task-1' AND root_cause_kind = 'MISSING_BUSINESS_RULE'", String.class))
+                    .contains("evidence-1", "evidence-2");
+            softly.assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_reference_binding WHERE subject_type = 'REVIEW_FINDING' "
+                    + "AND reference_type = 'EVIDENCE'", Integer.class)).isEqualTo(2);
+            softly.assertThat(jdbc.queryForObject("SELECT bad_source_evidence_key FROM structured_review_finding "
+                    + "WHERE task_id = 'task-1' AND root_cause_kind = 'MISSING_BUSINESS_RULE'", String.class)).isEqualTo("evidence-1");
+            softly.assertThat(jdbc.queryForObject("SELECT proposed_good_status FROM structured_review_finding "
+                    + "WHERE task_id = 'task-1' AND root_cause_kind = 'MISSING_BUSINESS_RULE'", String.class))
+                    .isEqualTo("PENDING_CONFIRMATION");
+        });
+    }
+
+    /** [Req-ID]: REQ-FTG-008 */
+    @Test
+    void keepsDifferentRootCausesSeparateAndMergesConcurrentWritesForOneRoot() throws Exception {
+        store.register(reviewWork("b".repeat(64), "evidence-1"));
+        StructuredGenerationAcceptanceStore.WorkClaim first = store.claimNext("task-1", "worker-1").orElseThrow();
+        store.register(reviewWork("c".repeat(64), "evidence-2"));
+        StructuredGenerationAcceptanceStore.WorkClaim second = store.claimNext("task-1", "worker-2").orElseThrow();
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService workers = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> firstWrite = workers.submit(acceptReviewAfter(start, store, first, "finding-one",
+                    RequirementMaterialReviewValidator.RootCauseKind.MISSING_FUNCTION_SCOPE, "evidence-1"));
+            Future<?> secondWrite = workers.submit(acceptReviewAfter(start, store, second, "finding-two",
+                    RequirementMaterialReviewValidator.RootCauseKind.MISSING_FUNCTION_SCOPE, "evidence-2"));
+            start.countDown();
+            firstWrite.get();
+            secondWrite.get();
+        } finally {
+            workers.shutdownNow();
+        }
+        store.register(reviewWork("d".repeat(64), "evidence-1"));
+        StructuredGenerationAcceptanceStore.WorkClaim distinct = store.claimNext("task-1", "worker-3").orElseThrow();
+        store.acceptReview(distinct, new RequirementMaterialReviewValidator(), reviewItem("evidence-1"),
+                reviewResult("finding-distinct", RequirementMaterialReviewValidator.RootCauseKind.AMBIGUOUS_REQUIREMENT, "evidence-1"));
+
+        assertSoftly(softly -> {
+            softly.assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_review_finding WHERE task_id = 'task-1'", Integer.class))
+                    .isEqualTo(2);
+            softly.assertThat(jdbc.queryForObject("SELECT affected_unit_keys_json FROM structured_review_finding WHERE task_id = 'task-1' "
+                    + "AND root_cause_kind = 'MISSING_FUNCTION_SCOPE'", String.class)).contains("evidence-1", "evidence-2");
+        });
+    }
+
+    /** [Req-ID]: REQ-FTG-009 */
+    @Test
+    void rollsBackEarlierRootCauseMergeWhenALaterFrozenFindingCannotBeStored() {
+        StructuredGenerationAcceptanceStore.WorkClaim claim = claimReviewWork();
+        RequirementMaterialReviewValidator.Result result = new RequirementMaterialReviewValidator.Result(List.of(), List.of(
+                frozenFinding("finding-first", RequirementMaterialReviewValidator.RootCauseKind.MISSING_BUSINESS_RULE, "evidence-1"),
+                frozenFinding("x".repeat(129), RequirementMaterialReviewValidator.RootCauseKind.AMBIGUOUS_REQUIREMENT, "evidence-1")));
+
+        assertThatThrownBy(() -> store.acceptReview(claim, new RequirementMaterialReviewValidator(), reviewItem("evidence-1"), result))
+                .isInstanceOf(RuntimeException.class);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_review_finding", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_reference_binding", Integer.class)).isZero();
     }
 
     /** [Req-ID]: REQ-STG-006 */
@@ -425,7 +563,8 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
                 .register(StructuredKeyType.MATERIAL, "material-1")
                 .registerEvidence(new StructuredEvidence("evidence-1", "task-other", "material-1", false, false, true));
         RequirementMaterialReviewValidator.WorkItem foreign = new RequirementMaterialReviewValidator.WorkItem(
-                otherTaskRegistry, "material-1", "requirements_spec", List.of("evidence-1"), reviewEvidenceTexts());
+                otherTaskRegistry, "material-1", "requirements_spec", List.of("evidence-1"),
+                Map.of("evidence-1", reviewEvidenceTexts().get("evidence-1")));
 
         assertThatThrownBy(() -> store.acceptReview(claim, new RequirementMaterialReviewValidator(), foreign,
                 new RequirementMaterialReviewValidator.Result(List.of(fact("fact-1")), List.of())))
@@ -643,6 +782,14 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(DISTINCT subject_type) FROM structured_reference_binding WHERE subject_key = 'shared-key'", Integer.class)).isEqualTo(2);
     }
 
+    private static StructuredValidationRegistry testcaseRegistry() {
+        return StructuredValidationRegistry.forTask("task-1")
+                .register(StructuredKeyType.FUNCTION, "function-1")
+                .register(StructuredKeyType.TEST_POINT, "point-1")
+                .register(StructuredKeyType.REQUIREMENT_FACT, "fact-1")
+                .registerEvidence(new StructuredEvidence("evidence-1", "task-1", "material-1", false, false, true));
+    }
+
     private static FunctionalTestcaseResultValidator.WorkItem groundedWorkItem(StructuredValidationRegistry registry) {
         FunctionalTestcaseResultValidator.FormalSupport support = new FunctionalTestcaseResultValidator.FormalSupport(
                 "fact-1", "用户中心→账号登录", List.of("已注册且状态正常的用户"),
@@ -668,25 +815,54 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
         return new FunctionalTestcaseResultValidator.Result("function-1", "point-1", List.of(testcase));
     }
 
+    private static FunctionalTestcaseResultValidator.Testcase highGranularityTestcase(String caseKey) {
+        return new FunctionalTestcaseResultValidator.Testcase(
+                caseKey, "用户中心→账号登录", "用户中心→账号登录", FunctionalTestcaseResultValidator.Priority.HIGH,
+                List.of("用户必须已注册且状态正常"), FunctionalTestcaseResultValidator.Initialization.empty(),
+                List.of(new FunctionalTestcaseResultValidator.Input("账号", FunctionalTestcaseResultValidator.InputNature.VALID,
+                        FunctionalTestcaseResultValidator.InputSource.MANUAL,
+                        FunctionalTestcaseResultValidator.TestMethod.EQUIVALENCE_PARTITIONING,
+                        FunctionalTestcaseResultValidator.Authenticity.REAL, "")),
+                List.of(new FunctionalTestcaseResultValidator.Step(1, "用户在登录页提交账号和正确密码", "系统进入首页",
+                        FunctionalTestcaseResultValidator.STEP_EVALUATION,
+                        FunctionalTestcaseResultValidator.TERMINATION_OR_ERROR,
+                        FunctionalTestcaseResultValidator.RESULT_COLLECTION)),
+                List.of("系统进入首页"), FunctionalTestcaseResultValidator.EVALUATION,
+                FunctionalTestcaseResultValidator.RESULT_EVALUATION, List.of(), FunctionalTestcaseResultValidator.RESULT_COLLECTION,
+                FunctionalTestcaseResultValidator.AuthoringInformation.empty(), List.of("fact-1"), List.of("evidence-1"),
+                FunctionalTestcaseResultValidator.CaseStatus.FORMAL, List.of());
+    }
+
     private static StructuredGenerationAcceptanceStore.WorkRegistration reviewWork(String identityKey) {
+        return reviewWork(identityKey, "evidence-1");
+    }
+
+    private static StructuredGenerationAcceptanceStore.WorkRegistration reviewWork(String identityKey, String evidenceKey) {
         return new StructuredGenerationAcceptanceStore.WorkRegistration("task-1", identityKey,
                 "requirement-material-quality-review", 33, 64, "material-1", "requirements slice 33-64",
-                List.of("evidence-1"), null, null);
+                List.of(evidenceKey), null, null);
     }
     private StructuredGenerationAcceptanceStore.WorkClaim claimReviewWork() {
         store.register(reviewWork("a".repeat(64)));
         return store.claimNext("task-1", "worker-1").orElseThrow();
     }
     private static RequirementMaterialReviewValidator.WorkItem reviewItem() {
+        return reviewItem("evidence-1");
+    }
+
+    private static RequirementMaterialReviewValidator.WorkItem reviewItem(String evidenceKey) {
         StructuredValidationRegistry registry = StructuredValidationRegistry.forTask("task-1")
                 .register(StructuredKeyType.MATERIAL, "material-1")
-                .registerEvidence(new StructuredEvidence("evidence-1", "task-1", "material-1", false, false, true));
+                .registerEvidence(new StructuredEvidence(evidenceKey, "task-1", "material-1", false, false, true));
         return new RequirementMaterialReviewValidator.WorkItem(
-                registry, "material-1", "requirements_spec", List.of("evidence-1"), reviewEvidenceTexts());
+                registry, "material-1", "requirements_spec", List.of(evidenceKey),
+                Map.of(evidenceKey, reviewEvidenceTexts().get(evidenceKey)));
     }
     private static Map<String, String> reviewEvidenceTexts() {
-        return Map.of("evidence-1", "用户中心→账号登录 功能 role 提交订单 取消订单 事实显示名称 "
-                + "已注册且状态正常的用户在登录页提交账号和正确密码后，系统进入首页并显示当前用户名称");
+        return Map.of(
+                "evidence-1", "用户中心→账号登录 功能 role 提交订单 取消订单 事实显示名称 "
+                        + "已注册且状态正常的用户在登录页提交账号和正确密码后，系统进入首页并显示当前用户名称",
+                "evidence-2", "订单最终功能允许提交订单");
     }
     private static RequirementMaterialReviewValidator.RequirementFact fact(String key) {
         return fact(key, "功能");
@@ -739,5 +915,34 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
     private static RequirementMaterialReviewValidator.ReviewFinding finding(String key) {
         return new RequirementMaterialReviewValidator.ReviewFinding(key, "ambiguity", "description", List.of("evidence-1"),
                 "impact", "project recommendation", "guideline recommendation", RequirementMaterialReviewValidator.HandlingLevel.IMPROVEMENT);
+    }
+
+    private static Callable<Void> acceptReviewAfter(CountDownLatch start, StructuredGenerationAcceptanceStore acceptanceStore,
+            StructuredGenerationAcceptanceStore.WorkClaim claim, String findingKey,
+            RequirementMaterialReviewValidator.RootCauseKind rootCauseKind, String evidenceKey) {
+        return () -> {
+            start.await();
+            acceptanceStore.acceptReview(claim, new RequirementMaterialReviewValidator(), reviewItem(evidenceKey),
+                    reviewResult(findingKey, rootCauseKind, evidenceKey));
+            return null;
+        };
+    }
+
+    private static RequirementMaterialReviewValidator.Result reviewResult(String findingKey,
+            RequirementMaterialReviewValidator.RootCauseKind rootCauseKind, String evidenceKey) {
+        return new RequirementMaterialReviewValidator.Result(List.of(), List.of(frozenFinding(findingKey, rootCauseKind, evidenceKey)));
+    }
+
+    private static RequirementMaterialReviewValidator.ReviewFinding frozenFinding(String findingKey,
+            RequirementMaterialReviewValidator.RootCauseKind rootCauseKind, String evidenceKey) {
+        String quote = "evidence-1".equals(evidenceKey) ? "已注册且状态正常的用户" : "订单最终功能";
+        return new RequirementMaterialReviewValidator.ReviewFinding(findingKey, rootCauseKind, "业务规则缺失",
+                new RequirementMaterialReviewValidator.AffectedScope(List.of(evidenceKey), "当前范围缺少业务规则说明。"),
+                new RequirementMaterialReviewValidator.BadSourceExample(evidenceKey, quote),
+                new RequirementMaterialReviewValidator.ProposedGoodExample(
+                        RequirementMaterialReviewValidator.ProposalStatus.PENDING_CONFIRMATION, "建议补充明确业务规则，待需求方确认。"),
+                "当前材料缺少明确业务规则说明。", List.of(evidenceKey), "测试设计无法覆盖完整业务规则。",
+                "当前项目应补充可执行的业务规则。", "设计中心应固化业务规则编写要求。",
+                RequirementMaterialReviewValidator.HandlingLevel.IMPROVEMENT);
     }
 }

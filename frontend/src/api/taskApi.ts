@@ -86,6 +86,9 @@ export interface StructuredGenerationResult {
     issueType: string
     description: string
     handlingLevel: 'BLOCKING' | 'CONTINUE_INCOMPLETE' | 'IMPROVEMENT'
+    affectedScope: string
+    badSourceExample: string
+    proposedGoodExample: string
     testDesignImpact: string
     currentProjectRecommendation: string
     designCenterGuidelineRecommendation: string
@@ -105,10 +108,39 @@ export interface StructuredGenerationResult {
     missingInformation: string[]
     formalCoverageSatisfied: boolean
     testcases: Array<{
+      name: string
       title: string
+      priority: string
       status: 'FORMAL' | 'PENDING_CONFIRMATION'
       preconditions: string[]
-      steps: Array<{ stepNo: number, action: string, expected: string }>
+      initialization: {
+        hardwareConfiguration: string[]
+        softwareConfiguration: string[]
+        testConfiguration: string[]
+        parameterConfiguration: string[]
+      }
+      inputs: Array<{
+        content: string
+        nature: string
+        source: string
+        method: string
+        authenticity: string
+        sequence: string
+      }>
+      steps: Array<{
+        stepNo: number
+        action: string
+        expected: string
+        evaluationCriteria: string
+        terminationOrError: string
+        resultCollection: string
+      }>
+      expectedResults: string[]
+      evaluationCriteria: string
+      resultEvaluationCriteria: string
+      terminationConditions: string[]
+      resultCollection: string
+      authoringInformation: { author: string, date: string }
       requirementSummaries: string[]
       missingInformation: string[]
     }>

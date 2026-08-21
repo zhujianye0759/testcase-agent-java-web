@@ -42,7 +42,7 @@ Java 内部 `WorkItem` 增加按 fact key 绑定的正式支持对象，包含�
 
 对每条 formal 用例分别检查 title、每条 precondition、每个 step.action 和 step.expected。校验先执行 Unicode NFKC、ASCII 大小写和空白/标点规范化，再按字段语义只接受绑定支持闭包中的直接片段：标题对应 function；前提对应 roles、trigger conditions、business rules、permissions 和状态前置；动作对应 trigger conditions 与 inputs；预期对应 outputs、state changes、exception handling 和 dependencies。绑定 parsed-unit 只可证明候选完整业务片段确实原样出现，不能用零散字符拼接新断言。
 
-允许的固定包装仅限不携带业务含义、按字段定义的前缀：title 为“验证”“确认”“正常”，precondition 为“前提：”“前置条件：”，action 为“操作：”“执行：”，expected 为“预期：”“预期结果：”。除 title 可连续移除多个既有结构前缀外，其余字段最多移除一个对应前缀。删除包装后，剩余完整业务片段必须由一个允许来源完整覆盖，不能用零散词语拼接新断言。不会维护“用户名、手机号、Token”等禁词表；同一文字如果在相应正式来源中明确出现即可通过。
+早期四字段接缝曾允许移除“验证/确认/正常/前提/操作/预期”等结构前缀；2026-08-22 冻结高粒度合同明确取代该阶段性豁免。最终 formal reader field 不再剥离任意前缀，只能等于一个完整允许来源值、一个完整 evidence text，或 decision 9 列出的五条固定中文通用语句。不会维护“用户名、手机号、Token”等禁词表；同一文字如果在相应正式来源中明确出现即可通过。
 
 该规则有意保守：Java 不证明同义改写或隐含推理。无法按直接片段确定的有价值内容必须由模型返回为 `pending_confirmation` 并写明缺失信息，不能算 formal 覆盖。
 
@@ -58,7 +58,7 @@ KEE 已在现有 Skill 内加强直接依据约束，模型可以在首次结果
 
 ### 6. 将正式支持正文作为独立、最小的 KEE 业务输入
 
-`FunctionalTestcaseDesignInput` 增加 `formal_supports` 数组，并定义独立不可变 input `FormalSupport`。每项严格包含 `fact_key`、`function`、`roles`、`trigger_conditions`、`inputs`、`business_rules`、`outputs`、`permissions`、`state_changes`、`exception_handling`、`external_dependencies` 和 `evidence_texts`；不得混入 validator、数据库或投影字段。
+`FunctionalTestcaseDesignInput` 增加 `formal_supports` 数组，并定义独立不可变 input `FormalSupport`。每项严格包含 `fact_key`、`function`、`roles`、`trigger_conditions`、`inputs`、`business_rules`、`outputs`、`permissions`、`state_changes`、`exception_handling`、`external_dependencies`、support 级 `evidence_keys` 和 `evidence_texts`；不得混入 validator、数据库或投影字段。该字段清单由后续冻结合同补充 support 级 evidence identity，取代早期仅传正文的阶段性形状。
 
 coordinator 只从同一 task 已验收的 `AcceptedFact` 构造该数组。支持项按当前 `test_point.requirement_fact_keys` 的确定顺序选择；`evidence_texts` 只包含该事实已绑定且同时属于当前 `test_point.evidence_keys` 闭包的 parsed-unit 正文，按冻结 evidence key 顺序去重。缺失 fact、空 formal supports、越界 evidence key 或正文缺失均在调用 KEE 前失败关闭。`testPoint.description` 只描述测试点，不是正式正文来源。
 
@@ -74,6 +74,32 @@ KEE 与 Java 使用同一类别映射：title 只从 `function` 复制；precond
 
 正向控制采用同一受控任务的 `fact-9439...`：其 function、role、trigger、input、整句 rule、output、permission 和 state 都能在 cited parsed-unit 中按上述归一化规则连续找到。该规则不改变 testcase validator，也不要求修改 KEE 结果字段。
 
+### 8. 冻结一个高粒度用例接口，不建立第二套投影
+
+`FunctionalTestcaseDesignInput` 增加可选 `authoring_information`；每个 `FormalSupport` 增加非空 `evidence_keys`。支持项 fact key 与测试点 requirement-fact key 集合闭合，每项 evidence key 属于测试点证据闭包，所有支持项 evidence key 并集精确等于测试点 evidence key 集合。evidence key 与 evidence text 必须按当前测试点 evidence key 顺序成对恢复；两个不同 key 即使正文完全相同也不得按正文去重或丢失映射。general-experience 必须显式发送空 `formal_supports`，formal_requirement 必须发送非空完整闭包。
+
+`FunctionalTestcaseDesignResult.Testcase` 在既有键和状态字段上原位增加 `name`、`priority`、四类 `initialization` 数组、类型化 `inputs`、增强 `steps`、`expected_results`、两类评价标准、`termination_conditions`、`result_collection` 和 `authoring_information`。function path 继续由 Java 已确认功能映射派生，结果中不接受模型生成的 path。缺少来源的数组保持空；请求提供 author/date 时结果必须精确回显，未提供时两者必须为空字符串。
+
+输入枚举、优先级、显式空数组、step 1 起连续编号和 exact JSON 字段由严格 DTO/Wire 测试锁定。Java 不自动填充缺失字段、不裁剪数组、不接受部分结果。
+
+### 9. 正式读者字段采用完整值相等，不复用 fact 的连续子串规则
+
+requirement fact 和坏例 quote 是“较大 parsed-unit 中的连续片段”，因此使用 NFKC、大小写和空白规范化后的连续包含，同时保留标点边界。正式 testcase 的 reader field 则必须等于一个完整的、按类别允许的 support 值或完整 evidence_text；不得把“账号登录成功”缩成“登录”，不得跨类别搬运或拼接。
+
+只有下列五条不含业务含义的固定中文语句可以脱离业务来源出现：`实际结果满足本步骤预期结果。`、`系统服务终止，或执行过程中无法执行下一步操作。`、`记录实际结果、提示信息及必要证据。`、`满足前提和约束且未触发终止条件，逐步执行并记录结果。`、`全部预期结果满足则通过，任一不满足则不通过。`。除此之外，初始化、输入、步骤评价/终止/采集、总体预期、总体评价和终止条件中的业务内容必须完整来自当前 testcase 选择的 support/evidence 闭包。
+
+### 10. 评审 finding 是只读评审事实，不能升级为正式依据
+
+每个 finding 增加冻结的 13 类 `root_cause_kind`、`affected_scope`、`bad_source_example`、`proposed_good_example`。同一有界响应内 root cause 重复即整结果拒绝；影响单元必须是 finding evidence 子集，坏例 quote 必须连续存在于指定 parsed-unit，建议好例状态只能为 `pending_confirmation` 且中文文本必须包含“待需求方确认”。issue type、description、影响范围 summary、测试设计影响和两个 recommendation 均必须含中文分析；英文只允许真实坏例原文或明确标注的来源引用。
+
+task 级存储以 `(task_id, root_cause_kind)` 作为根因聚合身份。跨有界调用的相同根因在事务内合并 evidence/affected scope，保留至少一个真实坏例和一个待确认好例；不同 root cause 绝不合并。合并后的 proposed good example、recommendation 和 bad example 只进入评审投影，不能进入 accepted fact、test point、testcase 或正式覆盖。
+
+### 11. 持久化、详情和 Excel 使用同一验收记录
+
+在现有 V12 之后使用首个空闲 Flyway 版本，仅增加表、可空列或 JSON 列与唯一索引，不修改已应用迁移或历史数据。validator 对完整 result 全部通过后才进入一个事务写入 testcase/finding 及引用；任一字段、引用、合并冲突或数据库失败均零部分接收。重启恢复只读取已验收持久化字段，不能依赖内存 registry 或刚收到的模型对象。
+
+任务详情 API 和 `StructuredWorkbookExporter` 读取同一持久化投影。页面使用现有详情页 token/组件显示初始化、输入、逐步动作/预期/评价/异常/采集、总体预期、前提、终止、两类评价、作者日期、formal/pending 与中文来源说明。Excel 仍恰好两个 Sheet：`需求与功能清单审查发现` 和 `测试用例`；评审按根因一行，高粒度用例字段以读者可执行的中文多行文本导出。两处均不得展示 raw JSON/Markdown、内部枚举、unit/evidence/fact/case 等机器键或凭据，并继续执行公式注入防护。
+
 ## Risks / Trade-offs
 
 - **合法同义改写被拒绝** → 这是失败关闭的预期代价；模型可保留为待确认候选，正式内容使用来源直接片段。
@@ -84,7 +110,7 @@ KEE 与 Java 使用同一类别映射：title 只从 `function` 复制；precond
 
 ## Migration Plan
 
-无需数据库迁移。先加入 RED，再扩充 Java→KEE 输入 DTO、HTTP 合同和 coordinator 正文装配；现有内部恢复投影和 validator 保持最终验收职责。通过聚焦与 MySQL/Testcontainers 回归且 KEE 对应资产 GREEN 后才能部署。既有完成任务和制品不重写，新规则只约束后续接收。
+先加入 DTO/validator RED，再新增 V12 之后首个空闲的增量 Flyway 迁移，扩充原子接收和耐久恢复，最后接入详情与双 Sheet Excel。迁移不得修改已应用 V10/V11/V12、不得人工修改 Flyway history、不得重写既有完成任务或制品。通过聚焦与 MySQL/Testcontainers、页面/Excel、旧路径和 OpenSpec 门禁后，才从当前干净 worktree 构建并替换 Java 后端与前端；KEE 的构建和部署由 KEE 主任务负责。
 
 ## Open Questions
 

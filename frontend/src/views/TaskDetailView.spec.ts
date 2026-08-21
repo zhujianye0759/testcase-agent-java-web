@@ -141,7 +141,8 @@ describe('generation task detail', () => {
             },
             reviewFindings: [{
               sourceLabel: '需求规格说明书', subject: '订单提交', issueType: '边界未说明', description: '未说明最大订单金额。',
-              handlingLevel: 'CONTINUE_INCOMPLETE', testDesignImpact: '边界用例待确认', currentProjectRecommendation: '确认最大金额',
+              handlingLevel: 'CONTINUE_INCOMPLETE', affectedScope: '订单金额校验范围', badSourceExample: '材料只写了金额',
+              proposedGoodExample: '待需求方确认：补充最大金额及处理规则', testDesignImpact: '边界用例待确认', currentProjectRecommendation: '确认最大金额',
               designCenterGuidelineRecommendation: '补充金额边界模板',
             }],
             reconciliations: [{
@@ -152,8 +153,13 @@ describe('generation task detail', () => {
               functionName: '提交订单', type: 'BOUNDARY_VALUE', description: '最大金额边界', basis: 'GENERAL_EXPERIENCE',
               missingInformation: ['需求未给出最大金额'], formalCoverageSatisfied: false,
               testcases: [{
-                title: '订单金额上限候选', status: 'PENDING_CONFIRMATION', preconditions: ['已登录'],
-                steps: [{ stepNo: 1, action: '输入候选上限', expected: '系统按确认后的规则处理' }],
+                name: '订单金额边界候选场景', title: '订单金额上限候选', priority: '高', status: 'PENDING_CONFIRMATION', preconditions: ['已登录'],
+                initialization: { hardwareConfiguration: ['办公电脑'], softwareConfiguration: ['浏览器'], testConfiguration: ['测试环境'], parameterConfiguration: ['订单参数'] },
+                inputs: [{ content: '候选上限', nature: '边界值', source: '人工输入', method: '边界值分析', authenticity: '模拟数据', sequence: '先填写金额' }],
+                steps: [{ stepNo: 1, action: '输入候选上限', expected: '系统按确认后的规则处理', evaluationCriteria: '实际结果满足本步骤预期结果。', terminationOrError: '系统无法继续操作', resultCollection: '记录实际结果、提示信息及必要证据。' }],
+                expectedResults: ['系统按确认后的规则处理'], evaluationCriteria: '满足前提和约束且未触发终止条件，逐步执行并记录结果。',
+                resultEvaluationCriteria: '全部预期结果满足则通过，任一不满足则不通过。', terminationConditions: ['系统服务终止'],
+                resultCollection: '记录实际结果、提示信息及必要证据。', authoringInformation: { author: '测试人员', date: '2026-08-22' },
                 requirementSummaries: [], missingInformation: ['需求未给出最大金额'],
               }],
             }],
@@ -177,8 +183,21 @@ describe('generation task detail', () => {
     expect(wrapper.text()).toContain('测试点类型：边界值')
     expect(wrapper.text()).toContain('待确认候选')
     expect(result.text()).toContain('未说明最大订单金额')
+    expect(result.text()).toContain('订单金额校验范围')
+    expect(result.text()).toContain('材料只写了金额')
+    expect(result.text()).toContain('待需求方确认：补充最大金额及处理规则')
     expect(result.text()).toContain('纳入本次测试范围')
     expect(wrapper.text()).toContain('订单金额上限候选 · 待确认候选')
+    expect(wrapper.text()).toContain('订单金额边界候选场景')
+    expect(wrapper.text()).toContain('优先级：高')
+    expect(wrapper.text()).toContain('硬件初始化')
+    expect(wrapper.text()).toContain('办公电脑')
+    expect(wrapper.text()).toContain('候选上限（性质：边界值；来源：人工输入；方法：边界值分析；真实性：模拟数据；顺序：先填写金额）')
+    expect(wrapper.text()).toContain('逐步评价')
+    expect(wrapper.text()).toContain('系统无法继续操作')
+    expect(wrapper.text()).toContain('总体预期')
+    expect(wrapper.text()).toContain('结果评价标准')
+    expect(wrapper.text()).toContain('测试人员 · 2026-08-22')
     expect(wrapper.text()).not.toContain('旧 Markdown 行')
     expect(wrapper.text()).not.toContain('旧 Markdown 用例')
     expect(wrapper.find('[data-testid="business-progress"]').exists()).toBe(false)

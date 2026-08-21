@@ -118,6 +118,34 @@ class ApplicationDatabaseMigrationTest {
                 .containsEntry("script", "V12__persist_structured_generation_results.sql");
     }
 
+    /** [Req-ID]: REQ-FTG-008, REQ-FTG-009 */
+    @Test
+    void addsOnlyAdditiveHighGranularityStructuredDeliveryFields(@Autowired JdbcTemplate jdbcTemplate) {
+        assertThat(columnNames(jdbcTemplate, "structured_review_finding")).contains(
+                "root_cause_kind", "affected_unit_keys_json", "affected_scope_summary",
+                "bad_source_evidence_key", "bad_source_quote", "proposed_good_status", "proposed_good_text");
+        assertThat(columnNames(jdbcTemplate, "structured_test_case")).contains(
+                "name_text", "priority", "hardware_configuration_json", "software_configuration_json",
+                "test_configuration_json", "parameter_configuration_json", "inputs_json",
+                "expected_results_json", "evaluation_criteria", "result_evaluation_criteria",
+                "termination_conditions_json", "result_collection", "author_name", "author_date");
+        assertThat(columnNames(jdbcTemplate, "structured_test_case_step")).contains(
+                "evaluation_criteria", "termination_or_error", "result_collection");
+        assertThat(uniqueIndexNames(jdbcTemplate)).contains("uq_structured_review_finding_task_root_cause");
+    }
+
+    /** [Req-ID]: REQ-FTG-008, REQ-FTG-009 */
+    @Test
+    void highGranularitySchemaUsesTheNextFreeMigrationVersion(@Autowired JdbcTemplate jdbcTemplate) {
+        assertThat(jdbcTemplate.queryForMap("""
+                SELECT version, script
+                FROM flyway_schema_history
+                WHERE script = 'V13__extend_structured_delivery_contract.sql'
+                """))
+                .containsEntry("version", "13")
+                .containsEntry("script", "V13__extend_structured_delivery_contract.sql");
+    }
+
     /** [Req-ID]: REQ-STG-001 */
     @Test
     void productionContextRequiresTheRealStructuredAllCoordinator(

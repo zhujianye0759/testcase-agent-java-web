@@ -47,7 +47,7 @@ import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.function.Function;
 
-/** Production implementation of the parsed-units to structured two-sheet ALL workflow. [Req-ID]: REQ-STG-001~007, REQ-FTG-003 */
+/** Production implementation of the parsed-units to structured two-sheet ALL workflow. [Req-ID]: REQ-STG-001~007, REQ-FTG-003, REQ-FTG-006~009 */
 public final class DefaultStructuredAllGenerationCoordinator implements StructuredAllGenerationCoordinator {
     private static final String OWNER = "structured-all-worker";
     private final GenerationTaskRepository repository;
@@ -270,11 +270,13 @@ public final class DefaultStructuredAllGenerationCoordinator implements Structur
             if (fact == null) {
                 throw new IllegalStateException("Test point references a fact outside the persisted confirmed mapping");
             }
-            LinkedHashSet<String> evidenceTexts = new LinkedHashSet<>();
+            List<String> supportEvidenceKeys = new ArrayList<>();
+            List<String> evidenceTexts = new ArrayList<>();
             for (String evidenceKey : planned.testPoint().evidenceKeys()) {
                 String evidenceText = fact.evidenceTexts().get(evidenceKey);
                 if (evidenceText != null) {
                     resolvedEvidenceKeys.add(evidenceKey);
+                    supportEvidenceKeys.add(evidenceKey);
                     evidenceTexts.add(evidenceText);
                 }
             }
@@ -283,7 +285,8 @@ public final class DefaultStructuredAllGenerationCoordinator implements Structur
             }
             supports.add(new FormalSupport(fact.factKey(), fact.function(), fact.roles(), fact.triggerConditions(),
                     fact.inputs(), fact.businessRules(), fact.outputs(), fact.permissions(), fact.stateChanges(),
-                    fact.exceptionHandling(), fact.externalDependencies(), List.copyOf(evidenceTexts)));
+                    fact.exceptionHandling(), fact.externalDependencies(), List.copyOf(supportEvidenceKeys),
+                    List.copyOf(evidenceTexts)));
         }
         if (!resolvedEvidenceKeys.equals(new LinkedHashSet<>(planned.testPoint().evidenceKeys()))) {
             throw new IllegalStateException("Test point evidence is outside the persisted formal support closure");
@@ -392,9 +395,11 @@ public final class DefaultStructuredAllGenerationCoordinator implements Structur
                         fact.function(), fact.roles(), fact.triggerConditions(), fact.inputs(), fact.businessRules(), fact.outputs(),
                         fact.permissions(), fact.stateChanges(), fact.exceptionHandling(), fact.externalDependencies(), fact.evidenceKeys())).toList(),
                 result.reviewFindings().stream().map(finding -> new RequirementMaterialReviewValidator.ReviewFinding(
-                        taskKey("finding", taskId, identity, finding.findingKey()), finding.issueType(), finding.description(),
-                        finding.evidenceKeys(), finding.testDesignImpact(), finding.currentProjectRecommendation(),
-                        finding.designCenterGuidelineRecommendation(), finding.handlingLevel())).toList());
+                        taskKey("finding", taskId, identity, finding.findingKey()), finding.rootCauseKind(),
+                        finding.issueType(), finding.affectedScope(), finding.badSourceExample(), finding.proposedGoodExample(),
+                        finding.description(), finding.evidenceKeys(), finding.testDesignImpact(),
+                        finding.currentProjectRecommendation(), finding.designCenterGuidelineRecommendation(),
+                        finding.handlingLevel())).toList());
     }
 
     private FeatureReconciliationValidator.Result namespaceReconciliation(String taskId, String identity,
@@ -408,9 +413,11 @@ public final class DefaultStructuredAllGenerationCoordinator implements Structur
     private FunctionalTestcaseResultValidator.Result namespaceTestcases(String taskId, String identity,
             FunctionalTestcaseResultValidator.Result result) {
         return new FunctionalTestcaseResultValidator.Result(result.functionKey(), result.testPointKey(), result.testcases().stream().map(row ->
-                new FunctionalTestcaseResultValidator.Testcase(taskKey("case", taskId, identity, row.caseKey()), row.title(),
-                        row.preconditions(), row.steps(), row.requirementFactKeys(), row.evidenceKeys(), row.caseStatus(),
-                        row.missingInformation())).toList());
+                new FunctionalTestcaseResultValidator.Testcase(taskKey("case", taskId, identity, row.caseKey()),
+                        row.name(), row.title(), row.priority(), row.preconditions(), row.initialization(), row.inputs(),
+                        row.steps(), row.expectedResults(), row.evaluationCriteria(), row.resultEvaluationCriteria(),
+                        row.terminationConditions(), row.resultCollection(), row.authoringInformation(),
+                        row.requirementFactKeys(), row.evidenceKeys(), row.caseStatus(), row.missingInformation())).toList());
     }
 
     private static StructuredTestPointPlanner.FormalFact formalFact(StructuredGenerationAcceptanceStore.AcceptedFact fact) {

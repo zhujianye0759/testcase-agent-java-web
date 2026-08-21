@@ -96,6 +96,44 @@ class RequirementMaterialReviewValidatorTest {
                 item, new RequirementMaterialReviewValidator.Result(List.of(stitched), List.of())));
     }
 
+    /** [Req-ID]: REQ-FTG-005 */
+    @Test
+    void rejectsRequirementFactsThatOnlyMatchAfterPunctuationIsErased() {
+        RequirementMaterialReviewValidator.WorkItem item = new RequirementMaterialReviewValidator.WorkItem(
+                registryForPunctuation(), "material-1", "requirements_spec", List.of("evidence-1"),
+                Map.of("evidence-1", "账号；登录"));
+        RequirementMaterialReviewValidator.RequirementFact stitched = new RequirementMaterialReviewValidator.RequirementFact(
+                "fact-1", "账号登录", List.of(), List.of(), List.of(), List.of(), List.of(), List.of(),
+                List.of(), List.of(), List.of(), List.of("evidence-1"));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> validator.validate(item, new RequirementMaterialReviewValidator.Result(List.of(stitched), List.of())));
+    }
+
+    /** [Req-ID]: REQ-FTG-005 */
+    @Test
+    void acceptsACompletePendingChineseFindingAndRejectsItsDuplicateRootCause() {
+        RequirementMaterialReviewValidator.ReviewFinding finding = new RequirementMaterialReviewValidator.ReviewFinding(
+                "finding-1", RequirementMaterialReviewValidator.RootCauseKind.MISSING_EXCEPTION_HANDLING,
+                "异常处理缺失", new RequirementMaterialReviewValidator.AffectedScope(List.of("evidence-1"), "当前订单提交场景"),
+                new RequirementMaterialReviewValidator.BadSourceExample("evidence-1", "订单提交"),
+                new RequirementMaterialReviewValidator.ProposedGoodExample(
+                        RequirementMaterialReviewValidator.ProposalStatus.PENDING_CONFIRMATION,
+                        "建议需求写法（待需求方确认）：补充订单提交失败时的系统行为。"),
+                "材料未说明订单提交失败时的处理。", List.of("evidence-1"), "无法形成失败场景的正式预期。",
+                "请当前材料负责人补充失败处理。", "建议需求规格同时说明成功和失败结果。",
+                RequirementMaterialReviewValidator.HandlingLevel.CONTINUE_INCOMPLETE);
+
+        assertDoesNotThrow(() -> validator.validate(workItem("requirements_spec"),
+                new RequirementMaterialReviewValidator.Result(List.of(), List.of(finding))));
+        RequirementMaterialReviewValidator.ReviewFinding duplicate = new RequirementMaterialReviewValidator.ReviewFinding(
+                "finding-2", finding.rootCauseKind(), finding.issueType(), finding.affectedScope(), finding.badSourceExample(),
+                finding.proposedGoodExample(), finding.description(), finding.evidenceKeys(), finding.testDesignImpact(),
+                finding.currentProjectRecommendation(), finding.designCenterGuidelineRecommendation(), finding.handlingLevel());
+        assertThrows(IllegalArgumentException.class, () -> validator.validate(workItem("requirements_spec"),
+                new RequirementMaterialReviewValidator.Result(List.of(), List.of(finding, duplicate))));
+    }
+
     private static RequirementMaterialReviewValidator.WorkItem workItem(String contentType) {
         StructuredValidationRegistry registry = StructuredValidationRegistry.forTask("task-1")
                 .register(StructuredKeyType.MATERIAL, "material-1")
@@ -103,6 +141,12 @@ class RequirementMaterialReviewValidatorTest {
                 .registerEvidence(new StructuredEvidence("evidence-other", "task-1", "material-2", false, false, true));
         return new RequirementMaterialReviewValidator.WorkItem(registry, "material-1", contentType,
                 List.of("evidence-1"), Map.of("evidence-1", "submit application 订单提交"));
+    }
+
+    private static StructuredValidationRegistry registryForPunctuation() {
+        return StructuredValidationRegistry.forTask("task-1")
+                .register(StructuredKeyType.MATERIAL, "material-1")
+                .registerEvidence(new StructuredEvidence("evidence-1", "task-1", "material-1", false, false, true));
     }
 
     private static RequirementMaterialReviewValidator.RequirementFact fact() {

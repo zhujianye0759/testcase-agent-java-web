@@ -37,17 +37,79 @@ class StructuredWorkbookExporterTest {
         try (XSSFWorkbook workbook = new XSSFWorkbook(artifact.path().toFile())) {
             assertThat(java.util.stream.IntStream.range(0, workbook.getNumberOfSheets()).mapToObj(workbook::getSheetName).toList())
                     .containsExactly("需求与功能清单审查发现", "测试用例");
-            assertThat(headers(workbook, 0)).containsExactly("序号", "来源", "对象/功能点", "问题分类/核对结论", "说明");
-            assertThat(headers(workbook, 1)).containsExactly("用例名称", "功能模块", "状态", "前提约束", "执行步骤", "预期结果", "对应需求内容", "缺失信息");
+            assertThat(headers(workbook, 0)).containsExactly("序号", "来源", "对象/功能点", "问题分类/核对结论", "影响范围",
+                    "说明", "实际坏例", "建议好例（待需求方确认）", "测试设计影响", "当前项目建议", "设计中心建议", "严重程度", "证据来源");
+            assertThat(headers(workbook, 1)).containsExactly("用例名称", "用例标题", "功能模块", "优先级", "状态", "前提约束",
+                    "硬件初始化", "软件初始化", "测试初始化", "参数初始化", "测试输入", "执行步骤", "逐步预期", "逐步评价",
+                    "异常或终止提示", "逐步结果采集", "总体预期", "执行评价标准", "结果评价标准", "终止条件", "结果采集",
+                    "编写人", "编写日期", "对应需求内容", "缺失信息");
             assertThat(workbook.getSheetAt(0).getLastRowNum()).isEqualTo(2);
             assertThat(workbook.getSheetAt(0).getRow(1).getCell(0).getStringCellValue()).isEqualTo("1");
             assertThat(workbook.getSheetAt(0).getRow(1).getCell(1).getStringCellValue()).isEqualTo("功能核对");
             assertThat(workbook.getSheetAt(0).getRow(1).getCell(2).getStringCellValue()).isEqualTo("订单查询");
-            assertThat(workbook.getSheetAt(0).getRow(1).getCell(4).getStringCellValue()).doesNotContain("finding-key-1");
-            assertThat(workbook.getSheetAt(1).getRow(1).getCell(2).getStringCellValue()).isEqualTo("formal");
-            assertThat(workbook.getSheetAt(1).getRow(2).getCell(2).getStringCellValue()).isEqualTo("pending_confirmation");
+            assertThat(workbook.getSheetAt(0).getRow(1).getCell(5).getStringCellValue()).doesNotContain("finding-key-1");
+            assertThat(workbook.getSheetAt(1).getRow(1).getCell(4).getStringCellValue()).isEqualTo("正式依据");
+            assertThat(workbook.getSheetAt(1).getRow(2).getCell(4).getStringCellValue()).isEqualTo("待确认候选");
             assertThat(workbook.getSheetAt(1).getRow(1).getCell(0).getCellType()).isEqualTo(CellType.STRING);
-            assertThat(workbook.getSheetAt(1).getRow(1).getCell(4).getStringCellValue()).isEqualTo("1. 提交订单");
+            assertThat(workbook.getSheetAt(1).getRow(1).getCell(11).getStringCellValue()).isEqualTo("1. 提交订单");
+        }
+    }
+
+    @Test
+    void exportsFrozenHighGranularityFieldsWithChineseBusinessLabelsAndNoMachineEnums() throws Exception {
+        StructuredReviewRow review = new StructuredReviewRow("internal-review-id", 1,
+                StructuredReviewRow.Source.REQUIREMENT_MATERIAL_REVIEW, "账号登录", "需求描述含糊",
+                "账号状态约束未说明", "账号登录材料范围", "原文未说明账号禁用后的处理",
+                "待需求方确认：补充账号禁用后的处理规则", "影响异常场景设计", "本项目先标记待确认",
+                "设计中心补充状态模板", "继续执行但信息不完整", "需求规格", true);
+        StructuredTestCaseRow testcase = new StructuredTestCaseRow("internal-case-id", "账号登录正常场景",
+                "验证账号登录", "用户中心→账号登录", StructuredTestCaseRow.Priority.HIGH,
+                StructuredTestCaseRow.Status.FORMAL, List.of("已注册且状态正常的用户"),
+                new StructuredTestCaseRow.Initialization(List.of("普通办公电脑"), List.of("浏览器"),
+                        List.of("测试环境"), List.of("账号已准备")),
+                List.of(new StructuredTestCaseRow.TestInput("账号和正确密码", StructuredTestCaseRow.InputNature.VALID,
+                        StructuredTestCaseRow.InputSource.MANUAL, StructuredTestCaseRow.TestMethod.EQUIVALENCE_PARTITIONING,
+                        StructuredTestCaseRow.Authenticity.SIMULATED, "先账号后密码")),
+                List.of(new StructuredTestStep(1, "提交账号和正确密码", "系统进入首页并显示当前用户名称",
+                        "实际结果满足本步骤预期结果。", "", "记录实际结果、提示信息及必要证据。")),
+                List.of("系统进入首页并显示当前用户名称"), "满足前提和约束且未触发终止条件，逐步执行并记录结果。",
+                "全部预期结果满足则通过，任一不满足则不通过。", List.of("系统服务终止，或执行过程中无法执行下一步操作。"),
+                "记录实际结果、提示信息及必要证据。", new StructuredTestCaseRow.AuthoringInformation("测试人员", "2026-08-22"),
+                List.of("账号登录需求"), List.of(), true);
+
+        WorkbookArtifact artifact = new ApachePoiWorkbookExporter(artifactRoot).exportStructured(
+                new StructuredWorkbookExportRequest("task-high-granularity", List.of(review), List.of(testcase)));
+
+        try (XSSFWorkbook workbook = new XSSFWorkbook(artifact.path().toFile())) {
+            assertThat(headers(workbook, 0)).containsExactly("序号", "来源", "对象/功能点", "问题分类/核对结论", "影响范围",
+                    "说明", "实际坏例", "建议好例（待需求方确认）", "测试设计影响", "当前项目建议", "设计中心建议", "严重程度", "证据来源");
+            assertThat(headers(workbook, 1)).containsExactly("用例名称", "用例标题", "功能模块", "优先级", "状态", "前提约束",
+                    "硬件初始化", "软件初始化", "测试初始化", "参数初始化", "测试输入", "执行步骤", "逐步预期", "逐步评价",
+                    "异常或终止提示", "逐步结果采集", "总体预期", "执行评价标准", "结果评价标准", "终止条件", "结果采集",
+                    "编写人", "编写日期", "对应需求内容", "缺失信息");
+            String auditRow = java.util.stream.IntStream.range(0, 13)
+                    .mapToObj(index -> workbook.getSheetAt(0).getRow(1).getCell(index).getStringCellValue())
+                    .collect(java.util.stream.Collectors.joining("|"));
+            String caseRow = java.util.stream.IntStream.range(0, 25)
+                    .mapToObj(index -> workbook.getSheetAt(1).getRow(1).getCell(index).getStringCellValue())
+                    .collect(java.util.stream.Collectors.joining("|"));
+            assertThat(caseRow).contains("高", "正式依据", "有效", "人工输入", "等价类划分", "模拟数据")
+                    .doesNotContain("HIGH", "FORMAL", "VALID", "MANUAL", "EQUIVALENCE_PARTITIONING", "SIMULATED")
+                    .doesNotContain("internal-case-id");
+            assertThat(auditRow).doesNotContain("internal-review-id");
+        }
+    }
+
+    @Test
+    void preventsFormulaInjectionAfterWhitespaceTabBomAndOnEveryStructuredLine() throws Exception {
+        StructuredTestCaseRow row = testcase("case-formula", " =1+1",
+                StructuredTestCaseRow.Status.FORMAL);
+        WorkbookArtifact artifact = new ApachePoiWorkbookExporter(artifactRoot).exportStructured(
+                new StructuredWorkbookExportRequest("task-formula", List.of(), List.of(row)));
+
+        try (XSSFWorkbook workbook = new XSSFWorkbook(artifact.path().toFile())) {
+            assertThat(workbook.getSheetAt(1).getRow(1).getCell(0).getCellType()).isEqualTo(CellType.STRING);
+            assertThat(workbook.getSheetAt(1).getRow(1).getCell(0).getStringCellValue()).startsWith("'");
         }
     }
 
@@ -63,8 +125,12 @@ class StructuredWorkbookExporterTest {
                     .containsExactly("需求与功能清单审查发现", "测试用例");
             assertThat(workbook.getSheetAt(0).getLastRowNum()).isZero();
             assertThat(workbook.getSheetAt(1).getLastRowNum()).isZero();
-            assertThat(headers(workbook, 0)).containsExactly("序号", "来源", "对象/功能点", "问题分类/核对结论", "说明");
-            assertThat(headers(workbook, 1)).containsExactly("用例名称", "功能模块", "状态", "前提约束", "执行步骤", "预期结果", "对应需求内容", "缺失信息");
+            assertThat(headers(workbook, 0)).containsExactly("序号", "来源", "对象/功能点", "问题分类/核对结论", "影响范围",
+                    "说明", "实际坏例", "建议好例（待需求方确认）", "测试设计影响", "当前项目建议", "设计中心建议", "严重程度", "证据来源");
+            assertThat(headers(workbook, 1)).containsExactly("用例名称", "用例标题", "功能模块", "优先级", "状态", "前提约束",
+                    "硬件初始化", "软件初始化", "测试初始化", "参数初始化", "测试输入", "执行步骤", "逐步预期", "逐步评价",
+                    "异常或终止提示", "逐步结果采集", "总体预期", "执行评价标准", "结果评价标准", "终止条件", "结果采集",
+                    "编写人", "编写日期", "对应需求内容", "缺失信息");
         }
     }
 

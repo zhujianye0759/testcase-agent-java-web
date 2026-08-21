@@ -235,6 +235,26 @@ function candidateStatusText(status?: string) {
   return status === 'FORMAL' ? '正式用例' : status === 'PENDING_CONFIRMATION' ? '待确认候选' : '用例状态不可用'
 }
 
+function handlingLevelText(level?: string) {
+  return {
+    BLOCKING: '阻断',
+    CONTINUE_INCOMPLETE: '继续执行但信息不完整',
+    IMPROVEMENT: '改进建议',
+  }[level ?? ''] ?? '严重程度不可用'
+}
+
+function structuredInputText(input: {
+  content: string
+  nature: string
+  source: string
+  method: string
+  authenticity: string
+  sequence?: string
+}) {
+  const sequence = input.sequence ? `；顺序：${input.sequence}` : ''
+  return `${input.content}（性质：${input.nature}；来源：${input.source}；方法：${input.method}；真实性：${input.authenticity}${sequence}）`
+}
+
 function confirmationText(status?: string) {
   return status === 'CONFIRMED' ? '已确认' : status === 'PENDING_CONFIRMATION' ? '待确认' : '确认状态不可用'
 }
@@ -307,7 +327,7 @@ watch(() => props.taskId, () => { void loadTask() })
 </script>
 
 <template>
-  <!-- [Req-ID]: REQ-WEB-003, REQ-WEB-004, REQ-WEB-005, REQ-WEB-006, REQ-WEB-007, REQ-WEB-008, REQ-CWR-001, REQ-CWR-002 -->
+  <!-- [Req-ID]: REQ-WEB-003, REQ-WEB-004, REQ-WEB-005, REQ-WEB-006, REQ-WEB-007, REQ-WEB-008, REQ-CWR-001, REQ-CWR-002, REQ-FTG-007, REQ-FTG-009 -->
   <!-- [Req-ID]: REQ-UIX-001, REQ-UIX-005, REQ-UIX-006, REQ-UIX-007 -->
   <section
     class="task-detail"
@@ -547,9 +567,19 @@ watch(() => props.taskId, () => { void loadTask() })
             <details>
               <summary>查看影响与建议</summary>
               <dl class="task-detail__result-details">
+                <div v-if="finding.affectedScope">
+                  <dt>影响范围</dt><dd>{{ finding.affectedScope }}</dd>
+                </div>
+                <div v-if="finding.badSourceExample">
+                  <dt>实际坏例</dt><dd>{{ finding.badSourceExample }}</dd>
+                </div>
+                <div v-if="finding.proposedGoodExample">
+                  <dt>建议好例（待需求方确认）</dt><dd>{{ finding.proposedGoodExample }}</dd>
+                </div>
                 <div><dt>测试设计影响</dt><dd>{{ finding.testDesignImpact }}</dd></div>
                 <div><dt>当前项目建议</dt><dd>{{ finding.currentProjectRecommendation }}</dd></div>
                 <div><dt>设计中心建议</dt><dd>{{ finding.designCenterGuidelineRecommendation }}</dd></div>
+                <div><dt>严重程度</dt><dd>{{ handlingLevelText(finding.handlingLevel) }}</dd></div>
               </dl>
             </details>
           </article>
@@ -597,8 +627,53 @@ watch(() => props.taskId, () => { void loadTask() })
             >
               <summary>{{ testcase.title }} · {{ candidateStatusText(testcase.status) }}</summary>
               <dl class="task-detail__result-details">
+                <div><dt>用例名称</dt><dd>{{ testcase.name || testcase.title }}</dd></div>
+                <div><dt>优先级</dt><dd>优先级：{{ testcase.priority || '中' }}</dd></div>
                 <div><dt>前提约束</dt><dd>{{ testcase.preconditions.join('\n') || '-' }}</dd></div>
-                <div><dt>执行步骤与预期</dt><dd>{{ testcase.steps.map(step => `${step.stepNo}. ${step.action} → ${step.expected}`).join('\n') }}</dd></div>
+                <div v-if="testcase.initialization?.hardwareConfiguration.length">
+                  <dt>硬件初始化</dt><dd>{{ testcase.initialization.hardwareConfiguration.join('\n') }}</dd>
+                </div>
+                <div v-if="testcase.initialization?.softwareConfiguration.length">
+                  <dt>软件初始化</dt><dd>{{ testcase.initialization.softwareConfiguration.join('\n') }}</dd>
+                </div>
+                <div v-if="testcase.initialization?.testConfiguration.length">
+                  <dt>测试初始化</dt><dd>{{ testcase.initialization.testConfiguration.join('\n') }}</dd>
+                </div>
+                <div v-if="testcase.initialization?.parameterConfiguration.length">
+                  <dt>参数初始化</dt><dd>{{ testcase.initialization.parameterConfiguration.join('\n') }}</dd>
+                </div>
+                <div v-if="testcase.inputs?.length">
+                  <dt>测试输入</dt><dd>{{ testcase.inputs.map(structuredInputText).join('\n') }}</dd>
+                </div>
+                <div><dt>执行步骤</dt><dd>{{ testcase.steps.map(step => `${step.stepNo}. ${step.action}`).join('\n') }}</dd></div>
+                <div><dt>逐步预期</dt><dd>{{ testcase.steps.map(step => `${step.stepNo}. ${step.expected}`).join('\n') }}</dd></div>
+                <div v-if="testcase.steps.some(step => step.evaluationCriteria)">
+                  <dt>逐步评价</dt><dd>{{ testcase.steps.map(step => `${step.stepNo}. ${step.evaluationCriteria}`).join('\n') }}</dd>
+                </div>
+                <div v-if="testcase.steps.some(step => step.terminationOrError)">
+                  <dt>异常或终止提示</dt><dd>{{ testcase.steps.filter(step => step.terminationOrError).map(step => `${step.stepNo}. ${step.terminationOrError}`).join('\n') }}</dd>
+                </div>
+                <div v-if="testcase.steps.some(step => step.resultCollection)">
+                  <dt>逐步结果采集</dt><dd>{{ testcase.steps.map(step => `${step.stepNo}. ${step.resultCollection}`).join('\n') }}</dd>
+                </div>
+                <div v-if="testcase.expectedResults?.length">
+                  <dt>总体预期</dt><dd>{{ testcase.expectedResults.join('\n') }}</dd>
+                </div>
+                <div v-if="testcase.evaluationCriteria">
+                  <dt>执行评价标准</dt><dd>{{ testcase.evaluationCriteria }}</dd>
+                </div>
+                <div v-if="testcase.resultEvaluationCriteria">
+                  <dt>结果评价标准</dt><dd>{{ testcase.resultEvaluationCriteria }}</dd>
+                </div>
+                <div v-if="testcase.terminationConditions?.length">
+                  <dt>终止条件</dt><dd>{{ testcase.terminationConditions.join('\n') }}</dd>
+                </div>
+                <div v-if="testcase.resultCollection">
+                  <dt>结果采集</dt><dd>{{ testcase.resultCollection }}</dd>
+                </div>
+                <div v-if="testcase.authoringInformation?.author || testcase.authoringInformation?.date">
+                  <dt>编写信息</dt><dd>{{ [testcase.authoringInformation.author, testcase.authoringInformation.date].filter(Boolean).join(' · ') }}</dd>
+                </div>
                 <div><dt>对应需求</dt><dd>{{ testcase.requirementSummaries.join('\n') || '-' }}</dd></div>
                 <div v-if="testcase.missingInformation.length">
                   <dt>待补充信息</dt><dd>{{ testcase.missingInformation.join('\n') }}</dd>

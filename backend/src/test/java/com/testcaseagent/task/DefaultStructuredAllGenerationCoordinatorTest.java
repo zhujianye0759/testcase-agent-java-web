@@ -133,10 +133,20 @@ class DefaultStructuredAllGenerationCoordinatorTest {
                     registration.skillName(), registration.operationName(), 1, registration.ordinalStart(), registration.ordinalEnd(),
                     registration.materialKey(), registration.allowedEvidenceKeys(), invocation.getArgument(2)));
         });
-        when(skills.reviewRequirementMaterial(any())).thenReturn(success("requirement-material-quality-review",
-                new RequirementMaterialQualityReviewResult(List.of(new RequirementMaterialQualityReviewResult.RequirementFact(
-                        "model-fact", "提交订单", List.of(), List.of(), List.of("订单"), List.of("金额大于零"),
-                        List.of(), List.of(), List.of(), List.of(), List.of(), List.of("req-unit"))), List.of())));
+         when(skills.reviewRequirementMaterial(any())).thenReturn(success("requirement-material-quality-review",
+                 new RequirementMaterialQualityReviewResult(List.of(new RequirementMaterialQualityReviewResult.RequirementFact(
+                         "model-fact", "提交订单", List.of(), List.of(), List.of("订单"), List.of("金额大于零"),
+                         List.of(), List.of(), List.of(), List.of(), List.of(), List.of("req-unit"))), List.of(
+                         new RequirementMaterialQualityReviewResult.ReviewFinding("model-finding",
+                                 RequirementMaterialQualityReviewResult.RootCauseKind.MISSING_EXCEPTION_HANDLING,
+                                 "异常处理缺失", new RequirementMaterialQualityReviewResult.AffectedScope(
+                                         List.of("req-unit"), "订单异常范围"),
+                                 new RequirementMaterialQualityReviewResult.BadSourceExample("req-unit", "需求正文"),
+                                 new RequirementMaterialQualityReviewResult.ProposedGoodExample(
+                                         RequirementMaterialQualityReviewResult.ProposalStatus.PENDING_CONFIRMATION,
+                                         "待需求方确认：补充订单异常处理"),
+                                 "材料未说明异常处理", List.of("req-unit"), "影响异常用例设计", "本项目待确认",
+                                 "设计中心补充异常模板", RequirementMaterialQualityReviewResult.HandlingLevel.IMPROVEMENT)))));
         when(skills.extractFunctionList(any())).thenReturn(success("feature-scope-reconciliation",
                 new FunctionListExtractionResult(List.of(new FunctionListExtractionResult.FunctionListItem(
                         "订单/提交", "提交订单", List.of("fn-unit"))))));
@@ -165,12 +175,25 @@ class DefaultStructuredAllGenerationCoordinatorTest {
             var input = invocation.getArgument(0, com.testcaseagent.knowledgeagent.FunctionalTestcaseDesignInvocation.class).input();
             assertThat(input.functionName()).isEqualTo("订单/提交");
             assertThat(input.testPoint().requirementFactKeys()).containsExactly("fact-task");
-            return success("functional-testcase-design", new FunctionalTestcaseDesignResult(input.functionKey(),
-                    input.testPoint().testPointKey(), List.of(new FunctionalTestcaseDesignResult.Testcase(
-                            "model-case", "正常提交订单", List.of(),
-                            List.of(new FunctionalTestcaseDesignResult.Step(1, "提交", "订单创建成功")),
-                            input.testPoint().requirementFactKeys(), input.testPoint().evidenceKeys(),
-                            FunctionalTestcaseDesignResult.CaseStatus.FORMAL, List.of()))));
+             return success("functional-testcase-design", new FunctionalTestcaseDesignResult(input.functionKey(),
+                     input.testPoint().testPointKey(), List.of(new FunctionalTestcaseDesignResult.Testcase(
+                             "model-case", "提交订单", "提交订单", FunctionalTestcaseDesignResult.Priority.HIGH,
+                             List.of(), FunctionalTestcaseDesignResult.Initialization.empty(),
+                             List.of(new FunctionalTestcaseDesignResult.Input("提交",
+                                     FunctionalTestcaseDesignResult.InputNature.VALID,
+                                     FunctionalTestcaseDesignResult.InputSource.MANUAL,
+                                     FunctionalTestcaseDesignResult.TestMethod.EQUIVALENCE_PARTITIONING,
+                                     FunctionalTestcaseDesignResult.Authenticity.SIMULATED, "提交")),
+                             List.of(new FunctionalTestcaseDesignResult.Step(1, "提交", "订单创建成功",
+                                     FunctionalTestcaseDesignResult.GenericClauses.STEP_EVALUATION,
+                                     FunctionalTestcaseDesignResult.GenericClauses.TERMINATION_OR_ERROR,
+                                     FunctionalTestcaseDesignResult.GenericClauses.RESULT_COLLECTION)),
+                             List.of("订单创建成功"), FunctionalTestcaseDesignResult.GenericClauses.EVALUATION,
+                             FunctionalTestcaseDesignResult.GenericClauses.RESULT_EVALUATION, List.of(),
+                             FunctionalTestcaseDesignResult.GenericClauses.RESULT_COLLECTION,
+                             FunctionalTestcaseDesignResult.AuthoringInformation.empty(),
+                             input.testPoint().requirementFactKeys(), input.testPoint().evidenceKeys(),
+                             FunctionalTestcaseDesignResult.CaseStatus.FORMAL, List.of()))));
         });
         StructuredWorkbookExportRequest persistedRows = new StructuredWorkbookExportRequest("task-1", List.of(), List.of(
                 new com.testcaseagent.export.StructuredTestCaseRow("case-task", "正常提交订单", "提交订单",
@@ -192,7 +215,29 @@ class DefaultStructuredAllGenerationCoordinatorTest {
         order.verify(skills).extractFunctionList(any());
         order.verify(skills).reconcileFeatureScope(any());
         order.verify(skills, org.mockito.Mockito.atLeastOnce()).designFunctionalTestcases(any());
-        order.verify(exporter).exportStructured(persistedRows);
+         order.verify(exporter).exportStructured(persistedRows);
+         var accepted = org.mockito.ArgumentCaptor.forClass(
+                 com.testcaseagent.validation.FunctionalTestcaseResultValidator.Result.class);
+         verify(store, org.mockito.Mockito.atLeastOnce()).acceptTestcases(any(), any(), any(), accepted.capture());
+         assertThat(accepted.getAllValues()).allSatisfy(result ->
+                 assertThat(result.testcases()).singleElement().satisfies(row -> {
+                     assertThat(row.name()).isEqualTo("提交订单");
+                     assertThat(row.priority().name()).isEqualTo("HIGH");
+                     assertThat(row.inputs()).singleElement().satisfies(input ->
+                             assertThat(input.content()).isEqualTo("提交"));
+                     assertThat(row.steps()).singleElement().satisfies(step ->
+                             assertThat(step.evaluationCriteria()).isEqualTo(
+                                     FunctionalTestcaseDesignResult.GenericClauses.STEP_EVALUATION));
+                 }));
+         var acceptedReview = org.mockito.ArgumentCaptor.forClass(
+                 com.testcaseagent.validation.RequirementMaterialReviewValidator.Result.class);
+         verify(store).acceptReview(any(), any(), any(), acceptedReview.capture());
+         assertThat(acceptedReview.getValue().reviewFindings()).singleElement().satisfies(finding -> {
+             assertThat(finding.rootCauseKind().name()).isEqualTo("MISSING_EXCEPTION_HANDLING");
+             assertThat(finding.affectedScope().summary()).isEqualTo("订单异常范围");
+             assertThat(finding.badSourceExample().quote()).isEqualTo("需求正文");
+             assertThat(finding.proposedGoodExample().text()).contains("待需求方确认");
+         });
         verify(exporter, never()).exportMarkdown(any());
         verify(repository).completeStructuredTask("task-1", artifact,
                 com.testcaseagent.structuredgeneration.StructuredProcessingStatus.COMPLETED,
@@ -395,6 +440,7 @@ class DefaultStructuredAllGenerationCoordinatorTest {
                     com.testcaseagent.knowledgeagent.FunctionalTestcaseDesignInvocation.class).input();
             assertThat(input.formalSupports()).singleElement().satisfies(support -> {
                 assertThat(support.inputs()).containsExactly("账号", "正确密码");
+                assertThat(support.evidenceKeys()).containsExactly("req-unit");
                 assertThat(support.evidenceTexts()).containsExactly("已注册用户提交账号和正确密码后进入首页");
                 assertThat(support.inputs()).noneMatch(value -> value.contains("手机号"));
                 assertThat(support.evidenceTexts()).noneMatch(value -> value.contains("Token"));
@@ -550,6 +596,8 @@ class DefaultStructuredAllGenerationCoordinatorTest {
                     .extracting(node -> node.asText()).containsExactly("成功");
             assertThat(wireInput.path("formal_supports").path(0).path("evidence_texts"))
                     .extracting(node -> node.asText()).containsExactly("执行后成功");
+            assertThat(wireInput.path("formal_supports").path(0).path("evidence_keys"))
+                    .extracting(node -> node.asText()).containsExactly("req-unit");
             return success("functional-testcase-design", new FunctionalTestcaseDesignResult(
                     input.functionKey(), input.testPoint().testPointKey(), List.of(
                             new FunctionalTestcaseDesignResult.Testcase("restart-case", "不用于猜测功能名", List.of(),

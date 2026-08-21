@@ -74,6 +74,7 @@ class StructuredSkillInputContractTest {
                 .contains("\"test_point_key\":\"point-1\"", "\"type\":\"dependency_failure\"",
                         "\"basis\":\"general_experience\"", "\"missing_information\"",
                         "\"formal_supports\":[]");
+        assertThat(mapper.writeValueAsString(testcase)).doesNotContain("authoring_information");
     }
 
     /** [Req-ID]: REQ-FTG-004 */
@@ -88,14 +89,17 @@ class StructuredSkillInputContractTest {
         assertThat(json.path("formal_supports")).hasSize(1);
         assertThat(json.path("formal_supports").path(0).fieldNames()).toIterable().containsExactlyInAnyOrder(
                 "fact_key", "function", "roles", "trigger_conditions", "inputs", "business_rules", "outputs",
-                "permissions", "state_changes", "exception_handling", "external_dependencies", "evidence_texts");
+                "permissions", "state_changes", "exception_handling", "external_dependencies", "evidence_keys",
+                "evidence_texts");
         assertThat(List.of("roles", "trigger_conditions", "inputs", "business_rules", "outputs", "permissions",
-                "state_changes", "exception_handling", "external_dependencies", "evidence_texts"))
+                "state_changes", "exception_handling", "external_dependencies", "evidence_keys", "evidence_texts"))
                 .allSatisfy(field -> assertThat(json.path("formal_supports").path(0).path(field).isArray()).isTrue());
         assertThat(json.path("formal_supports").path(0).path("fact_key").asText()).isEqualTo("fact-1");
         assertThat(json.path("formal_supports").path(0).path("inputs").path(0).asText()).isEqualTo("账号");
         assertThat(json.path("formal_supports").path(0).path("evidence_texts")).extracting(node -> node.asText())
                 .containsExactly("用户提交账号和正确密码", "登录成功后进入首页");
+        assertThat(json.path("formal_supports").path(0).path("evidence_keys"))
+                .extracting(node -> node.asText()).containsExactly("unit-1", "unit-2");
     }
 
     /** [Req-ID]: REQ-FTG-004 */
@@ -117,9 +121,17 @@ class StructuredSkillInputContractTest {
                         List.of(support("fact-other", List.of("账号正文"))))))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("fact order");
-        assertThatThrownBy(() -> support("fact-1", List.of("重复正文", "重复正文")))
+        assertThatThrownBy(() -> new FormalSupport("fact-1", "账号登录", List.of(), List.of(), List.of(), List.of(),
+                List.of(), List.of(), List.of(), List.of(), List.of(), List.of("unit-1", "unit-1"),
+                List.of("重复正文", "重复正文")))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("unique");
+        assertThatThrownBy(() -> new FormalSupport("fact-1", "账号登录", List.of(), List.of(), List.of(), List.of(),
+                List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("evidence");
+        assertThatThrownBy(() -> new FunctionalTestcaseDesignInput.AuthoringInformation(null, ""))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     /** [Req-ID]: REQ-FTG-004 */
@@ -143,7 +155,7 @@ class StructuredSkillInputContractTest {
         FormalSupport supported = new FormalSupport("fact-1", "手机号登录", List.of("已绑定手机号的用户"),
                 List.of("用户提交手机号和正确密码"), List.of("手机号", "正确密码"), List.of(),
                 List.of("系统签发 Token/Session 并允许访问受保护资源"), List.of(), List.of(), List.of(),
-                List.of(), List.of("手机号登录成功后系统签发 Token/Session 并允许访问受保护资源"));
+                List.of(), List.of("unit-1"), List.of("手机号登录成功后系统签发 Token/Session 并允许访问受保护资源"));
         var point = new FunctionalTestcaseDesignInput.TestPoint("point-1",
                 FunctionalTestcaseDesignInput.TestPointType.NORMAL_BEHAVIOR, "手机号登录",
                 List.of("fact-1"), List.of("unit-1"),
@@ -160,7 +172,7 @@ class StructuredSkillInputContractTest {
     private static FormalSupport support(String factKey, List<String> evidenceTexts) {
         return new FormalSupport(factKey, "账号登录", List.of("已注册用户"), List.of("提交账号"),
                 List.of("账号"), List.of(), List.of("进入首页"), List.of(), List.of(), List.of(), List.of(),
-                evidenceTexts);
+                List.of("unit-1"), evidenceTexts);
     }
 
     private static String formalSupportInputJson() {
@@ -189,6 +201,7 @@ class StructuredSkillInputContractTest {
                     "state_changes":["匿名变为已登录"],
                     "exception_handling":[],
                     "external_dependencies":[],
+                    "evidence_keys":["unit-1","unit-2"],
                     "evidence_texts":["用户提交账号和正确密码","登录成功后进入首页"]
                   }]
                 }

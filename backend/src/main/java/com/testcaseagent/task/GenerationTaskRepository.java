@@ -52,7 +52,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * MySQL persistence boundary for durable task, batch, and attempt state.
  *
  * [Req-ID]: REQ-TSK-001, REQ-TSK-002, REQ-TSK-004, REQ-TSK-005, REQ-TSK-006, REQ-TSK-007,
- * REQ-ANA-007, REQ-CWR-003
+ * REQ-ANA-007, REQ-CWR-003, REQ-FTG-007, REQ-FTG-008, REQ-FTG-009
  */
 public final class GenerationTaskRepository {
 
@@ -1140,16 +1140,22 @@ public final class GenerationTaskRepository {
     public StructuredWorkbookExportRequest structuredWorkbookRequest(String taskId) {
         List<StructuredReviewRow> reviewRows = new ArrayList<>();
         reviewRows.addAll(jdbcTemplate.query("""
-                SELECT w.id, f.finding_key, w.source_label, f.issue_type, f.description,
-                       f.current_project_recommendation
+                SELECT w.id, f.finding_key, w.source_label, f.issue_type, f.description, f.root_cause_kind,
+                       f.affected_scope_summary, f.bad_source_quote, f.proposed_good_text, f.test_design_impact,
+                       f.current_project_recommendation, f.design_center_guideline_recommendation, f.handling_level
                 FROM structured_review_finding f
                 JOIN structured_generation_work_item w ON w.id = f.work_item_id
                 WHERE f.task_id = ? AND w.status = 'COMPLETED' AND w.accepted_result_sha256 IS NOT NULL
                 ORDER BY w.created_at, f.finding_key
                 """, (row, index) -> new StructuredReviewRow(row.getString("id") + ":finding:" + row.getString("finding_key"),
                 index + 1, StructuredReviewRow.Source.REQUIREMENT_MATERIAL_REVIEW,
-                readerSafeText(orDefault(row.getString("source_label"), "需求材料")), readerSafeText(row.getString("issue_type")),
-                readerSafeText(row.getString("description") + "；" + row.getString("current_project_recommendation")), true), taskId));
+                 readerSafeText(orDefault(row.getString("source_label"), "需求材料")),
+                 reviewClassification(row.getString("root_cause_kind"), row.getString("issue_type")),
+                 readerSafeText(row.getString("affected_scope_summary")), readerSafeText(row.getString("description")),
+                 readerSafeText(row.getString("bad_source_quote")), readerSafeText(row.getString("proposed_good_text")),
+                 readerSafeText(row.getString("test_design_impact")), readerSafeText(row.getString("current_project_recommendation")),
+                 readerSafeText(row.getString("design_center_guideline_recommendation")), handlingDisplay(row.getString("handling_level")),
+                 readerSafeText(orDefault(row.getString("source_label"), "需求材料")), true), taskId));
         int offset = reviewRows.size();
         reviewRows.addAll(jdbcTemplate.query("""
                 SELECT r.work_item_id, r.reconciliation_key, r.classification, r.scope_recommendation
@@ -1165,11 +1171,15 @@ public final class GenerationTaskRepository {
             return new StructuredReviewRow(workItemId + ":reconciliation:" + key, offset + index + 1,
                     StructuredReviewRow.Source.FEATURE_RECONCILIATION,
                     readerSafeText(subjects.isEmpty() ? "功能范围" : String.join(" / ", subjects)),
-                    readerSafeText(row.getString("classification")), readerSafeText(row.getString("scope_recommendation")), true);
+                    reconciliationDisplay(row.getString("classification")), "", readerSafeText(row.getString("scope_recommendation")),
+                    "", "", "", "", "", "", "功能清单与需求事实", true);
         }, taskId));
         List<StructuredTestCaseRow> cases = jdbcTemplate.query("""
-                SELECT c.work_item_id, c.case_key, c.title, c.preconditions_json, c.case_status,
-                       c.missing_information_json, p.function_name
+                SELECT c.work_item_id, c.case_key, c.name_text, c.title, c.priority, c.preconditions_json,
+                       c.hardware_configuration_json, c.software_configuration_json, c.test_configuration_json,
+                       c.parameter_configuration_json, c.inputs_json, c.expected_results_json, c.evaluation_criteria,
+                       c.result_evaluation_criteria, c.termination_conditions_json, c.result_collection,
+                       c.author_name, c.author_date, c.case_status, c.missing_information_json, p.function_name
                 FROM structured_test_case c
                 JOIN structured_test_point p ON p.work_item_id = c.work_item_id
                 JOIN structured_generation_work_item w ON w.id = c.work_item_id
@@ -1179,10 +1189,26 @@ public final class GenerationTaskRepository {
             String workItemId = row.getString("work_item_id");
             String caseKey = row.getString("case_key");
             List<StructuredTestStep> steps = structuredTestcaseSteps(workItemId, caseKey).stream()
-                    .map(step -> new StructuredTestStep(step.stepNo(), step.action(), step.expected())).toList();
-            return new StructuredTestCaseRow(workItemId + ":case:" + caseKey, readerSafeText(row.getString("title")),
-                    readerSafeText(row.getString("function_name")), StructuredTestCaseRow.Status.valueOf(row.getString("case_status")),
-                    readerSafeList(row.getString("preconditions_json")), steps,
+                    .map(step -> new StructuredTestStep(step.stepNo(), step.action(), step.expected(),
+                            step.evaluationCriteria(), step.terminationOrError(), step.resultCollection())).toList();
+            List<String> expectedResults = readerSafeNullableList(row.getString("expected_results_json"));
+            if (expectedResults.isEmpty()) expectedResults = steps.stream().map(StructuredTestStep::expected).toList();
+            String title = readerSafeText(row.getString("title"));
+            return new StructuredTestCaseRow(workItemId + ":case:" + caseKey,
+                    readerSafeText(orDefault(row.getString("name_text"), title)), title,
+                    readerSafeText(row.getString("function_name")), priority(row.getString("priority")),
+                    StructuredTestCaseRow.Status.valueOf(row.getString("case_status")),
+                    readerSafeList(row.getString("preconditions_json")),
+                    new StructuredTestCaseRow.Initialization(
+                            readerSafeNullableList(row.getString("hardware_configuration_json")),
+                            readerSafeNullableList(row.getString("software_configuration_json")),
+                            readerSafeNullableList(row.getString("test_configuration_json")),
+                            readerSafeNullableList(row.getString("parameter_configuration_json"))),
+                    readerSafeInputs(row.getString("inputs_json")), steps, expectedResults,
+                    readerSafeText(row.getString("evaluation_criteria")), readerSafeText(row.getString("result_evaluation_criteria")),
+                    readerSafeNullableList(row.getString("termination_conditions_json")), readerSafeText(row.getString("result_collection")),
+                    new StructuredTestCaseRow.AuthoringInformation(readerSafeText(row.getString("author_name")),
+                            readerSafeText(row.getString("author_date"))),
                     testcaseRequirementSummaries(taskId, workItemId, caseKey),
                     readerSafeList(row.getString("missing_information_json")), true);
         }, taskId);
@@ -1296,18 +1322,21 @@ public final class GenerationTaskRepository {
 
     private List<StructuredGenerationTaskDetail.ReviewFinding> structuredReviewFindings(String taskId) {
         return jdbcTemplate.query("""
-                        SELECT w.source_label, f.issue_type, f.description, f.handling_level, f.test_design_impact,
+                        SELECT w.source_label, f.issue_type, f.description, f.handling_level,
+                               f.affected_scope_summary, f.bad_source_quote, f.proposed_good_text, f.test_design_impact,
                                f.current_project_recommendation, f.design_center_guideline_recommendation
                         FROM structured_review_finding f
                         JOIN structured_generation_work_item w ON w.id = f.work_item_id
                         WHERE w.task_id = ? AND w.status = 'COMPLETED' AND w.accepted_result_sha256 IS NOT NULL
                         ORDER BY w.created_at, f.finding_key
                         """, (row, ignored) -> new StructuredGenerationTaskDetail.ReviewFinding(
-                readerSafeText(orDefault(row.getString("source_label"), "需求材料")), "需求材料审查",
-                readerSafeText(row.getString("issue_type")), readerSafeText(row.getString("description")),
-                HandlingLevel.valueOf(row.getString("handling_level")), readerSafeText(row.getString("test_design_impact")),
-                readerSafeText(row.getString("current_project_recommendation")),
-                readerSafeText(row.getString("design_center_guideline_recommendation"))), taskId);
+                 readerSafeText(orDefault(row.getString("source_label"), "需求材料")), "需求材料审查",
+                 readerSafeText(row.getString("issue_type")), readerSafeText(row.getString("description")),
+                 HandlingLevel.valueOf(row.getString("handling_level")), readerSafeText(row.getString("affected_scope_summary")),
+                 readerSafeText(row.getString("bad_source_quote")), readerSafeText(row.getString("proposed_good_text")),
+                 readerSafeText(row.getString("test_design_impact")),
+                 readerSafeText(row.getString("current_project_recommendation")),
+                 readerSafeText(row.getString("design_center_guideline_recommendation"))), taskId);
     }
 
     private List<StructuredGenerationTaskDetail.Reconciliation> structuredReconciliations(String taskId) {
@@ -1371,23 +1400,44 @@ public final class GenerationTaskRepository {
 
     private List<StructuredGenerationTaskDetail.Testcase> structuredTestcases(String taskId, String workItemId) {
         return jdbcTemplate.query("""
-                        SELECT case_key, title, case_status, preconditions_json, missing_information_json
+                        SELECT case_key, name_text, title, priority, case_status, preconditions_json,
+                               hardware_configuration_json, software_configuration_json, test_configuration_json,
+                               parameter_configuration_json, inputs_json, expected_results_json, evaluation_criteria,
+                               result_evaluation_criteria, termination_conditions_json, result_collection,
+                               author_name, author_date, missing_information_json
                         FROM structured_test_case WHERE work_item_id = ? ORDER BY case_key
                         """, (row, ignored) -> {
             String caseKey = row.getString("case_key");
-            return new StructuredGenerationTaskDetail.Testcase(readerSafeText(row.getString("title")),
-                    CaseStatus.valueOf(row.getString("case_status")), readerSafeList(row.getString("preconditions_json")),
-                    structuredTestcaseSteps(workItemId, caseKey), testcaseRequirementSummaries(taskId, workItemId, caseKey),
-                    readerSafeList(row.getString("missing_information_json")));
+            List<StructuredGenerationTaskDetail.Step> steps = structuredTestcaseSteps(workItemId, caseKey);
+            List<String> expectedResults = readerSafeNullableList(row.getString("expected_results_json"));
+            if (expectedResults.isEmpty()) expectedResults = steps.stream().map(StructuredGenerationTaskDetail.Step::expected).toList();
+            String title = readerSafeText(row.getString("title"));
+            return new StructuredGenerationTaskDetail.Testcase(readerSafeText(orDefault(row.getString("name_text"), title)),
+                    title, priority(row.getString("priority")).display(), CaseStatus.valueOf(row.getString("case_status")),
+                    readerSafeList(row.getString("preconditions_json")),
+                    new StructuredGenerationTaskDetail.Initialization(
+                            readerSafeNullableList(row.getString("hardware_configuration_json")),
+                            readerSafeNullableList(row.getString("software_configuration_json")),
+                            readerSafeNullableList(row.getString("test_configuration_json")),
+                            readerSafeNullableList(row.getString("parameter_configuration_json"))),
+                    readerSafeDetailInputs(row.getString("inputs_json")), steps, expectedResults,
+                    readerSafeText(row.getString("evaluation_criteria")), readerSafeText(row.getString("result_evaluation_criteria")),
+                    readerSafeNullableList(row.getString("termination_conditions_json")), readerSafeText(row.getString("result_collection")),
+                    new StructuredGenerationTaskDetail.AuthoringInformation(readerSafeText(row.getString("author_name")),
+                            readerSafeText(row.getString("author_date"))),
+                    testcaseRequirementSummaries(taskId, workItemId, caseKey), readerSafeList(row.getString("missing_information_json")));
         }, workItemId);
     }
 
     private List<StructuredGenerationTaskDetail.Step> structuredTestcaseSteps(String workItemId, String caseKey) {
         return jdbcTemplate.query("""
-                        SELECT step_no, action_text, expected_text FROM structured_test_case_step
+                        SELECT step_no, action_text, expected_text, evaluation_criteria, termination_or_error, result_collection
+                        FROM structured_test_case_step
                         WHERE work_item_id = ? AND case_key = ? ORDER BY step_no
                         """, (row, ignored) -> new StructuredGenerationTaskDetail.Step(row.getInt("step_no"),
-                readerSafeText(row.getString("action_text")), readerSafeText(row.getString("expected_text"))), workItemId, caseKey);
+                readerSafeText(row.getString("action_text")), readerSafeText(row.getString("expected_text")),
+                readerSafeText(row.getString("evaluation_criteria")), readerSafeText(row.getString("termination_or_error")),
+                readerSafeText(row.getString("result_collection"))), workItemId, caseKey);
     }
 
     private List<String> testcaseRequirementSummaries(String taskId, String workItemId, String caseKey) {
@@ -2166,6 +2216,84 @@ public final class GenerationTaskRepository {
             throw new IllegalStateException("Unable to read validated structured list", exception);
         }
     }
+
+    private List<String> readerSafeNullableList(String value) {
+        return value == null ? List.of() : readerSafeList(value);
+    }
+
+    private List<StructuredTestCaseRow.TestInput> readerSafeInputs(String value) {
+        if (value == null) return List.of();
+        try {
+            return objectMapper.readValue(value, new TypeReference<List<PersistedTestInput>>() { }).stream()
+                    .map(input -> new StructuredTestCaseRow.TestInput(readerSafeText(input.content()),
+                            StructuredTestCaseRow.InputNature.valueOf(input.nature()),
+                            StructuredTestCaseRow.InputSource.valueOf(input.source()),
+                            StructuredTestCaseRow.TestMethod.valueOf(input.method()),
+                            StructuredTestCaseRow.Authenticity.valueOf(input.authenticity()),
+                            readerSafeText(input.sequence())))
+                    .toList();
+        } catch (JsonProcessingException | IllegalArgumentException exception) {
+            throw new IllegalStateException("Unable to read validated structured testcase inputs", exception);
+        }
+    }
+
+    private List<StructuredGenerationTaskDetail.TestInput> readerSafeDetailInputs(String value) {
+        return readerSafeInputs(value).stream().map(input -> new StructuredGenerationTaskDetail.TestInput(
+                input.content(), input.nature().display(), input.source().display(), input.method().display(),
+                input.authenticity().display(), input.sequence())).toList();
+    }
+
+    private static StructuredTestCaseRow.Priority priority(String value) {
+        return value == null ? StructuredTestCaseRow.Priority.MEDIUM : StructuredTestCaseRow.Priority.valueOf(value);
+    }
+
+    private static String reviewClassification(String rootCause, String issueType) {
+        if (rootCause == null) return readerSafeText(issueType);
+        return switch (rootCause) {
+            case "MISSING_DOCUMENT_TRACEABILITY" -> "缺少文档追溯";
+            case "MISSING_FUNCTION_SCOPE" -> "缺少功能范围";
+            case "MISSING_ROLE_PERMISSION_MATRIX" -> "缺少角色权限矩阵";
+            case "MISSING_PROCESS_OR_STATE" -> "缺少流程或状态说明";
+            case "MISSING_INPUT_OR_DATA_DICTIONARY" -> "缺少输入或数据字典";
+            case "MISSING_BUSINESS_RULE" -> "缺少业务规则";
+            case "MISSING_OUTPUT" -> "缺少输出说明";
+            case "MISSING_EXCEPTION_HANDLING" -> "缺少异常处理";
+            case "MISSING_EXTERNAL_DEPENDENCY" -> "缺少外部依赖说明";
+            case "MISSING_SECURITY_OR_AUDIT" -> "缺少安全或审计说明";
+            case "MISSING_ENVIRONMENT_OR_CONFIGURATION" -> "缺少环境或配置说明";
+            case "CONFLICTING_REQUIREMENT" -> "需求冲突";
+            case "AMBIGUOUS_REQUIREMENT" -> "需求表述含糊";
+            default -> "问题分类不可用";
+        };
+    }
+
+    private static String handlingDisplay(String value) {
+        if (value == null) return "";
+        return switch (value) {
+            case "BLOCKING" -> "阻断";
+            case "CONTINUE_INCOMPLETE" -> "继续执行但信息不完整";
+            case "IMPROVEMENT" -> "改进建议";
+            default -> "严重程度不可用";
+        };
+    }
+
+    private static String reconciliationDisplay(String value) {
+        if (value == null) return "核对结论不可用";
+        return switch (value) {
+            case "EXACT_MATCH" -> "完全一致";
+            case "FUNCTION_LIST_ONLY" -> "仅功能清单存在";
+            case "REQUIREMENTS_ONLY" -> "仅需求材料存在";
+            case "CONFLICT" -> "范围冲突";
+            case "DUPLICATE" -> "重复功能";
+            case "SPLIT" -> "建议拆分";
+            case "MERGE" -> "建议合并";
+            case "INSUFFICIENT_EVIDENCE" -> "证据不足";
+            default -> "核对结论不可用";
+        };
+    }
+
+    private record PersistedTestInput(String content, String nature, String source, String method,
+            String authenticity, String sequence) { }
 
     private static String readerSafeText(String value) {
         String redacted = SensitiveValueRedactor.redact(value == null ? "" : value.strip());

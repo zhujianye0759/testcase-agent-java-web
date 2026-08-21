@@ -9,7 +9,7 @@ import com.testcaseagent.validation.FunctionListExtractionValidator;
 import com.testcaseagent.validation.FunctionalTestcaseResultValidator;
 import com.testcaseagent.validation.RequirementMaterialReviewValidator;
 
-/** Maps structurally checked KEE DTOs into the separate Java business-validation model without dropping fields. */
+/** Maps structurally checked KEE DTOs into the separate Java business-validation model without dropping fields. [Req-ID]: REQ-FTG-006, REQ-FTG-007 */
 public final class StructuredSkillResultMapper {
     private StructuredSkillResultMapper() { }
 
@@ -21,7 +21,15 @@ public final class StructuredSkillResultMapper {
                         fact.businessRules(), fact.outputs(), fact.permissions(), fact.stateChanges(),
                         fact.exceptionHandling(), fact.externalDependencies(), fact.evidenceKeys())).toList(),
                 result.reviewFindings().stream().map(finding -> new RequirementMaterialReviewValidator.ReviewFinding(
-                        finding.findingKey(), finding.issueType(), finding.description(), finding.evidenceKeys(),
+                        finding.findingKey(), RequirementMaterialReviewValidator.RootCauseKind.valueOf(finding.rootCauseKind().name()),
+                        finding.issueType(), new RequirementMaterialReviewValidator.AffectedScope(
+                                finding.affectedScope().unitKeys(), finding.affectedScope().summary()),
+                        new RequirementMaterialReviewValidator.BadSourceExample(
+                                finding.badSourceExample().evidenceKey(), finding.badSourceExample().quote()),
+                        new RequirementMaterialReviewValidator.ProposedGoodExample(
+                                RequirementMaterialReviewValidator.ProposalStatus.valueOf(finding.proposedGoodExample().status().name()),
+                                finding.proposedGoodExample().text()),
+                        finding.description(), finding.evidenceKeys(),
                         finding.testDesignImpact(), finding.currentProjectRecommendation(),
                         finding.designCenterGuidelineRecommendation(),
                         RequirementMaterialReviewValidator.HandlingLevel.valueOf(finding.handlingLevel().name()))).toList());
@@ -50,10 +58,25 @@ public final class StructuredSkillResultMapper {
     public static FunctionalTestcaseResultValidator.Result testcases(FunctionalTestcaseDesignResult result) {
         return new FunctionalTestcaseResultValidator.Result(result.functionKey(), result.testPointKey(),
                 result.testcases().stream().map(testcase -> new FunctionalTestcaseResultValidator.Testcase(
-                        testcase.caseKey(), testcase.title(), testcase.preconditions(), testcase.steps().stream()
+                        testcase.caseKey(), testcase.name(), testcase.title(),
+                        FunctionalTestcaseResultValidator.Priority.valueOf(testcase.priority().name()),
+                        testcase.preconditions(), new FunctionalTestcaseResultValidator.Initialization(
+                                testcase.initialization().hardwareConfiguration(), testcase.initialization().softwareConfiguration(),
+                                testcase.initialization().testConfiguration(), testcase.initialization().parameterConfiguration()),
+                        testcase.inputs().stream().map(input -> new FunctionalTestcaseResultValidator.Input(
+                                input.content(), FunctionalTestcaseResultValidator.InputNature.valueOf(input.nature().name()),
+                                FunctionalTestcaseResultValidator.InputSource.valueOf(input.source().name()),
+                                FunctionalTestcaseResultValidator.TestMethod.valueOf(input.method().name()),
+                                FunctionalTestcaseResultValidator.Authenticity.valueOf(input.authenticity().name()),
+                                input.sequence())).toList(), testcase.steps().stream()
                                 .map(step -> new FunctionalTestcaseResultValidator.Step(
-                                        step.stepNo(), step.action(), step.expected()))
+                                        step.stepNo(), step.action(), step.expected(), step.evaluationCriteria(),
+                                        step.terminationOrError(), step.resultCollection()))
                                 .toList(),
+                        testcase.expectedResults(), testcase.evaluationCriteria(), testcase.resultEvaluationCriteria(),
+                        testcase.terminationConditions(), testcase.resultCollection(),
+                        new FunctionalTestcaseResultValidator.AuthoringInformation(
+                                testcase.authoringInformation().author(), testcase.authoringInformation().date()),
                         testcase.requirementFactKeys(), testcase.evidenceKeys(),
                         FunctionalTestcaseResultValidator.CaseStatus.valueOf(testcase.caseStatus().name()),
                         testcase.missingInformation())).toList());

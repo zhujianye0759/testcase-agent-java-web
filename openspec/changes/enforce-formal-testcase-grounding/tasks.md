@@ -33,3 +33,29 @@
 - [x] 6.1 从最终任务 `cef21af2-20c6-446a-950b-c464dc17e951` 建立 requirement-review 原子接收 RED：`fact-00b8...` 的删词、拆写和新增状态必须拒绝；逐一覆盖 fact 全部叙述字段族，并以 `fact-9439...` 的直接原文片段作为正控。失败时 fact/finding/binding 零接收。 `[Req-ID]: REQ-FTG-005`
 - [x] 6.2 在当前 review work 的同 task/material/slice 冻结闭包中解析 cited evidence 正文，并在 `RequirementMaterialReviewValidator` 对完整 result 先校验后持久化；失败稳定分类为 `business_validation_failed` 且不重试。不得放宽 testcase validator。 `[Req-ID]: REQ-FTG-005`
 - [x] 6.3 运行 review validator、coordinator、MySQL acceptance、testcase grounding 回归，以及 OpenSpec strict、diff 和敏感信息门禁；KEE requirement review 与 testcase input-aware 校验完成前不得部署或创建任务。 `[Req-ID]: all`
+
+## 7. 冻结高粒度 DTO 与 validator
+
+- [x] 7.1 增加请求 DTO/Wire RED：可选 author/date、support evidence keys、formal/general supports 和 fact/evidence 精确闭包；证明旧请求缺字段或越界仍可发送。 `[Req-ID]: REQ-FTG-006`
+- [x] 7.2 增加结果 DTO RED：冻结 testcase 全字段、优先级与四类输入枚举、显式空初始化数组、增强步骤、author/date 精确回显和未知字段拒绝。 `[Req-ID]: REQ-FTG-006`
+- [x] 7.3 扩充 `FunctionalTestcaseResultValidator`：formal facts/evidence 精确闭合、完整值相等、标点边界和五条通用语句；pending 仍要求 missing information 且不计覆盖。 `[Req-ID]: REQ-FTG-006`
+- [x] 7.4 扩充 requirement review DTO/validator：13 根因、影响范围、真实坏例 quote、待确认好例、中文分析和有界重复根因失败关闭。 `[Req-ID]: REQ-FTG-007`
+
+## 8. 增量迁移、原子接收与跨调用合并
+
+- [x] 8.1 读取 V12 真实 schema 后新增首个空闲 Flyway 迁移和命名测试，只增加表/列/索引，不修改 V12 或 Flyway history。 `[Req-ID]: REQ-FTG-008, REQ-FTG-009`
+- [x] 8.2 在 acceptance store 事务内持久化高粒度 testcase/finding；任一校验或数据库失败零部分写入，重启恢复字段一致。 `[Req-ID]: REQ-FTG-009`
+- [x] 8.3 以 task+root cause 耐久唯一身份合并跨切片范围/证据，证明并发幂等、相同根因合并、不同根因隔离和 proposed good 永不进入正式链路。 `[Req-ID]: REQ-FTG-007, REQ-FTG-008`
+- [x] 8.4 接通 coordinator 和 mapper，确保阶段间只使用已验收持久化记录，function path 由 confirmed mapping 派生。 `[Req-ID]: REQ-FTG-006~009`
+
+## 9. 同源详情和恰好双 Sheet Excel
+
+- [x] 9.1 增加 API/投影 RED：显示高粒度 testcase、按根因合并 review、formal/pending 与中文来源，不暴露 raw JSON、内部枚举或机器键；保留旧 FEATURE/Markdown。 `[Req-ID]: REQ-FTG-007~009`
+- [x] 9.2 增加 exporter RED：两个固定 Sheet、评审合并字段、高粒度用例字段、步骤/预期/评价对应、公式注入防护和页面/Excel 数量一致。 `[Req-ID]: REQ-FTG-009`
+- [ ] 9.3 更新 Vue 详情页，复用现有 PC 详情模板和语义 token，覆盖 ready/empty/error、1440x820 与相关窄宽。 `[Req-ID]: REQ-FTG-009`
+
+## 10. 验证、提交与部署
+
+- [x] 10.1 运行 DTO/Wire/validator/coordinator/acceptance/export/detail 聚焦测试及 MySQL/Testcontainers/Flyway 回归。 `[Req-ID]: REQ-FTG-006~009`
+- [x] 10.2 运行受影响后端回归、前端 unit/typecheck/lint/build、OpenSpec strict、git diff --check、敏感形态和主任务事务/权限/泄漏复审。 `[Req-ID]: all`
+- [ ] 10.3 本地提交、不推送不归档；从干净 worktree 构建并替换 Java 8082 和 5173，保存页面证据。不得创建或重试最终业务任务。 `[Req-ID]: all`

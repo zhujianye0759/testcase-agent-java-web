@@ -115,6 +115,43 @@ class FunctionalTestcaseResultValidatorTest {
                 result("function-1", "point-1", FunctionalTestcaseResultValidator.CaseStatus.FORMAL)));
     }
 
+    /** [Req-ID]: REQ-FTG-006 */
+    @Test
+    void acceptsTheFrozenGenericTerminationClauseWithoutTreatingItAsBusinessEvidence() {
+        String genericTermination = "系统服务终止，或执行过程中无法执行下一步操作。";
+        FunctionalTestcaseResultValidator.Testcase testcase = new FunctionalTestcaseResultValidator.Testcase(
+                "case-1", "title", "title", FunctionalTestcaseResultValidator.Priority.MEDIUM, List.of(),
+                FunctionalTestcaseResultValidator.Initialization.empty(), List.of(),
+                List.of(new FunctionalTestcaseResultValidator.Step(1, "action", "expected",
+                        FunctionalTestcaseResultValidator.STEP_EVALUATION, genericTermination,
+                        FunctionalTestcaseResultValidator.RESULT_COLLECTION)),
+                List.of("expected"), FunctionalTestcaseResultValidator.EVALUATION,
+                FunctionalTestcaseResultValidator.RESULT_EVALUATION, List.of(genericTermination),
+                FunctionalTestcaseResultValidator.RESULT_COLLECTION,
+                FunctionalTestcaseResultValidator.AuthoringInformation.empty(),
+                List.of("fact-1"), List.of("evidence-1"),
+                FunctionalTestcaseResultValidator.CaseStatus.FORMAL, List.of());
+
+        assertDoesNotThrow(() -> validator.validate(workItem(FunctionalTestcaseResultValidator.Basis.FORMAL_REQUIREMENT),
+                new FunctionalTestcaseResultValidator.Result("function-1", "point-1", List.of(testcase))));
+    }
+
+    /** [Req-ID]: REQ-FTG-006 */
+    @Test
+    void acceptsCompleteExpectedSourceValuesInEvaluationTerminationAndCollectionFields() {
+        FunctionalTestcaseResultValidator.Testcase testcase = new FunctionalTestcaseResultValidator.Testcase(
+                "case-1", "title", "title", FunctionalTestcaseResultValidator.Priority.MEDIUM, List.of(),
+                FunctionalTestcaseResultValidator.Initialization.empty(), List.of(),
+                List.of(new FunctionalTestcaseResultValidator.Step(1, "action", "expected",
+                        "expected", "expected", "expected")), List.of("expected"), "expected", "expected",
+                List.of("expected"), "expected", FunctionalTestcaseResultValidator.AuthoringInformation.empty(),
+                List.of("fact-1"), List.of("evidence-1"),
+                FunctionalTestcaseResultValidator.CaseStatus.FORMAL, List.of());
+
+        assertDoesNotThrow(() -> validator.validate(workItem(FunctionalTestcaseResultValidator.Basis.FORMAL_REQUIREMENT),
+                new FunctionalTestcaseResultValidator.Result("function-1", "point-1", List.of(testcase))));
+    }
+
     @Test
     void rejectsLiveFixtureFormalTitleThatExpandsAccountIntoUnsupportedAccountTypes() {
         FunctionalTestcaseResultValidator.Testcase testcase = controlledFormalCase(
@@ -198,7 +235,7 @@ class FunctionalTestcaseResultValidatorTest {
                 "账号登录",
                 List.of("用户必须已注册且状态正常"),
                 "用户在登录页提交账号和正确密码",
-                "系统进入首页并显示当前用户名称");
+                "系统进入首页");
 
         assertDoesNotThrow(() -> validator.validate(controlledFormalWorkItem(), controlledResult(testcase)));
     }
@@ -225,14 +262,15 @@ class FunctionalTestcaseResultValidatorTest {
     }
 
     @Test
-    void acceptsNarrowFieldSpecificWrappersOnlyWhenTheRemainingWholeClaimIsDirectlySupported() {
+    void rejectsFormerFieldWrappersBecauseFrozenResultsRequireCompleteNormalizedEquality() {
         FunctionalTestcaseResultValidator.Testcase testcase = controlledFormalCase(
                 "验证账号登录",
                 List.of("前置条件：用户必须已注册且状态正常"),
                 "操作：用户在登录页提交账号和正确密码",
                 "预期结果：系统进入首页并显示当前用户名称");
 
-        assertDoesNotThrow(() -> validator.validate(controlledFormalWorkItem(), controlledResult(testcase)));
+        assertThrows(IllegalArgumentException.class,
+                () -> validator.validate(controlledFormalWorkItem(), controlledResult(testcase)));
     }
 
     @Test
@@ -246,13 +284,31 @@ class FunctionalTestcaseResultValidatorTest {
         assertThrows(IllegalArgumentException.class, () -> validator.validate(controlledFormalWorkItem(), controlledResult(testcase)));
     }
 
+    /** [Req-ID]: REQ-FTG-001 */
+    @Test
+    void rejectsFormalClaimsThatOnlyMatchAfterPunctuationIsErased() {
+        FunctionalTestcaseResultValidator.FormalSupport support = new FunctionalTestcaseResultValidator.FormalSupport(
+                "fact-1", "账号；登录", List.of(), List.of("提交"), List.of(), List.of(), List.of("成功"),
+                List.of(), List.of(), List.of(), List.of(), Map.of("evidence-1", "账号；登录。提交后成功"));
+        FunctionalTestcaseResultValidator.WorkItem item = new FunctionalTestcaseResultValidator.WorkItem(
+                registry(), "function-1", "账号；登录", "point-1", "账号；登录",
+                FunctionalTestcaseResultValidator.TestPointType.NORMAL_BEHAVIOR,
+                FunctionalTestcaseResultValidator.Basis.FORMAL_REQUIREMENT,
+                List.of("fact-1"), List.of("evidence-1"), List.of(), List.of(support));
+        FunctionalTestcaseResultValidator.Testcase testcase = controlledFormalCase(
+                "账号登录", List.of(), "提交", "成功");
+
+        assertThrows(IllegalArgumentException.class,
+                () -> validator.validate(item, controlledResult(testcase)));
+    }
+
     @Test
     void retainsUnsupportedSpecificAsPendingOnlyWithMissingInformationAndWithoutFormalCoverageCredit() {
         FunctionalTestcaseResultValidator.Testcase formal = controlledFormalCase(
                 "账号登录",
                 List.of("用户必须已注册且状态正常"),
                 "用户在登录页提交账号和正确密码",
-                "系统进入首页并显示当前用户名称");
+                "系统进入首页");
         FunctionalTestcaseResultValidator.Testcase pending = new FunctionalTestcaseResultValidator.Testcase(
                 "case-pending", "手机号登录候选", List.of("用户已绑定手机号"),
                 List.of(new FunctionalTestcaseResultValidator.Step(1, "输入手机号和正确密码", "登录成功")),
@@ -291,7 +347,7 @@ class FunctionalTestcaseResultValidatorTest {
     }
 
     private static FunctionalTestcaseResultValidator.FormalSupport controlledFormalSupport() {
-        return new FunctionalTestcaseResultValidator.FormalSupport("fact-1", "用户中心→账号登录",
+        return new FunctionalTestcaseResultValidator.FormalSupport("fact-1", "账号登录",
                 List.of("已注册且状态正常的用户"),
                 List.of("用户在登录页提交账号和正确密码"),
                 List.of("账号", "正确密码"),

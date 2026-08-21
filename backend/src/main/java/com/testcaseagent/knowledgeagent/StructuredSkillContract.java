@@ -30,6 +30,14 @@ final class StructuredSkillContract {
         return value;
     }
 
+    static String optionalText(String value, String name) {
+        if (value == null) throw new IllegalArgumentException(name + " must not be null");
+        if (value.getBytes(StandardCharsets.UTF_8).length > MAX_TEXT_BYTES) {
+            throw new IllegalArgumentException(name + " exceeds maximum UTF-8 bytes");
+        }
+        return value;
+    }
+
     static <T> List<T> list(List<T> value, String name, int min, int max) {
         Objects.requireNonNull(value, name + " must not be null");
         if (value.size() < min || value.size() > max) throw new IllegalArgumentException(name + " has an invalid size");

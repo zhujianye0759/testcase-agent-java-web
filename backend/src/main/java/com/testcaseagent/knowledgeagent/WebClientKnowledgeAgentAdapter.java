@@ -43,7 +43,7 @@ import reactor.core.publisher.Mono;
  * event is required before the Markdown reaches task parsing.</p>
  *
  * [Req-ID]: REQ-KAG-001, REQ-KAG-002, REQ-KAG-003, REQ-KAG-004, REQ-KAG-005, REQ-SCP-001,
- * REQ-SCP-003, REQ-FEW-002, REQ-FEW-003, REQ-ANA-004, REQ-KSI-004
+ * REQ-SCP-003, REQ-FEW-002, REQ-FEW-003, REQ-ANA-004, REQ-KSI-004, REQ-FTG-006, REQ-FTG-007
  */
 public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort, RequirementMaterialReaderPort,
         StructuredSkillExecutionPort, StructuredSkillSessionPort {
@@ -262,8 +262,16 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
                 exactStructuredFields(result, Set.of("requirement_facts", "review_findings"));
                 exactArrayObjects(result.path("requirement_facts"), Set.of("fact_key", "function", "roles", "trigger_conditions", "inputs",
                         "business_rules", "outputs", "permissions", "state_changes", "exception_handling", "external_dependencies", "evidence_keys"));
-                exactArrayObjects(result.path("review_findings"), Set.of("finding_key", "issue_type", "description", "evidence_keys",
-                        "test_design_impact", "current_project_recommendation", "design_center_guideline_recommendation", "handling_level"));
+                JsonNode findings = result.path("review_findings");
+                exactArrayObjects(findings, Set.of("finding_key", "root_cause_kind", "issue_type", "affected_scope",
+                        "bad_source_example", "proposed_good_example", "description", "evidence_keys",
+                        "test_design_impact", "current_project_recommendation", "design_center_guideline_recommendation",
+                        "handling_level"));
+                for (JsonNode finding : findings) {
+                    exactStructuredFields(finding.path("affected_scope"), Set.of("unit_keys", "summary"));
+                    exactStructuredFields(finding.path("bad_source_example"), Set.of("evidence_key", "quote"));
+                    exactStructuredFields(finding.path("proposed_good_example"), Set.of("status", "text"));
+                }
             }
             case FEATURE_SCOPE_RECONCILIATION -> {
                 if (resultType == FeatureScopeReconciliationResult.class) {
@@ -282,9 +290,18 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
             case FUNCTIONAL_TESTCASE_DESIGN -> {
                 exactStructuredFields(result, Set.of("function_key", "test_point_key", "testcases"));
                 JsonNode testcases = result.path("testcases");
-                exactArrayObjects(testcases, Set.of("case_key", "title", "preconditions", "steps", "requirement_fact_keys", "evidence_keys",
-                        "case_status", "missing_information"));
-                for (JsonNode testcase : testcases) exactArrayObjects(testcase.path("steps"), Set.of("step_no", "action", "expected"));
+                exactArrayObjects(testcases, Set.of("case_key", "name", "title", "priority", "preconditions", "initialization",
+                        "inputs", "steps", "expected_results", "evaluation_criteria", "result_evaluation_criteria",
+                        "termination_conditions", "result_collection", "authoring_information", "requirement_fact_keys",
+                        "evidence_keys", "case_status", "missing_information"));
+                for (JsonNode testcase : testcases) {
+                    exactStructuredFields(testcase.path("initialization"), Set.of("hardware_configuration", "software_configuration",
+                            "test_configuration", "parameter_configuration"));
+                    exactArrayObjects(testcase.path("inputs"), Set.of("content", "nature", "source", "method", "authenticity", "sequence"));
+                    exactArrayObjects(testcase.path("steps"), Set.of("step_no", "action", "expected", "evaluation_criteria",
+                            "termination_or_error", "result_collection"));
+                    exactStructuredFields(testcase.path("authoring_information"), Set.of("author", "date"));
+                }
             }
         }
     }

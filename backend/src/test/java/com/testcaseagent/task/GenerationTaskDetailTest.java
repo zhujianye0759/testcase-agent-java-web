@@ -205,10 +205,15 @@ class GenerationTaskDetailTest {
                 "需求来源 https://private.example/secret");
         jdbcTemplate.update("""
                 INSERT INTO structured_review_finding
-                (work_item_id, task_id, finding_key, issue_type, description, test_design_impact, current_project_recommendation,
-                 design_center_guideline_recommendation, handling_level)
-                VALUES (?, ?, 'finding-internal-key', '完整性', 'java.lang.IllegalStateException: secret\n    at com.example.Secret.run(Secret.java:1)',
-                        '补充异常场景', '账号被禁用/锁定/未激活时补齐需求说明', '建立审查准则', 'BLOCKING')
+                (work_item_id, task_id, finding_key, root_cause_kind, issue_type, description, test_design_impact,
+                 current_project_recommendation, design_center_guideline_recommendation, handling_level,
+                 affected_unit_keys_json, affected_scope_summary, bad_source_evidence_key, bad_source_quote,
+                 proposed_good_status, proposed_good_text)
+                VALUES (?, ?, 'finding-internal-key', 'MISSING_EXCEPTION_HANDLING', '完整性',
+                        'java.lang.IllegalStateException: secret\n    at com.example.Secret.run(Secret.java:1)',
+                        '补充异常场景', '账号被禁用/锁定/未激活时补齐需求说明', '建立审查准则', 'BLOCKING',
+                        CAST('[\"requirement-unit\"]' AS JSON), '账号异常状态范围', 'requirement-unit',
+                        '材料未说明账号禁用后的处理', 'PENDING_CONFIRMATION', '待需求方确认：补充账号禁用后的处理规则')
                 """, reviewWorkId, taskId);
 
         String functionListWorkId = completedWork(taskId, "feature-scope-reconciliation", "FEATURE_SCOPE_EXTRACT", "功能清单");
@@ -237,13 +242,24 @@ class GenerationTaskDetailTest {
                 """, testcaseWorkId, taskId);
         jdbcTemplate.update("""
                 INSERT INTO structured_test_case
-                (work_item_id, task_id, case_key, title, preconditions_json, case_status, missing_information_json)
-                VALUES (?, ?, 'case-internal-key', '正常提交订单', CAST('[\"用户已登录\"]' AS JSON), 'PENDING_CONFIRMATION',
+                (work_item_id, task_id, case_key, name_text, title, priority, preconditions_json,
+                 hardware_configuration_json, software_configuration_json, test_configuration_json, parameter_configuration_json,
+                 inputs_json, expected_results_json, evaluation_criteria, result_evaluation_criteria,
+                 termination_conditions_json, result_collection, author_name, author_date, case_status, missing_information_json)
+                VALUES (?, ?, 'case-internal-key', '订单提交正常场景', '正常提交订单', 'HIGH', CAST('[\"用户已登录\"]' AS JSON),
+                        CAST('[\"办公电脑\"]' AS JSON), CAST('[\"浏览器\"]' AS JSON), CAST('[\"测试环境\"]' AS JSON),
+                        CAST('[\"订单数据已准备\"]' AS JSON),
+                        CAST('[{\"content\":\"订单\",\"nature\":\"VALID\",\"source\":\"MANUAL\",\"method\":\"EQUIVALENCE_PARTITIONING\",\"authenticity\":\"SIMULATED\",\"sequence\":\"先填写后提交\"}]' AS JSON),
+                        CAST('[\"订单创建成功\"]' AS JSON), '满足前提和约束且未触发终止条件，逐步执行并记录结果。',
+                        '全部预期结果满足则通过，任一不满足则不通过。', CAST('[\"系统服务终止\"]' AS JSON),
+                        '记录实际结果、提示信息及必要证据。', '测试人员', '2026-08-22', 'PENDING_CONFIRMATION',
                         CAST('[\"接口超时阈值\"]' AS JSON))
                 """, testcaseWorkId, taskId);
         jdbcTemplate.update("""
-                INSERT INTO structured_test_case_step (work_item_id, case_key, step_no, action_text, expected_text)
-                VALUES (?, 'case-internal-key', 1, '提交订单', '订单创建成功')
+                INSERT INTO structured_test_case_step
+                (work_item_id, case_key, step_no, action_text, expected_text, evaluation_criteria, termination_or_error, result_collection)
+                VALUES (?, 'case-internal-key', 1, '提交订单', '订单创建成功', '实际结果满足本步骤预期结果。', '',
+                        '记录实际结果、提示信息及必要证据。')
                 """, testcaseWorkId);
         bind(testcaseWorkId, "test-point-internal-key", "TEST_POINT", "REQUIREMENT_FACT", "fact-internal-key");
         bind(testcaseWorkId, "case-internal-key", "TEST_CASE", "REQUIREMENT_FACT", "fact-internal-key");
@@ -265,6 +281,25 @@ class GenerationTaskDetailTest {
                 VALUES (?, ?, 'function-list-internal-key', '恶意跨任务功能', '不得进入当前任务投影')
                 """, otherFunctionWorkId, otherTaskId);
 
+        var workbookRows = repository.structuredWorkbookRequest(taskId);
+        assertThat(workbookRows.reviewRows()).anySatisfy(row -> {
+            assertThat(row.affectedScope()).isEqualTo("账号异常状态范围");
+            assertThat(row.badSourceExample()).isEqualTo("材料未说明账号禁用后的处理");
+            assertThat(row.proposedGoodExample()).contains("待需求方确认");
+        });
+        assertThat(workbookRows.testCaseRows()).singleElement().satisfies(row -> {
+            assertThat(row.name()).isEqualTo("订单提交正常场景");
+            assertThat(row.priority()).isEqualTo(com.testcaseagent.export.StructuredTestCaseRow.Priority.HIGH);
+            assertThat(row.inputs()).singleElement().satisfies(input -> {
+                assertThat(input.content()).isEqualTo("订单");
+                assertThat(input.method()).isEqualTo(
+                        com.testcaseagent.export.StructuredTestCaseRow.TestMethod.EQUIVALENCE_PARTITIONING);
+            });
+            assertThat(row.steps()).singleElement().satisfies(step ->
+                    assertThat(step.evaluationCriteria()).isEqualTo("实际结果满足本步骤预期结果。"));
+            assertThat(row.authoringInformation().author()).isEqualTo("测试人员");
+        });
+
         JsonNode response = objectMapper.readTree(objectMapper.writeValueAsString(
                 GenerationTaskDetailResponse.from(repository.findDetail(taskId).orElseThrow())));
         JsonNode structured = response.path("structuredResult");
@@ -284,6 +319,17 @@ class GenerationTaskDetailTest {
         assertThat(structured.path("testPoints").get(0).path("basis").asText()).isEqualTo("FORMAL_REQUIREMENT");
         assertThat(structured.path("testPoints").get(0).path("testcases").get(0).path("status").asText())
                 .isEqualTo("PENDING_CONFIRMATION");
+        JsonNode testcase = structured.path("testPoints").get(0).path("testcases").get(0);
+        assertThat(testcase.path("name").asText()).isEqualTo("订单提交正常场景");
+        assertThat(testcase.path("priority").asText()).isEqualTo("高");
+        assertThat(testcase.path("initialization").path("hardwareConfiguration").get(0).asText()).isEqualTo("办公电脑");
+        assertThat(testcase.path("inputs").get(0).path("nature").asText()).isEqualTo("有效");
+        assertThat(testcase.path("inputs").get(0).path("method").asText()).isEqualTo("等价类划分");
+        assertThat(testcase.path("steps").get(0).path("evaluationCriteria").asText())
+                .isEqualTo("实际结果满足本步骤预期结果。");
+        assertThat(testcase.path("authoringInformation").path("author").asText()).isEqualTo("测试人员");
+        assertThat(structured.path("reviewFindings").get(0).path("affectedScope").asText()).isEqualTo("账号异常状态范围");
+        assertThat(structured.path("reviewFindings").get(0).path("proposedGoodExample").asText()).contains("待需求方确认");
         assertThat(response.toString()).contains("订单/提交", "订单提交", "账号被禁用/锁定/未激活时补齐需求说明",
                 "外部链接已隐藏", "内部诊断信息已隐藏", "对应功能清单项", "对应需求事实");
         assertThat(response.toString()).doesNotContain("fact-internal-key", "finding-internal-key", "reconciliation-internal-key",
