@@ -71,4 +71,74 @@ describe('PC UI semantic foundations', () => {
     expect(globalStyles).toContain('prefers-reduced-motion: reduce')
     expect(globalStyles).toContain('.app-shell__ambient')
   })
+
+  // [Req-ID]: REQ-UIX-009
+  it('defines the immersive dark mission-control semantic tokens', () => {
+    for (const token of [
+      '--color-shell-abyss',
+      '--color-aurora-cyan',
+      '--color-aurora-violet',
+      '--color-glass-raised',
+      '--color-glass-inset',
+      '--color-glass-border',
+      '--color-ink-primary',
+      '--color-ink-secondary',
+      '--color-ink-placeholder',
+      '--color-accent-cyan',
+      '--gradient-action-primary',
+      '--gradient-text-heading',
+      '--color-success-ink',
+      '--color-warning-ink',
+      '--color-error-ink',
+      '--shadow-glow-action',
+      '--shadow-glow-cyan',
+    ]) {
+      expect(tokens).toContain(token)
+    }
+  })
+
+  // [Req-ID]: REQ-UIX-009
+  it('renders native controls, focus, and ambience dark-aware with motion guards', () => {
+    expect(globalStyles).toContain('color-scheme: dark')
+    expect(globalStyles).toContain('accent-color')
+    expect(globalStyles).toContain('backdrop-filter')
+    expect(globalStyles).toContain('@keyframes aurora-drift')
+    expect(globalStyles).toContain('@keyframes status-pulse')
+    expect(globalStyles).toContain('prefers-reduced-motion: reduce')
+  })
+
+  // [Req-ID]: REQ-UIX-009
+  it('anchors the mission-control layout: hero radar, step counters, sticky actions, custom controls', () => {
+    expect(globalStyles).toContain('@keyframes radar-sweep')
+    expect(globalStyles).toContain('.generation-workspace__hero-visual')
+    expect(globalStyles).toContain('counter-reset: form-step')
+    expect(globalStyles).toContain('position: sticky')
+    expect(globalStyles).toContain('appearance: none')
+  })
+
+  // [Req-ID]: REQ-UIX-009 — grid backdrop replaced by starfield + meteor ambience
+  it('replaces the grid backdrop with a twinkling starfield and meteor streaks', () => {
+    expect(globalStyles).not.toContain('linear-gradient(90deg, var(--color-tech-grid)')
+    expect(globalStyles).toContain('@keyframes star-twinkle')
+    expect(globalStyles).toContain('@keyframes starfall')
+    expect(globalStyles).toContain('@keyframes hero-sheen')
+    expect(tokens).toContain('--color-star-bright')
+  })
+
+  // [Req-ID]: REQ-UIX-009 — reference-grade polish: border beam, display hero type, richer aurora
+  it('adds border-beam selection, display-scale hero type, and a magenta aurora layer', () => {
+    expect(globalStyles).toContain('@property --beam-angle')
+    expect(globalStyles).toContain('@keyframes beam-spin')
+    expect(globalStyles).toContain('font: var(--type-display-48)')
+    expect(tokens).toContain('--color-aurora-magenta')
+  })
+
+  // [Req-ID]: REQ-UIX-009 — ui-ux-pro-max AI-native re-tone: violet brand, cyan interaction
+  it('applies the AI-native violet brand story with staggered list motion', () => {
+    expect(tokens).toContain('--color-accent-violet-deep: #6D28D9')
+    expect(tokens).toContain('--gradient-edge-violet')
+    expect(tokens).toContain('--gradient-action-primary: linear-gradient(135deg, var(--color-accent-violet-deep)')
+    expect(globalStyles).toContain('@keyframes row-enter')
+    expect(globalStyles).toContain('.task-list tbody tr:nth-child(2)')
+  })
 })

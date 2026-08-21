@@ -70,10 +70,14 @@ onMounted(loadOptions)
 
 function initializeSelection() {
   form.knowledgeBaseId = knowledgeBases.value.length === 1 ? knowledgeBases.value[0].id : ''
-  resetSystemSelection()
+  resetBusinessSystemScope()
 }
 
-function resetSystemSelection() {
+/**
+ * Keeps the legacy system coordinate internal: one eligible requirement knowledge base is one business system.
+ * A missing or ambiguous internal coordinate deliberately leaves downstream choices unavailable.
+ */
+function resetBusinessSystemScope() {
   form.systemId = systems.value.length === 1 ? systems.value[0].id : ''
   resetVersionSelection()
 }
@@ -120,8 +124,8 @@ async function submitTask() {
 </script>
 
 <template>
-  <!-- [Req-ID]: REQ-WEB-001, REQ-WEB-006, REQ-WEB-007, REQ-WEB-009 -->
-  <!-- [Req-ID]: REQ-UIX-001, REQ-UIX-003, REQ-UIX-006, REQ-UIX-007 -->
+  <!-- [Req-ID]: REQ-WEB-001, REQ-WEB-006, REQ-WEB-007, REQ-WEB-009, REQ-WEB-010 -->
+  <!-- [Req-ID]: REQ-UIX-001, REQ-UIX-003, REQ-UIX-006, REQ-UIX-007, REQ-UIX-009 -->
   <section
     class="generation-workspace"
     aria-labelledby="generation-page-title"
@@ -137,6 +141,13 @@ async function submitTask() {
         <p class="generation-workspace__lead">
           以材料为依据，自动沉淀审查发现与可执行的测试用例。
         </p>
+      </div>
+      <!-- Decorative radar: aria-hidden, carries no status meaning. -->
+      <div
+        class="generation-workspace__hero-visual"
+        aria-hidden="true"
+      >
+        <span />
       </div>
       <div class="generation-workspace__hero-note">
         <span aria-hidden="true">01</span>
@@ -222,17 +233,17 @@ async function submitTask() {
           class="task-form__scope-cascade"
         >
           <label v-if="knowledgeBases.length > 1">
-            知识库
+            业务系统
             <select
               v-model="form.knowledgeBaseId"
-              name="knowledgeBaseId"
+              name="businessSystemId"
               required
-              @change="resetSystemSelection"
+              @change="resetBusinessSystemScope"
             >
               <option
                 value=""
                 disabled
-              >请选择知识库</option>
+              >请选择业务系统</option>
               <option
                 v-for="option in knowledgeBases"
                 :key="option.id"
@@ -246,35 +257,7 @@ async function submitTask() {
             v-else
             class="task-form__scope-value"
           >
-            <span>知识库</span><strong>{{ selectedKnowledgeBase?.label }}</strong>
-          </div>
-
-          <label v-if="systems.length > 1">
-            系统
-            <select
-              v-model="form.systemId"
-              name="systemId"
-              required
-              @change="resetVersionSelection"
-            >
-              <option
-                value=""
-                disabled
-              >请选择系统</option>
-              <option
-                v-for="option in systems"
-                :key="option.id"
-                :value="option.id"
-              >
-                {{ option.label }}
-              </option>
-            </select>
-          </label>
-          <div
-            v-else-if="selectedSystem"
-            class="task-form__scope-value"
-          >
-            <span>系统</span><strong>{{ selectedSystem.label }}</strong>
+            <span>业务系统</span><strong>{{ selectedKnowledgeBase?.label }}</strong>
           </div>
 
           <label v-if="versions.length > 1">
@@ -310,7 +293,7 @@ async function submitTask() {
             data-testid="scope-summary"
             class="task-form__scope-summary"
           >
-            <strong>{{ selectedKnowledgeBase?.label }} / {{ selectedSystem?.label }} / {{ selectedVersion.label }}</strong>
+            <strong>{{ selectedKnowledgeBase?.label }} / {{ selectedVersion.label }}</strong>
             <span>
               {{ materialTypes.length === 1 ? materialTypes[0].label : '仅使用下方选中材料中的已解析、已启用文档' }}
             </span>
@@ -358,66 +341,69 @@ async function submitTask() {
         </p>
       </fieldset>
 
-      <fieldset :disabled="submitting || loadingOptions || !hasCatalog">
-        <legend>生成策略</legend>
-        <p class="task-form__strategy-note">
-          <strong>自动参考优质示例（推荐）</strong><span>用于优化用例结构和表达，不替代正式材料依据</span>
+      <!-- Execution rail: strategy, notes, and launch actions grouped for the two-column console layout. -->
+      <div class="task-form__rail">
+        <fieldset :disabled="submitting || loadingOptions || !hasCatalog">
+          <legend>生成策略</legend>
+          <p class="task-form__strategy-note">
+            <strong>自动参考优质示例（推荐）</strong><span>用于优化用例结构和表达，不替代正式材料依据</span>
+          </p>
+          <details>
+            <summary>高级设置</summary>
+            <label>
+              <input
+                v-model="form.fewShotPolicy"
+                type="checkbox"
+                true-value="NONE"
+                false-value="AUTO"
+              >
+              不参考示例（用于对照）
+            </label>
+          </details>
+        </fieldset>
+
+        <label class="task-form__wide">
+          补充说明（可选）
+          <textarea
+            v-model="form.prompt"
+            name="prompt"
+            placeholder="例如：请重点覆盖异常输入、权限边界和关键业务规则。"
+          />
+        </label>
+
+        <p
+          v-if="optionError"
+          class="task-form__error"
+          role="alert"
+        >
+          {{ optionError }}
         </p>
-        <details>
-          <summary>高级设置</summary>
-          <label>
-            <input
-              v-model="form.fewShotPolicy"
-              type="checkbox"
-              true-value="NONE"
-              false-value="AUTO"
-            >
-            不参考示例（用于对照）
-          </label>
-        </details>
-      </fieldset>
-
-      <label class="task-form__wide">
-        补充说明（可选）
-        <textarea
-          v-model="form.prompt"
-          name="prompt"
-          placeholder="例如：请重点覆盖异常输入、权限边界和关键业务规则。"
-        />
-      </label>
-
-      <p
-        v-if="optionError"
-        class="task-form__error"
-        role="alert"
-      >
-        {{ optionError }}
-      </p>
-      <p
-        v-if="submitError"
-        ref="submitErrorElement"
-        class="task-form__error"
-        role="alert"
-        tabindex="-1"
-      >
-        {{ submitError }}
-      </p>
-      <div class="task-form__actions">
-        <p>开始后将转入后台执行，您可随时在共享任务中查看进度。</p>
-        <button
-          class="task-form__secondary-action"
-          type="button"
-          :disabled="loadingOptions || submitting"
-          @click="loadOptions(true)"
+        <p
+          v-if="submitError"
+          ref="submitErrorElement"
+          class="task-form__error"
+          role="alert"
+          tabindex="-1"
         >
-          重新加载材料范围
-        </button>
-        <button
-          type="submit"
-          :disabled="!canSubmit"
-        >
-          {{ submitting ? '提交中…' : '开始生成测试用例' }}
-        </button>
+          {{ submitError }}
+        </p>
+        <div class="task-form__actions">
+          <p>开始后将转入后台执行，您可随时在共享任务中查看进度。</p>
+          <button
+            class="task-form__secondary-action"
+            type="button"
+            :disabled="loadingOptions || submitting"
+            @click="loadOptions(true)"
+          >
+            重新加载材料范围
+          </button>
+          <button
+            type="submit"
+            :disabled="!canSubmit"
+          >
+            {{ submitting ? '提交中…' : '开始生成测试用例' }}
+          </button>
+        </div>
       </div>
     </form>
   </section>

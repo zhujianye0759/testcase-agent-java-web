@@ -90,21 +90,74 @@
 
   /* Project-configurable overlay layer; see docs/ui-decisions.md. */
   --layer-dialog: 1000;
+  --layer-sticky-actions: 10;
 
   /* Project-configurable intelligence-operations roles; see docs/ui-decisions.md. */
   --color-tech-navy: #102A4C;
   --color-tech-navy-soft: #1D416E;
   --color-tech-cyan: #008FA3;
   --color-tech-cyan-bg: #E4F7F8;
-  --color-tech-grid: rgb(21 91 212 / 8%);
-  --color-tech-glow: rgb(0 143 163 / 14%);
+  --color-tech-grid: rgb(125 180 255 / 7%);
+  --color-tech-glow: rgb(34 211 238 / 16%);
   --color-surface-raised: #FFFFFF;
   --color-surface-muted: #F7FAFD;
   --color-surface-inset: #EEF4FA;
-  --shadow-base: 0 4px 16px rgb(16 42 76 / 8%);
-  --shadow-middle: 0 12px 32px rgb(16 42 76 / 12%);
-  --shadow-high: 0 20px 48px rgb(16 42 76 / 18%);
+  --shadow-base: 0 4px 16px rgb(2 6 18 / 42%);
+  --shadow-middle: 0 12px 32px rgb(2 6 18 / 50%);
+  --shadow-high: 0 20px 48px rgb(2 6 18 / 58%);
   --motion-fast: 120ms ease;
   --motion-standard: 200ms ease;
   --motion-complex: 320ms ease;
+
+  /*
+   * [Req-ID]: REQ-UIX-009 immersive dark mission-control roles.
+   * Project-configurable; see docs/ui-decisions.md. The source-confirmed
+   * light palette above stays unchanged and remains the semantic base.
+   */
+  --color-shell-abyss: #050B1A;
+  --color-shell-deep: #081226;
+  --color-aurora-cyan: rgb(34 211 238 / 22%);
+  --color-aurora-violet: rgb(167 139 250 / 26%);
+  --color-aurora-blue: rgb(59 130 246 / 22%);
+  --color-aurora-magenta: rgb(217 70 239 / 16%);
+  --color-star-bright: rgb(224 242 254 / 90%);
+  --color-star-soft: rgb(147 197 253 / 45%);
+  --color-streak: rgb(165 243 252 / 85%);
+
+  --color-glass-raised: rgb(13 24 48 / 72%);
+  --color-glass-muted: rgb(148 180 226 / 6%);
+  --color-glass-inset: rgb(3 8 20 / 55%);
+  --color-glass-active: #10263C;
+  --color-glass-border: rgb(148 180 226 / 16%);
+  --color-glass-border-strong: rgb(148 180 226 / 32%);
+
+  --color-ink-primary: #EAF1FB;
+  --color-ink-secondary: #A9B8D0;
+  --color-ink-tertiary: #7486A3;
+  --color-ink-placeholder: #55678A;
+
+  --color-accent-cyan: #22D3EE;
+  --color-accent-blue: #3B82F6;
+  --color-accent-violet: #A78BFA;
+  --color-accent-cyan-deep: #0E7490;
+  --color-accent-blue-deep: #1D4ED8;
+  --color-accent-violet-deep: #6D28D9;
+  --gradient-action-primary: linear-gradient(135deg, var(--color-accent-violet-deep), var(--color-accent-blue-deep));
+  --gradient-text-heading: linear-gradient(94deg, #FFFFFF 20%, #DDD6FE 58%, #A5F3FC 88%);
+  --gradient-edge-cyan: linear-gradient(180deg, var(--color-accent-cyan), var(--color-accent-blue));
+  --gradient-edge-violet: linear-gradient(180deg, var(--color-accent-violet), var(--color-accent-blue));
+
+  --color-success-ink: #86EFAC;
+  --color-success-glass: rgb(34 197 94 / 12%);
+  --color-success-edge: rgb(74 222 128 / 34%);
+  --color-warning-ink: #FCD34D;
+  --color-warning-glass: rgb(245 158 11 / 12%);
+  --color-warning-edge: rgb(251 191 36 / 34%);
+  --color-error-ink: #FCA5A5;
+  --color-error-glass: rgb(239 68 68 / 12%);
+  --color-error-edge: rgb(248 113 113 / 36%);
+
+  --color-backdrop-scrim: rgb(2 6 16 / 62%);
+  --shadow-glow-action: 0 10px 28px rgb(29 78 216 / 42%);
+  --shadow-glow-cyan: 0 0 20px rgb(34 211 238 / 28%);
 }
