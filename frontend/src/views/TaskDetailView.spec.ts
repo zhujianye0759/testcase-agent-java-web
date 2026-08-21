@@ -54,6 +54,70 @@ const completedDetail = {
 
 // [Req-ID]: REQ-WEB-003, REQ-WEB-004, REQ-WEB-005, REQ-WEB-006, REQ-WEB-007, REQ-WEB-008
 describe('generation task detail', () => {
+  it('[Req-ID]: REQ-STD-001, REQ-STD-002 renders the real unable-to-generate structured result instead of legacy progress', async () => {
+    const wrapper = mount(TaskDetailView, {
+      props: {
+        taskId: 'e9e936d1-5010-4d84-8e91-5b622c618de4',
+        getTask: vi.fn().mockResolvedValue({
+          ...completedDetail,
+          id: 'e9e936d1-5010-4d84-8e91-5b622c618de4',
+          totalBatches: 0,
+          completedBatches: 0,
+          auditRows: [{ sequence: 1, subjectOrFeature: '旧审查行', issueCategory: '不应显示', evidenceComparison: 'raw' }],
+          testCaseRows: [{ ...completedDetail.testCaseRows[0], caseName: '旧 Markdown 用例' }],
+          businessProgress: {
+            ...completedDetail.businessProgress,
+            completedAuditWork: 0,
+            totalAuditWork: 5,
+            frozenComplete: false,
+            coverageStatus: '完整',
+            businessReason: '材料审查、功能冻结和测试用例均已完成',
+          },
+          structuredResult: {
+            processingStatus: 'COMPLETED',
+            coverageStatus: 'UNABLE_TO_GENERATE',
+            pendingCandidateCaseCount: 0,
+            phaseProgress: {
+              materialTraversal: { total: 3, completed: 3, failed: 0 },
+              requirementReview: { total: 2, completed: 2, failed: 0 },
+              featureReconciliation: { total: 2, completed: 2, failed: 0 },
+              testcaseDesign: { total: 0, completed: 0, failed: 0 },
+            },
+            reviewFindings: [
+              { sourceLabel: '需求规格说明', subject: '需求材料审查', issueType: '异常处理缺失', description: '未说明异常场景。', handlingLevel: 'CONTINUE_INCOMPLETE', testDesignImpact: '异常用例无依据', currentProjectRecommendation: '补充异常规则', designCenterGuidelineRecommendation: '同时覆盖成功和异常路径' },
+              { sourceLabel: '工单方案', subject: '需求材料审查', issueType: '权限边界未定义', description: '未明确角色权限。', handlingLevel: 'IMPROVEMENT', testDesignImpact: '无法设计角色差异用例', currentProjectRecommendation: '补充角色权限', designCenterGuidelineRecommendation: '声明权限矩阵' },
+              { sourceLabel: '工单方案', subject: '需求材料审查', issueType: '状态变化未明确', description: '未明确登录后状态变化。', handlingLevel: 'IMPROVEMENT', testDesignImpact: '无法验证状态变化', currentProjectRecommendation: '补充状态变化', designCenterGuidelineRecommendation: '声明状态变化清单' },
+              { sourceLabel: '工单方案', subject: '需求材料审查', issueType: '异常分支未定义', description: '未定义失败分支。', handlingLevel: 'CONTINUE_INCOMPLETE', testDesignImpact: '无法设计失败用例', currentProjectRecommendation: '补充失败分支', designCenterGuidelineRecommendation: '包含成功和失败路径' },
+            ],
+            reconciliations: [{
+              functionListPaths: ['用户中心→账号登录'], requirementFunctions: ['用户中心→账号登录'], classification: 'MERGE',
+              scopeRecommendation: '业务路径保持一致，但仍待确认。', confirmationStatus: 'PENDING_CONFIRMATION',
+            }],
+            testPoints: [],
+          },
+        }),
+      } as never,
+    })
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="structured-result"]').text()).toContain('异常处理缺失')
+    expect(wrapper.get('[data-testid="structured-result"]').text()).toContain('权限边界未定义')
+    expect(wrapper.get('[data-testid="structured-result"]').text()).toContain('状态变化未明确')
+    expect(wrapper.get('[data-testid="structured-result"]').text()).toContain('异常分支未定义')
+    expect(wrapper.get('[data-testid="structured-result"]').text()).toContain('需要合并 · 待确认')
+    expect(wrapper.text()).toContain('处理已完成，正式覆盖无法生成')
+    expect(wrapper.text()).toContain('3 / 3 份材料')
+    expect(wrapper.text()).toContain('2 / 2 项工作')
+    expect(wrapper.text()).toContain('无已登记工作')
+    expect(wrapper.text()).toContain('没有可用于生成正式用例的已确认功能范围')
+    expect(wrapper.find('[data-testid="business-progress"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('完整交付')
+    expect(wrapper.text()).not.toContain('0 / 5 项审查工作')
+    expect(wrapper.text()).not.toContain('尚未冻结')
+    expect(wrapper.text()).not.toContain('旧审查行')
+    expect(wrapper.text()).not.toContain('旧 Markdown 用例')
+  })
+
   it('[Req-ID]: REQ-SGD-001, REQ-SGD-002 renders saved structured results with processing and coverage separated', async () => {
     const wrapper = mount(TaskDetailView, {
       props: {
