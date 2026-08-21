@@ -330,6 +330,13 @@ public final class GenerationWorkflow {
     public GenerationTaskPage list(int page, int size, String query) { return repository.findPage(page, size, query); }
     public void cancel(String taskId) { repository.requestCancellation(taskId); }
     public void retryFailedBatches(String taskId) { if (repository.retryFailedBatches(taskId) > 0) scheduleNext(); }
+    /** Regenerates only the workbook projection for one completed structured ALL task. [Req-ID]: REQ-SGD-005 */
+    public WorkbookArtifact regenerateStructuredArtifact(String taskId) {
+        String expectedArtifactId = repository.structuredArtifactRegenerationBaseline(taskId);
+        WorkbookArtifact artifact = workbookExporter.exportStructured(repository.structuredWorkbookRequest(taskId));
+        repository.replaceStructuredArtifact(taskId, expectedArtifactId, artifact);
+        return artifact;
+    }
     /** Invoked once by the application-start runner before normal queue claims begin. [Req-ID]: REQ-TSK-008 */
     public void recoverAtStartup() { executionQueue.recoverAtStartup(); scheduleNext(); }
 

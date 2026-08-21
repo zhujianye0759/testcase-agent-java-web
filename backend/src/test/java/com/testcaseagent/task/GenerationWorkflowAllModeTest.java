@@ -13,6 +13,8 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.testcaseagent.export.WorkbookExporter;
+import com.testcaseagent.export.WorkbookArtifact;
+import com.testcaseagent.export.StructuredWorkbookExportRequest;
 import com.testcaseagent.featureaudit.FeatureAuditResult;
 import com.testcaseagent.featureaudit.FeatureAuditService;
 import com.testcaseagent.featureaudit.FinalReconciliationPageException;
@@ -34,6 +36,7 @@ import com.testcaseagent.testcase.GenerationTaskMode;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.nio.file.Path;
 import java.util.concurrent.CancellationException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -55,6 +58,7 @@ class GenerationWorkflowAllModeTest {
     private FeatureAuditService featureAuditService;
     private FrozenFeatureService frozenFeatureService;
     private KnowledgeAgentPort knowledgeAgentPort;
+    private WorkbookExporter workbookExporter;
     private GenerationWorkflow workflow;
 
     @BeforeEach
@@ -64,11 +68,30 @@ class GenerationWorkflowAllModeTest {
         featureAuditService = mock(FeatureAuditService.class);
         frozenFeatureService = mock(FrozenFeatureService.class);
         knowledgeAgentPort = mock(KnowledgeAgentPort.class);
+        workbookExporter = mock(WorkbookExporter.class);
         when(repository.finalizationReadiness(TASK_ID))
                 .thenReturn(new GenerationTaskRepository.FinalizationReadiness(GenerationTaskStatus.FAILED, false));
-        workflow = new GenerationWorkflow(repository, knowledgeAgentPort, mock(WorkbookExporter.class),
+        workflow = new GenerationWorkflow(repository, knowledgeAgentPort, workbookExporter,
                 new ObjectMapper(), mock(TaskExecutionQueue.class), Runnable::run,
                 traversalService, featureAuditService, frozenFeatureService);
+    }
+
+    @Test
+    void regeneratesStructuredArtifactFromPersistedProjectionWithoutCallingKee() {
+        StructuredWorkbookExportRequest rows = new StructuredWorkbookExportRequest(TASK_ID, List.of(), List.of());
+        WorkbookArtifact artifact = new WorkbookArtifact("artifact-safe", "a".repeat(64), Path.of("safe.xlsx"));
+        when(repository.structuredArtifactRegenerationBaseline(TASK_ID)).thenReturn("artifact-old");
+        when(repository.structuredWorkbookRequest(TASK_ID)).thenReturn(rows);
+        when(workbookExporter.exportStructured(rows)).thenReturn(artifact);
+
+        assertThat(workflow.regenerateStructuredArtifact(TASK_ID)).isEqualTo(artifact);
+
+        InOrder order = inOrder(repository, workbookExporter);
+        order.verify(repository).structuredArtifactRegenerationBaseline(TASK_ID);
+        order.verify(repository).structuredWorkbookRequest(TASK_ID);
+        order.verify(workbookExporter).exportStructured(rows);
+        order.verify(repository).replaceStructuredArtifact(TASK_ID, "artifact-old", artifact);
+        verify(knowledgeAgentPort, never()).invoke(any());
     }
 
     @Test

@@ -32,6 +32,7 @@ public final class FeatureReconciliationValidator {
             if (row.classification() == null || row.confirmationStatus() == null) {
                 throw new IllegalArgumentException("classification and confirmationStatus must not be null");
             }
+            ReaderFacingTextPolicy.requireSafe(row.scopeRecommendation(), "scopeRecommendation");
             requireEvidence(item, requiredList(row.evidenceKeys(), "reconciliation evidenceKeys"));
         }
         if (!coveredItems.equals(Set.copyOf(item.functionListItemKeys())) || !coveredFacts.equals(Set.copyOf(item.requirementFactKeys()))) {

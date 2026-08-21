@@ -76,9 +76,11 @@ KEE 已验证字段、类型、枚举、边界和编号，不等于业务可接�
 
 ### 7. 页面和 Excel 只消费持久化业务投影
 
-任务详情从 Java 数据库读取材料审查发现、功能核对、测试点、用例、处理状态、覆盖结果，以及按材料清单/structured work 汇总的四阶段计数。structured ALL 页面不读取 legacy batch/businessProgress 来推断阶段；取消只标记实际完成阶段，未知业务枚举统一显示不可用。它不代理或保存供页面展示的 KEE 原始 JSON、修复原文、Skill 正文或 Markdown。生产配置强制注入 structured ALL coordinator；新 ALL 任务没有 nullable coordinator 或旧 Markdown 回退。
+任务详情从 Java 数据库读取材料审查发现、功能核对、测试点、用例、处理状态、覆盖结果，以及按材料清单/structured work 汇总的四阶段计数。structured ALL 页面不读取 legacy batch/businessProgress 来推断阶段；取消只标记实际完成阶段，未知业务枚举统一显示不可用。它不代理或保存供页面展示的 KEE 原始 JSON、修复原文、Skill 正文或 Markdown。读者可见叙述字段在验收前拒绝内部 stable key 和诊断占位符，内部引用/绑定字段不受该规则影响；已持久化旧结果通过页面/Excel 共用的读者安全投影确定性替换内部身份。Unix 路径清洗只匹配可信绝对根，避免把“禁用/锁定/未激活”等中文业务枚举误写为内部路径占位符。生产配置强制注入 structured ALL coordinator；新 ALL 任务没有 nullable coordinator 或旧 Markdown 回退。
 
 Excel 仍恰好两个 Sheet：“需求与功能清单审查发现”和“测试用例”。导出器从已验证记录确定性生成文件，保留公式注入防护、来源去重、哈希和回读校验。待确认经验用例必须清晰标识，且汇总统计不得把它计入正式覆盖。零功能或零用例也是合法终态时，导出器仍生成两个仅含固定表头的 Sheet 并回读；任务完成 API 拒绝 null artifact。
+
+完成的 structured ALL 若需修复投影制品，应用只从同一已验收数据库投影重新生成文件，不重跑 KEE、不创建任务、不修改业务表。发布时以原 artifact_id 做数据库 CAS；并发请求最多一个更新成功，失败的新文件按既有 Phase 1 制品保留规则保留，不增加无界或宽路径清理逻辑。
 
 结构化 coordinator 在遍历、切片工作、核对、测试点和导出边界检查用户取消。取消单独写入 `processing=CANCELLED`，覆盖在未完成时保持 `PENDING`，不进入业务失败分类、不调用后续 KEE，也不发布 artifact。structured ALL 在模型阶段保持应用任务 `AUDITING`，到最终导出门禁才进入 `GENERATING/VALIDATING`，使现有任务队列能够在进程重启后重新领取。启动恢复还显式处理无 legacy batch 的 structured `AUDITING/GENERATING/VALIDATING`：释放 slot，将旧 RUNNING attempt 固定记为 `model_execution_failed` 并受两次上限约束，保留所有 COMPLETED work 和已验收业务行。
 

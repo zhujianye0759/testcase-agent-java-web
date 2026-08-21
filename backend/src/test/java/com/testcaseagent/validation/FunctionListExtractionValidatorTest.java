@@ -50,6 +50,17 @@ class FunctionListExtractionValidatorTest {
     }
 
     @Test
+    void rejectsInternalStableKeysInFunctionListPathOrDescription() {
+        String internalItem = "fli-bc5dafcd3684fbf0005736a8110f1ef6adc1af19c63a3e8728e992cb534d0b95";
+        assertThrows(IllegalArgumentException.class, () -> validator.validate(workItem(),
+                new FunctionListExtractionValidator.Result(List.of(
+                        new FunctionListExtractionValidator.ModelItem("订单/" + internalItem, "提交订单", List.of("evidence-33"))))));
+        assertThrows(IllegalArgumentException.class, () -> validator.validate(workItem(),
+                new FunctionListExtractionValidator.Result(List.of(
+                        new FunctionListExtractionValidator.ModelItem("订单/提交", "对应 " + internalItem, List.of("evidence-33"))))));
+    }
+
+    @Test
     void mergesNormalizedCrossSliceDuplicatesAndUnionsEvidenceDeterministically() {
         List<FunctionListExtractionValidator.ValidatedItem> merged = validator.mergeSlices(List.of(
                 validated("item-1", "订单 / 提交", "提交订单", "evidence-33"),

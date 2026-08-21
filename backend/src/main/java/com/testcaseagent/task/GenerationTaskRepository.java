@@ -25,6 +25,7 @@ import com.testcaseagent.structuredgeneration.StructuredProcessingStatus;
 import com.testcaseagent.validation.FeatureReconciliationValidator.ConfirmationStatus;
 import com.testcaseagent.validation.FunctionalTestcaseResultValidator.Basis;
 import com.testcaseagent.validation.FunctionalTestcaseResultValidator.CaseStatus;
+import com.testcaseagent.validation.ReaderFacingTextPolicy;
 import com.testcaseagent.validation.RequirementMaterialReviewValidator.HandlingLevel;
 import com.testcaseagent.scope.RequirementScope;
 import java.nio.file.Path;
@@ -1601,6 +1602,53 @@ public final class GenerationTaskRepository {
                 Path.of(resultSet.getString("artifact_path"))), artifactId).stream().findFirst();
     }
 
+    /**
+     * Returns the current artifact identity only for a completed structured ALL task with an existing validated file.
+     * The returned identity is the compare-and-swap baseline for a later publication attempt.
+     *
+     * [Req-ID]: REQ-SGD-005
+     */
+    public String structuredArtifactRegenerationBaseline(String taskId) {
+        List<StructuredArtifactBaseline> rows = jdbcTemplate.query("""
+                        SELECT task_mode, status, structured_processing_status, artifact_id, artifact_sha256, artifact_path
+                        FROM generation_task WHERE id = ?
+                        """, (row, ignored) -> new StructuredArtifactBaseline(
+                row.getString("task_mode"), row.getString("status"), row.getString("structured_processing_status"),
+                row.getString("artifact_id"), row.getString("artifact_sha256"), row.getString("artifact_path")), taskId);
+        if (rows.isEmpty()) throw new GenerationTaskNotFoundException(taskId);
+        StructuredArtifactBaseline baseline = rows.get(0);
+        if (!GenerationTaskMode.ALL.name().equals(baseline.taskMode())
+                || !GenerationTaskStatus.COMPLETED.name().equals(baseline.status())
+                || !StructuredProcessingStatus.COMPLETED.name().equals(baseline.processingStatus())
+                || baseline.artifactId() == null || baseline.artifactId().isBlank()
+                || baseline.sha256() == null || baseline.sha256().isBlank()
+                || baseline.path() == null || baseline.path().isBlank()) {
+            throw new IllegalStateException("Structured artifact regeneration is not available for this task");
+        }
+        return baseline.artifactId();
+    }
+
+    /**
+     * Atomically publishes a regenerated file only if no competing request has replaced the expected artifact.
+     * Structured business tables are never touched by this compare-and-swap update.
+     *
+     * [Req-ID]: REQ-SGD-005
+     */
+    public void replaceStructuredArtifact(String taskId, String expectedArtifactId, WorkbookArtifact artifact) {
+        if (expectedArtifactId == null || expectedArtifactId.isBlank()) {
+            throw new IllegalArgumentException("Expected artifact identity is required");
+        }
+        WorkbookArtifact replacement = java.util.Objects.requireNonNull(artifact, "Replacement artifact is required");
+        int changed = jdbcTemplate.update("""
+                UPDATE generation_task
+                SET artifact_id = ?, artifact_sha256 = ?, artifact_path = ?
+                WHERE id = ? AND artifact_id = ? AND task_mode = 'ALL' AND status = 'COMPLETED'
+                  AND structured_processing_status = 'COMPLETED'
+                  AND artifact_sha256 IS NOT NULL AND artifact_path IS NOT NULL
+                """, replacement.artifactId(), replacement.sha256(), replacement.path().toString(), taskId, expectedArtifactId);
+        if (changed != 1) throw new IllegalStateException("Structured artifact regeneration conflict");
+    }
+
     private boolean hasCompleteAllAuditAndFreeze(String taskId, RequirementScope scope) {
         if (!hasCompleteMaterialInventory(taskId, scope)) {
             return false;
@@ -2122,7 +2170,7 @@ public final class GenerationTaskRepository {
     private static String readerSafeText(String value) {
         String redacted = SensitiveValueRedactor.redact(value == null ? "" : value.strip());
         redacted = STACK_EXCEPTION.matcher(redacted).replaceAll("<internal-stack>");
-        return STACK_FRAME.matcher(redacted).replaceAll("<internal-stack>");
+        return ReaderFacingTextPolicy.sanitize(STACK_FRAME.matcher(redacted).replaceAll("<internal-stack>"));
     }
 
     private static String orDefault(String value, String fallback) {
@@ -2157,6 +2205,10 @@ public final class GenerationTaskRepository {
     }
 
     private record TaskFailureSnapshot(String failureSummary) {
+    }
+
+    private record StructuredArtifactBaseline(
+            String taskMode, String status, String processingStatus, String artifactId, String sha256, String path) {
     }
 
     private record BusinessProgressCounts(

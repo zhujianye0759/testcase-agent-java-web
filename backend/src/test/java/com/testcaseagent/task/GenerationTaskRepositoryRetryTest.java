@@ -13,6 +13,8 @@ import static org.mockito.Mockito.when;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.testcaseagent.structuredgeneration.StructuredCoverageStatus;
 import com.testcaseagent.structuredgeneration.StructuredProcessingStatus;
+import com.testcaseagent.export.WorkbookArtifact;
+import java.nio.file.Path;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -64,5 +66,21 @@ class GenerationTaskRepositoryRetryTest {
                 StructuredProcessingStatus.COMPLETED, StructuredCoverageStatus.UNABLE_TO_GENERATE))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("artifact");
+    }
+
+    /** [Req-ID]: REQ-SGD-005 */
+    @Test
+    void atomicallyReplacesOnlyCompletedStructuredArtifactMetadata() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        GenerationTaskRepository repository = new GenerationTaskRepository(
+                jdbcTemplate, new ObjectMapper(), mock(PlatformTransactionManager.class));
+        WorkbookArtifact artifact = new WorkbookArtifact("artifact-safe", "b".repeat(64), Path.of("safe.xlsx"));
+        when(jdbcTemplate.update(contains("artifact_id = ?"),
+                eq(artifact.artifactId()), eq(artifact.sha256()), eq(artifact.path().toString()), eq(TASK_ID), eq("artifact-old"))).thenReturn(1);
+
+        repository.replaceStructuredArtifact(TASK_ID, "artifact-old", artifact);
+
+        verify(jdbcTemplate).update(contains("artifact_id = ?"),
+                eq(artifact.artifactId()), eq(artifact.sha256()), eq(artifact.path().toString()), eq(TASK_ID), eq("artifact-old"));
     }
 }

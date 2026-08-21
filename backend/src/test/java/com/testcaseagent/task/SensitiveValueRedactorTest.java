@@ -19,4 +19,16 @@ class SensitiveValueRedactorTest {
         assertThat(message).doesNotContain(syntheticKey, "http://internal.service", "C:\\workspace\\secret.txt");
         assertThat(message).contains("<redacted>", "<external-url>", "<internal-path>");
     }
+
+    @Test
+    void preservesReaderFacingChineseSlashSeparatedChoices() {
+        assertThat(SensitiveValueRedactor.redact("账号被禁用/锁定/未激活时提示用户"))
+                .isEqualTo("账号被禁用/锁定/未激活时提示用户");
+    }
+
+    @Test
+    void stillRemovesTrustedUnixAbsolutePaths() {
+        assertThat(SensitiveValueRedactor.redact("failed at /var/lib/testcase-agent/secret.log"))
+                .isEqualTo("failed at <internal-path>");
+    }
 }

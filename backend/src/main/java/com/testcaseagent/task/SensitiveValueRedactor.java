@@ -14,7 +14,8 @@ public final class SensitiveValueRedactor {
             "(?i)(api[_-]?key|token|secret|password)\\s*([=:])\\s*[^\\s,;]+" );
     private static final Pattern URL = Pattern.compile("https?://[^\\s,;]+", Pattern.CASE_INSENSITIVE);
     private static final Pattern WINDOWS_PATH = Pattern.compile("[A-Za-z]:\\\\[^\\s,;]+" );
-    private static final Pattern UNIX_PATH = Pattern.compile("(?<![A-Za-z0-9])/(?:[^\\s,;]+/)++[^\\s,;]+" );
+    private static final Pattern UNIX_PATH = Pattern.compile(
+            "(?<![A-Za-z0-9])/(?:etc|var|opt|usr|home|root|tmp|srv|proc|sys|dev|mnt|data|workspace)(?:/[^\\s,;]+)+" );
 
     private SensitiveValueRedactor() {
     }

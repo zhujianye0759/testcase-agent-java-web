@@ -40,6 +40,27 @@ class RequirementMaterialReviewValidatorTest {
                 () -> validator.validate(workItem, new RequirementMaterialReviewValidator.Result(List.of(), List.of(outsideEvidence))));
     }
 
+    @Test
+    void rejectsInternalPlaceholdersInReaderFacingFindingText() {
+        RequirementMaterialReviewValidator.ReviewFinding unsafe = new RequirementMaterialReviewValidator.ReviewFinding(
+                "finding-1", "异常处理缺失", "账号被禁用<internal-path>", List.of("evidence-1"),
+                "影响异常分支设计", "补齐失败场景", "建立审查准则",
+                RequirementMaterialReviewValidator.HandlingLevel.CONTINUE_INCOMPLETE);
+
+        assertThrows(IllegalArgumentException.class, () -> validator.validate(workItem("requirements_spec"),
+                new RequirementMaterialReviewValidator.Result(List.of(), List.of(unsafe))));
+    }
+
+    @Test
+    void rejectsInternalStableKeysInRequirementFactNarration() {
+        RequirementMaterialReviewValidator.RequirementFact unsafe = new RequirementMaterialReviewValidator.RequirementFact(
+                "fact-1", "订单提交", List.of("角色 fact-1724e7041424efc97c0cc3dc53109f39"), List.of(), List.of(),
+                List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of("evidence-1"));
+
+        assertThrows(IllegalArgumentException.class, () -> validator.validate(workItem("requirements_spec"),
+                new RequirementMaterialReviewValidator.Result(List.of(unsafe), List.of())));
+    }
+
     private static RequirementMaterialReviewValidator.WorkItem workItem(String contentType) {
         StructuredValidationRegistry registry = StructuredValidationRegistry.forTask("task-1")
                 .register(StructuredKeyType.MATERIAL, "material-1")

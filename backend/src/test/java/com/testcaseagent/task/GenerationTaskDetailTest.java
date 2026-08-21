@@ -1,6 +1,7 @@
 package com.testcaseagent.task;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -19,10 +20,16 @@ import com.testcaseagent.scope.RequirementScope;
 import com.testcaseagent.testcase.FewShotPolicy;
 import com.testcaseagent.testcase.GenerationTaskMode;
 import com.testcaseagent.web.TestCaseAgentApplication;
+import com.testcaseagent.export.WorkbookArtifact;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -201,7 +208,7 @@ class GenerationTaskDetailTest {
                 (work_item_id, task_id, finding_key, issue_type, description, test_design_impact, current_project_recommendation,
                  design_center_guideline_recommendation, handling_level)
                 VALUES (?, ?, 'finding-internal-key', '完整性', 'java.lang.IllegalStateException: secret\n    at com.example.Secret.run(Secret.java:1)',
-                        '补充异常场景', '补齐需求说明', '建立审查准则', 'BLOCKING')
+                        '补充异常场景', '账号被禁用/锁定/未激活时补齐需求说明', '建立审查准则', 'BLOCKING')
                 """, reviewWorkId, taskId);
 
         String functionListWorkId = completedWork(taskId, "feature-scope-reconciliation", "FEATURE_SCOPE_EXTRACT", "功能清单");
@@ -213,7 +220,9 @@ class GenerationTaskDetailTest {
         jdbcTemplate.update("""
                 INSERT INTO structured_feature_reconciliation
                 (work_item_id, task_id, reconciliation_key, classification, scope_recommendation, confirmation_status)
-                VALUES (?, ?, 'reconciliation-internal-key', 'EXACT_MATCH', '保持范围', 'CONFIRMED')
+                VALUES (?, ?, 'reconciliation-internal-key', 'EXACT_MATCH',
+                        '合并 fli-bc5dafcd3684fbf0005736a8110f1ef6adc1af19c63a3e8728e992cb534d0b95 与 fact-1724e7041424efc97c0cc3dc53109f39 后保持范围',
+                        'CONFIRMED')
                 """, reconciliationWorkId, taskId);
         bind(reconciliationWorkId, "reconciliation-internal-key", "RECONCILIATION", "FUNCTION_LIST_ITEM", "function-list-internal-key");
         bind(reconciliationWorkId, "reconciliation-internal-key", "RECONCILIATION", "REQUIREMENT_FACT", "fact-internal-key");
@@ -275,10 +284,63 @@ class GenerationTaskDetailTest {
         assertThat(structured.path("testPoints").get(0).path("basis").asText()).isEqualTo("FORMAL_REQUIREMENT");
         assertThat(structured.path("testPoints").get(0).path("testcases").get(0).path("status").asText())
                 .isEqualTo("PENDING_CONFIRMATION");
-        assertThat(response.toString()).contains("订单/提交", "订单提交", "<external-url>", "<internal-stack>");
+        assertThat(response.toString()).contains("订单/提交", "订单提交", "账号被禁用/锁定/未激活时补齐需求说明",
+                "外部链接已隐藏", "内部诊断信息已隐藏", "对应功能清单项", "对应需求事实");
         assertThat(response.toString()).doesNotContain("fact-internal-key", "finding-internal-key", "reconciliation-internal-key",
                 "test-point-internal-key", "function-internal-key", "case-internal-key", "private.example", "Secret.java",
+                "fli-bc5dafcd3684fbf0005736a8110f1ef6adc1af19c63a3e8728e992cb534d0b95",
+                "fact-1724e7041424efc97c0cc3dc53109f39", "<internal-path>",
+                "<external-url>", "<internal-stack>",
                 "accepted_result_sha256", "reference_key", "raw_json", "恶意跨任务需求", "恶意跨任务功能");
+    }
+
+    @Test
+    void publishesAtMostOneConcurrentStructuredArtifactRegeneration() throws Exception {
+        String taskId = createAllTask();
+        jdbcTemplate.update("""
+                UPDATE generation_task SET status = 'COMPLETED', structured_processing_status = 'COMPLETED',
+                    structured_coverage_status = 'COMPLETE', artifact_id = 'artifact-old', artifact_sha256 = ?, artifact_path = 'old.xlsx'
+                WHERE id = ?
+                """, "0".repeat(64), taskId);
+        assertThat(repository.structuredArtifactRegenerationBaseline(taskId)).isEqualTo("artifact-old");
+
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<Boolean> first = executor.submit(() -> replaceAfter(start, taskId,
+                    new WorkbookArtifact("artifact-a", "a".repeat(64), Path.of("a.xlsx"))));
+            Future<Boolean> second = executor.submit(() -> replaceAfter(start, taskId,
+                    new WorkbookArtifact("artifact-b", "b".repeat(64), Path.of("b.xlsx"))));
+            start.countDown();
+
+            assertThat(List.of(first.get(), second.get())).containsExactlyInAnyOrder(true, false);
+        } finally {
+            executor.shutdownNow();
+        }
+        assertThat(jdbcTemplate.queryForObject("SELECT artifact_id FROM generation_task WHERE id = ?", String.class, taskId))
+                .isIn("artifact-a", "artifact-b");
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM structured_review_finding WHERE task_id = ?", Integer.class, taskId))
+                .isZero();
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM structured_test_case WHERE task_id = ?", Integer.class, taskId))
+                .isZero();
+    }
+
+    @Test
+    void rejectsArtifactRegenerationForMissingOrIneligibleTasks() {
+        assertThatThrownBy(() -> repository.structuredArtifactRegenerationBaseline("missing-task"))
+                .isInstanceOf(GenerationTaskNotFoundException.class);
+        assertThatThrownBy(() -> repository.structuredArtifactRegenerationBaseline(createAllTask()))
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    private boolean replaceAfter(CountDownLatch start, String taskId, WorkbookArtifact artifact) throws InterruptedException {
+        start.await();
+        try {
+            repository.replaceStructuredArtifact(taskId, "artifact-old", artifact);
+            return true;
+        } catch (IllegalStateException conflict) {
+            return false;
+        }
     }
 
     private String completedWork(String taskId, String skillName, String operationName, String sourceLabel) {

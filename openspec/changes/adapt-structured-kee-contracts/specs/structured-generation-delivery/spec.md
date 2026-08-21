@@ -1,12 +1,17 @@
 ## ADDED Requirements
 
 ### Requirement: [REQ-SGD-001] 页面只展示已验证并保存的结构化业务数据
-任务详情 SHALL 只返回 Java 已通过业务校验并持久化的材料审查、功能核对、测试点、用例、处理状态和覆盖结果。页面 MUST NOT 展示或提供 KEE 原始 JSON、原始模型响应、Markdown 预览、Skill 正文、修复提示、凭据、URL、内部栈或技术范围标识。
+任务详情 SHALL 只返回 Java 已通过业务校验并持久化的材料审查、功能核对、测试点、用例、处理状态和覆盖结果。页面 MUST NOT 展示或提供 KEE 原始 JSON、原始模型响应、Markdown 预览、Skill 正文、修复提示、凭据、URL、内部栈、技术范围标识、内部稳定机器键或尖括号诊断占位符。Java SHALL 在新模型结果持久化前对读者可见叙述字段失败关闭，但 MUST NOT 把该规则错误应用于内部引用/绑定字段；对于已持久化旧结果，页面与 Excel 共用的读者投影 SHALL 确定性替换内部键和诊断占位符，不得回显原值。
 
 #### Scenario: 用户查看已完成或失败任务
 - **WHEN** 页面加载任务详情
 - **THEN** 页面 SHALL 展示可读的已保存业务结果、状态和失败原因分类
 - **AND** SHALL NOT 请求或渲染原始模型数据
+
+#### Scenario: 业务叙述夹带内部身份
+- **WHEN** 模型在 scope recommendation、审查说明、用例文本或其他读者可见字段中返回 `fli-*`、`fact-*` 等内部稳定键或诊断占位符
+- **THEN** Java SHALL 在持久化前失败关闭且产生零业务结果
+- **AND** 页面与 Excel 的既有数据投影 SHALL 不输出原始内部身份或尖括号占位符
 
 ### Requirement: [REQ-SGD-002] 处理进度与正式覆盖分别呈现
 任务详情 SHALL 从已持久化的 structured work 与材料清单分别呈现材料遍历、需求审查、功能核对、用例处理进度和正式测试点覆盖结果；structured ALL MUST NOT 使用 legacy batch 或 legacy business progress 冒充这些阶段。structured processing wire enum SHALL 只接受 `PENDING|RUNNING|COMPLETED|FAILED|CANCELLED`，coverage wire enum SHALL 只接受 `PENDING|COMPLETE|PARTIAL|UNABLE_TO_GENERATE`；页面 SHALL 映射为“待处理、处理中、已完成、失败、已取消”和“待定、完整、部分完整、无法生成”，核对分类、测试点类型、确认状态和用例状态也 SHALL 映射为固定中文，不得回显未知原始枚举。`COMPLETED+PARTIAL` SHALL 表述为处理已完成且正式覆盖部分完整，不得改写为顶层 `PARTIAL` 或完整交付；取消 SHALL 只把实际完成的阶段标为完成，存在未完成阶段时将首个未完成阶段标为已取消/停止并保持后续阶段待处理；若取消或失败发生在四个阶段均已完成后的导出/完成门禁，四个阶段 SHALL 继续显示完成，仅由整体交付状态表示取消或失败。待确认经验用例 MAY 单独计数，但 MUST NOT 增加正式覆盖数量。加载、就绪、空、无结果、错误、禁止访问和未找到状态 SHALL 保持可区分。
@@ -40,3 +45,16 @@
 #### Scenario: 只有消费者合同测试通过
 - **WHEN** Java fixture 测试通过但 KEE 尚无已验收部署
 - **THEN** 交付记录 SHALL 标记 Java 合同验证完成、真实联合验收待执行
+
+### Requirement: [REQ-SGD-005] 已完成结构化任务可从同一持久化投影重生成制品
+Java SHALL 为已有非空制品的 `ALL + COMPLETED + structured processing COMPLETED` 任务提供 `POST /api/tasks/{taskId}/artifact/regenerate`。该操作 SHALL 只读取同一任务已验收持久化投影并重新生成固定双 Sheet 工作簿，MUST NOT 调用 KEE、创建第二任务或修改结构化业务表。发布 SHALL 以调用开始时的旧 `artifact_id` 为比较并交换基线；两个并发重生成最多一个成功发布，失败方 SHALL 返回安全冲突且不得覆盖胜出制品。不存在任务 SHALL 返回 404；非 ALL、未完成、无既有制品或 CAS 失败 SHALL 返回 409；成功 SHALL 返回 204。未发布的新文件 MAY 按 Phase 1 制品保留策略留作失败构建产物，不得无范围删除文件。
+
+#### Scenario: 从已验收记录重生成同一任务制品
+- **WHEN** 一个满足门禁的完成任务请求重生成制品且旧 artifact 身份未变化
+- **THEN** Java SHALL 发布新 artifact 元数据并返回 204
+- **AND** SHALL NOT 调用 KEE、创建任务或改写任何结构化业务记录
+
+#### Scenario: 两个请求并发发布
+- **WHEN** 两个重生成请求持有相同旧 artifact 身份并先后完成文件生成
+- **THEN** 只有一个比较并交换更新 SHALL 成功
+- **AND** 另一个请求 SHALL 返回 409 且不得覆盖已发布制品

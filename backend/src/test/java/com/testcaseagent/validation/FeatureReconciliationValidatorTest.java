@@ -32,6 +32,18 @@ class FeatureReconciliationValidatorTest {
         assertThrows(IllegalArgumentException.class, () -> validator.validate(workItem, result));
     }
 
+    @Test
+    void rejectsInternalStableKeysInReaderFacingRecommendation() {
+        FeatureReconciliationValidator.Reconciliation unsafe = new FeatureReconciliationValidator.Reconciliation(
+                "reconciliation-1", List.of("item-1"), List.of("fact-1"),
+                FeatureReconciliationValidator.Classification.EXACT_MATCH, List.of("evidence-1"),
+                "合并 fli-bc5dafcd3684fbf0005736a8110f1ef6adc1af19c63a3e8728e992cb534d0b95 与 fact-1724e7041424efc97c0cc3dc53109f39",
+                FeatureReconciliationValidator.ConfirmationStatus.CONFIRMED);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> validator.validate(workItem(), new FeatureReconciliationValidator.Result(List.of(unsafe))));
+    }
+
     private static FeatureReconciliationValidator.WorkItem workItem() {
         StructuredValidationRegistry registry = StructuredValidationRegistry.forTask("task-1")
                 .register(StructuredKeyType.FUNCTION_LIST_ITEM, "item-1")

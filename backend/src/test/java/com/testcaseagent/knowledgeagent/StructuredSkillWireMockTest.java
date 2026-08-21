@@ -18,6 +18,8 @@ import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /** Synchronous HTTP consumer tests for the fixed isolated Skill endpoint. [Req-ID]: REQ-SKI-002, REQ-SKI-005 */
 class StructuredSkillWireMockTest {
@@ -87,6 +89,24 @@ class StructuredSkillWireMockTest {
         assertThatThrownBy(() -> adapter().reviewRequirementMaterial(invocation()))
                 .isInstanceOf(StructuredSkillExecutionException.class)
                 .hasMessageContaining("forbidden").hasMessageNotContaining("secret");
+    }
+
+    /** [Req-ID]: REQ-SKI-005 */
+    @ParameterizedTest
+    @ValueSource(strings = {"invalid_request", "request_too_large", "session_not_found", "forbidden",
+            "unsupported_skill", "skill_unavailable", "model_unavailable", "model_execution_failed",
+            "structured_output_invalid", "response_too_large"})
+    void mapsEveryFrozenErrorTypeAndKeepsTheRepairFlag(String wireType) {
+        boolean repairAttempted = wireType.equals("structured_output_invalid");
+        kee.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill"))
+                .willReturn(okJson("{\"success\":false,\"error\":{\"details\":{\"type\":\"" + wireType
+                        + "\",\"repair_attempted\":" + repairAttempted + "}}}")));
+
+        assertThatThrownBy(() -> adapter().reviewRequirementMaterial(invocation()))
+                .isInstanceOfSatisfying(StructuredSkillExecutionException.class, failure -> {
+                    assertThat(failure.type().wireValue()).isEqualTo(wireType);
+                    assertThat(failure.repairAttempted()).isEqualTo(repairAttempted);
+                });
     }
 
     /** [Req-ID]: REQ-SKI-005 */

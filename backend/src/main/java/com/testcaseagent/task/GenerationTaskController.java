@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 import static org.springframework.http.HttpStatus.NOT_FOUND;
+import static org.springframework.http.HttpStatus.CONFLICT;
 
 /**
  * Shared HTTP seam for the initial durable generation task.
@@ -82,6 +83,19 @@ public final class GenerationTaskController {
             return ResponseEntity.noContent().build();
         } catch (GenerationTaskNotFoundException exception) {
             throw new ResponseStatusException(NOT_FOUND, "Task not found");
+        }
+    }
+
+    /** Rebuilds the workbook from the same accepted structured rows without re-running KEE. [Req-ID]: REQ-SGD-005 */
+    @PostMapping("/{taskId}/artifact/regenerate")
+    public ResponseEntity<Void> regenerateArtifact(@PathVariable String taskId) {
+        try {
+            workflow.regenerateStructuredArtifact(taskId);
+            return ResponseEntity.noContent().build();
+        } catch (GenerationTaskNotFoundException exception) {
+            throw new ResponseStatusException(NOT_FOUND, "Task not found");
+        } catch (IllegalStateException exception) {
+            throw new ResponseStatusException(CONFLICT, "Structured artifact cannot be regenerated");
         }
     }
 

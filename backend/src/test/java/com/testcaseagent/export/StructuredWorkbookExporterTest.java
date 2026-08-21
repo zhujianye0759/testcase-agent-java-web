@@ -108,6 +108,16 @@ class StructuredWorkbookExporterTest {
                 new StructuredReviewRow("finding-1", 1, StructuredReviewRow.Source.REQUIREMENT_MATERIAL_REVIEW,
                         "功能", "issue", "| Markdown |", true)), List.of(testcase("case-1", "title", StructuredTestCaseRow.Status.FORMAL)))))
                 .isInstanceOf(WorkbookExportException.class);
+        assertThatThrownBy(() -> exporter.exportStructured(new StructuredWorkbookExportRequest("task-1", List.of(
+                new StructuredReviewRow("finding-1", 1, StructuredReviewRow.Source.FEATURE_RECONCILIATION,
+                        "功能", "exact_match", "合并 fli-bc5dafcd3684fbf0005736a8110f1ef6adc1af19c63a3e8728e992cb534d0b95", true)),
+                List.of(testcase("case-1", "title", StructuredTestCaseRow.Status.FORMAL)))))
+                .isInstanceOf(WorkbookExportException.class);
+        assertThatThrownBy(() -> exporter.exportStructured(new StructuredWorkbookExportRequest("task-1", List.of(
+                new StructuredReviewRow("finding-1", 1, StructuredReviewRow.Source.REQUIREMENT_MATERIAL_REVIEW,
+                        "功能", "issue", "账号被禁用<internal-path>", true)),
+                List.of(testcase("case-1", "title", StructuredTestCaseRow.Status.FORMAL)))))
+                .isInstanceOf(WorkbookExportException.class);
     }
 
     private static StructuredTestCaseRow testcase(String sourceId, String title, StructuredTestCaseRow.Status status) {

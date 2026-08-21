@@ -93,7 +93,8 @@ public final class FunctionListExtractionValidator {
     }
 
     private static String displayText(String value, String field) {
-        return Normalizer.normalize(required(value, field), Normalizer.Form.NFKC).strip().replaceAll("\\s+", " ");
+        String normalized = Normalizer.normalize(required(value, field), Normalizer.Form.NFKC).strip().replaceAll("\\s+", " ");
+        return ReaderFacingTextPolicy.requireSafe(normalized, field);
     }
 
     private static <T> List<T> requiredList(List<T> values, String field) {

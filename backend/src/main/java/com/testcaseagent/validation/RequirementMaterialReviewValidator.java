@@ -25,7 +25,16 @@ public final class RequirementMaterialReviewValidator {
 
     private static void validateFact(WorkItem item, RequirementFact fact) {
         required(fact.factKey(), "factKey");
-        required(fact.function(), "function");
+        ReaderFacingTextPolicy.requireSafe(fact.function(), "function");
+        ReaderFacingTextPolicy.requireSafeItems(requiredList(fact.roles(), "roles"), "role");
+        ReaderFacingTextPolicy.requireSafeItems(requiredList(fact.triggerConditions(), "triggerConditions"), "triggerCondition");
+        ReaderFacingTextPolicy.requireSafeItems(requiredList(fact.inputs(), "inputs"), "input");
+        ReaderFacingTextPolicy.requireSafeItems(requiredList(fact.businessRules(), "businessRules"), "businessRule");
+        ReaderFacingTextPolicy.requireSafeItems(requiredList(fact.outputs(), "outputs"), "output");
+        ReaderFacingTextPolicy.requireSafeItems(requiredList(fact.permissions(), "permissions"), "permission");
+        ReaderFacingTextPolicy.requireSafeItems(requiredList(fact.stateChanges(), "stateChanges"), "stateChange");
+        ReaderFacingTextPolicy.requireSafeItems(requiredList(fact.exceptionHandling(), "exceptionHandling"), "exceptionHandling");
+        ReaderFacingTextPolicy.requireSafeItems(requiredList(fact.externalDependencies(), "externalDependencies"), "externalDependency");
         if (item.supplementaryMaterial()) {
             throw new IllegalArgumentException("Supplementary material cannot independently support a formal requirement fact");
         }
@@ -37,6 +46,11 @@ public final class RequirementMaterialReviewValidator {
 
     private static void validateFinding(WorkItem item, ReviewFinding finding) {
         required(finding.findingKey(), "findingKey");
+        ReaderFacingTextPolicy.requireSafe(finding.issueType(), "issueType");
+        ReaderFacingTextPolicy.requireSafe(finding.description(), "description");
+        ReaderFacingTextPolicy.requireSafe(finding.testDesignImpact(), "testDesignImpact");
+        ReaderFacingTextPolicy.requireSafe(finding.currentProjectRecommendation(), "currentProjectRecommendation");
+        ReaderFacingTextPolicy.requireSafe(finding.designCenterGuidelineRecommendation(), "designCenterGuidelineRecommendation");
         if (finding.handlingLevel() == null) throw new IllegalArgumentException("handlingLevel must not be null");
         List<String> evidence = requiredList(finding.evidenceKeys(), "finding evidenceKeys");
         requireDistinct(evidence, "finding evidenceKey");

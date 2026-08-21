@@ -2,6 +2,7 @@ package com.testcaseagent.export;
 
 import com.testcaseagent.markdown.MarkdownAuditRow;
 import com.testcaseagent.markdown.MarkdownTestCaseRow;
+import com.testcaseagent.validation.ReaderFacingTextPolicy;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -144,6 +145,11 @@ public final class ApachePoiWorkbookExporter implements WorkbookExporter {
     private void rejectStructured(String... values) {
         for (String value : values) {
             if (value == null) throw new WorkbookExportException("Structured export values must not be null");
+            try {
+                if (!value.isBlank()) ReaderFacingTextPolicy.requireSafe(value, "structured export value");
+            } catch (IllegalArgumentException exception) {
+                throw new WorkbookExportException("Structured workbook cannot contain internal identities or placeholders", exception);
+            }
             String trimmed = value.strip();
             if (trimmed.startsWith("{") || trimmed.startsWith("[") || trimmed.contains("```") || trimmed.contains("![")
                     || trimmed.matches("(?is).*https?://.*") || trimmed.matches("(?is).*\\b(?:candidateIds|groupAnchorId|documentId|unitId|[a-z]+_key|evidence_key)\\s*=.*")) {

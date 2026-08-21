@@ -100,6 +100,20 @@ class FunctionalTestcaseResultValidatorTest {
                 new FunctionalTestcaseResultValidator.Result("function-1", "point-1", List.of(malformed))));
     }
 
+    @Test
+    void rejectsInternalKeysInVisibleCaseTextButAllowsThemInBindingClosures() {
+        FunctionalTestcaseResultValidator.WorkItem workItem = workItem(FunctionalTestcaseResultValidator.Basis.FORMAL_REQUIREMENT);
+        FunctionalTestcaseResultValidator.Testcase unsafe = new FunctionalTestcaseResultValidator.Testcase(
+                "case-1", "验证 fact-1724e7041424efc97c0cc3dc53109f39", List.of(),
+                List.of(new FunctionalTestcaseResultValidator.Step(1, "提交", "成功")),
+                List.of("fact-1"), List.of("evidence-1"), FunctionalTestcaseResultValidator.CaseStatus.FORMAL, List.of());
+
+        assertThrows(IllegalArgumentException.class, () -> validator.validate(workItem,
+                new FunctionalTestcaseResultValidator.Result("function-1", "point-1", List.of(unsafe))));
+        assertDoesNotThrow(() -> validator.validate(workItem,
+                result("function-1", "point-1", FunctionalTestcaseResultValidator.CaseStatus.FORMAL)));
+    }
+
     private static FunctionalTestcaseResultValidator.WorkItem workItem(FunctionalTestcaseResultValidator.Basis basis) {
         StructuredValidationRegistry registry = registry();
         List<String> missingInformation = basis == FunctionalTestcaseResultValidator.Basis.GENERAL_EXPERIENCE

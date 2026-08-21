@@ -22,6 +22,8 @@ public final class FunctionalTestcaseResultValidator {
         for (Testcase testcase : cases) {
             Testcase row = Objects.requireNonNull(testcase, "testcase must not be null");
             if (!caseKeys.add(required(row.caseKey(), "caseKey"))) throw new IllegalArgumentException("caseKey must be unique");
+            ReaderFacingTextPolicy.requireSafe(row.title(), "case title");
+            ReaderFacingTextPolicy.requireSafeItems(requiredList(row.preconditions(), "preconditions"), "precondition");
             if (row.caseStatus() == null) throw new IllegalArgumentException("caseStatus must not be null");
             if (item.basis() == Basis.GENERAL_EXPERIENCE && row.caseStatus() != CaseStatus.PENDING_CONFIRMATION) {
                 throw new IllegalArgumentException("General-experience test points can only produce pending-confirmation cases");
@@ -41,6 +43,7 @@ public final class FunctionalTestcaseResultValidator {
             } else {
                 for (String value : missingInformation) required(value, "case missingInformation");
             }
+            ReaderFacingTextPolicy.requireSafeItems(missingInformation, "case missingInformation");
             validateSteps(requiredList(row.steps(), "steps"));
         }
         if (item.basis() == Basis.FORMAL_REQUIREMENT && !hasFormalCoverage) {
@@ -66,6 +69,8 @@ public final class FunctionalTestcaseResultValidator {
         for (int index = 0; index < steps.size(); index++) {
             Step step = Objects.requireNonNull(steps.get(index), "step must not be null");
             if (step.stepNo() != index + 1) throw new IllegalArgumentException("stepNo must start at 1 and be consecutive");
+            ReaderFacingTextPolicy.requireSafe(step.action(), "step action");
+            ReaderFacingTextPolicy.requireSafe(step.expected(), "step expected");
         }
     }
 
@@ -101,13 +106,14 @@ public final class FunctionalTestcaseResultValidator {
         public WorkItem {
             registry = Objects.requireNonNull(registry, "registry must not be null");
             required(functionKey, "functionKey");
-            required(functionName, "functionName");
+            ReaderFacingTextPolicy.requireSafe(functionName, "functionName");
             required(testPointKey, "testPointKey");
-            required(description, "description");
+            ReaderFacingTextPolicy.requireSafe(description, "description");
             if (testPointType == null || basis == null) throw new IllegalArgumentException("testPointType and basis must not be null");
             requirementFactKeys = requiredList(requirementFactKeys, "requirementFactKeys");
             evidenceKeys = requiredList(evidenceKeys, "evidenceKeys");
             missingInformation = requiredList(missingInformation, "missingInformation");
+            ReaderFacingTextPolicy.requireSafeItems(missingInformation, "missingInformation");
             registry.require(StructuredKeyType.FUNCTION, functionKey);
             registry.require(StructuredKeyType.TEST_POINT, testPointKey);
             requireSubset(requirementFactKeys, requirementFactKeys, StructuredKeyType.REQUIREMENT_FACT, registry, "requirement fact");
