@@ -6,6 +6,8 @@
 
 KEE 已加强直接依据的 Skill 约束，但运行失败证明现有 `functional-testcase-design` 输入只有 fact/evidence key 和测试点描述，没有把已验收正式事实正文传给模型。Java 仍拥有最终业务规则校验和入库责任，不能把提示词遵循当作信任边界；同时 KEE 也不能执行“直接复用来源片段”的合同，除非调用方提供当前授权正文。
 
+最终任务 `cef21af2-20c6-446a-950b-c464dc17e951` 进一步证明支持闭包的上游也必须校验：已接收 `fact-00b8...` 虽引用合法 evidence，却把“正确密码”删写成“密码”，把原句拆写为“密码必须正确/用户状态必须正常/用户必须已注册”，并新增“会话状态由未登录变为已登录”。这些 fact 字段随后会被 Java 当作可信 `formal_supports`，因此只在 testcase 结果端校验不足以建立真实来源边界。
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -64,12 +66,21 @@ KEE 与 Java 使用同一类别映射：title 只从 `function` 复制；precond
 
 该字段只帮助 KEE 首次生成时执行 direct-copy 合同。Java 仍按现有 `FunctionalTestcaseResultValidator` 对 title、precondition、action 和 expected 逐字段失败关闭；不得自动降级 formal、不得把 `business_validation_failed` 加入模型重试白名单，也不得把原始模型响应持久化。
 
+### 7. requirement fact 在成为支持闭包前必须先由 cited evidence 逐字段证明
+
+`RequirementMaterialReviewValidator` 仍是 review result 进入 `StructuredGenerationAcceptanceStore.acceptReview` 的业务验收入口，但其 `WorkItem` 必须获得当前切片中每个 allowed evidence key 对应的冻结 parsed-unit 正文。正文只能由 coordinator 当前 `RequirementMaterialQualityReviewInput.units` 或 store 按同 task/material/slice 耐久坐标解析，调用方提供的 key 不能单独充当授权事实。
+
+对 fact 的 `function` 以及 `roles`、`trigger_conditions`、`inputs`、`business_rules`、`outputs`、`permissions`、`state_changes`、`exception_handling`、`external_dependencies` 中每个非空项，Java 执行与 testcase grounding 相同的 NFKC、大小写及空白/标点归一化，然后要求完整候选片段连续包含于该 fact 引用的至少一条 evidence 正文。不得接受同义改写、语义拆写或跨证据拼接。任一项不满足时，validator 在任何 fact/finding/reference 行写入前拒绝整个 review result；coordinator 记录稳定 `business_validation_failed`，不进入模型瞬时错误重试。
+
+正向控制采用同一受控任务的 `fact-9439...`：其 function、role、trigger、input、整句 rule、output、permission 和 state 都能在 cited parsed-unit 中按上述归一化规则连续找到。该规则不改变 testcase validator，也不要求修改 KEE 结果字段。
+
 ## Risks / Trade-offs
 
 - **合法同义改写被拒绝** → 这是失败关闭的预期代价；模型可保留为待确认候选，正式内容使用来源直接片段。
 - **固定包装规则逐渐变成业务词表** → 包装只允许无业务含义的结构词，并用正向/对抗测试锁定；不得添加领域名词。
 - **只恢复事实键而丢失正文** → MySQL 恢复测试覆盖首次执行和重启路径，要求支持闭包内容一致。
 - **部分用例写入后才发现越界** → validator 必须在事务行写入前验证完整 Result；集成测试断言失败后 test point、case、step 和 binding 均为零新增。
+- **合法 review fact 被保守拒绝** → 正式 fact 只接受可直接审计的原文片段；同义改写由 KEE 在返回前纠正，Java 不做语义猜测。
 
 ## Migration Plan
 

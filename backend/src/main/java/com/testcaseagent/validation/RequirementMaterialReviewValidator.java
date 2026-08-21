@@ -1,11 +1,17 @@
 package com.testcaseagent.validation;
 
+import java.text.Normalizer;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
-/** Validates one requirement-material review result without repairing or retaining partial model output. [Req-ID]: REQ-STG-001, REQ-STG-002 */
+/** Validates one requirement-material review result without repairing or retaining partial model output. [Req-ID]: REQ-STG-001, REQ-STG-002, REQ-FTG-005 */
 public final class RequirementMaterialReviewValidator {
 
     /** Validates all result rows before the caller performs its atomic persistence. */
@@ -42,6 +48,16 @@ public final class RequirementMaterialReviewValidator {
         if (evidence.isEmpty()) throw new IllegalArgumentException("A formal requirement fact requires evidence");
         requireDistinct(evidence, "fact evidenceKey");
         evidence.forEach(key -> item.requireSliceEvidence(key));
+        item.requireDirectEvidence(fact.function(), "function", evidence);
+        item.requireDirectEvidence(fact.roles(), "role", evidence);
+        item.requireDirectEvidence(fact.triggerConditions(), "triggerCondition", evidence);
+        item.requireDirectEvidence(fact.inputs(), "input", evidence);
+        item.requireDirectEvidence(fact.businessRules(), "businessRule", evidence);
+        item.requireDirectEvidence(fact.outputs(), "output", evidence);
+        item.requireDirectEvidence(fact.permissions(), "permission", evidence);
+        item.requireDirectEvidence(fact.stateChanges(), "stateChange", evidence);
+        item.requireDirectEvidence(fact.exceptionHandling(), "exceptionHandling", evidence);
+        item.requireDirectEvidence(fact.externalDependencies(), "externalDependency", evidence);
     }
 
     private static void validateFinding(WorkItem item, ReviewFinding finding) {
@@ -72,9 +88,17 @@ public final class RequirementMaterialReviewValidator {
         return value;
     }
 
-    /** Frozen material coordinates for exactly one review invocation. */
+    private static String normalize(String value) {
+        String normalized = Normalizer.normalize(required(value, "grounding text"), Normalizer.Form.NFKC)
+                .toLowerCase(Locale.ROOT);
+        StringBuilder compact = new StringBuilder(normalized.length());
+        normalized.codePoints().filter(Character::isLetterOrDigit).forEach(compact::appendCodePoint);
+        return compact.toString();
+    }
+
+    /** Frozen material coordinates and parsed-unit text for exactly one review invocation. */
     public record WorkItem(StructuredValidationRegistry registry, String materialKey, String contentTypeKey,
-            List<String> allowedEvidenceKeys) {
+            List<String> allowedEvidenceKeys, Map<String, String> evidenceTexts) {
         public WorkItem {
             registry = Objects.requireNonNull(registry, "registry must not be null");
             required(materialKey, "materialKey");
@@ -88,6 +112,15 @@ public final class RequirementMaterialReviewValidator {
             requireDistinct(checkedEvidence, "allowedEvidenceKey");
             for (String key : checkedEvidence) registry.requireEvidence(key, materialKey);
             allowedEvidenceKeys = checkedEvidence;
+            Map<String, String> suppliedTexts = Objects.requireNonNull(evidenceTexts, "evidenceTexts must not be null");
+            if (!suppliedTexts.keySet().equals(new LinkedHashSet<>(checkedEvidence))) {
+                throw new IllegalArgumentException("evidenceTexts must exactly match allowedEvidenceKeys");
+            }
+            Map<String, String> checkedTexts = new LinkedHashMap<>();
+            for (String key : checkedEvidence) {
+                checkedTexts.put(key, required(suppliedTexts.get(key), "evidenceText"));
+            }
+            evidenceTexts = Collections.unmodifiableMap(checkedTexts);
         }
 
         private void requireSliceEvidence(String evidenceKey) {
@@ -95,6 +128,22 @@ public final class RequirementMaterialReviewValidator {
                 throw new IllegalArgumentException("Review evidence is outside the current parsed-unit slice");
             }
             registry.requireEvidence(evidenceKey, materialKey);
+        }
+
+        private void requireDirectEvidence(String value, String field, List<String> citedEvidenceKeys) {
+            String claim = normalize(value);
+            if (claim.isEmpty()) throw new IllegalArgumentException(field + " has no business content after normalization");
+            boolean supported = citedEvidenceKeys.stream()
+                    .map(evidenceTexts::get)
+                    .map(RequirementMaterialReviewValidator::normalize)
+                    .anyMatch(source -> !source.isEmpty() && source.contains(claim));
+            if (!supported) {
+                throw new IllegalArgumentException(field + " is not directly supported by its cited parsed-unit evidence");
+            }
+        }
+
+        private void requireDirectEvidence(List<String> values, String field, List<String> citedEvidenceKeys) {
+            values.forEach(value -> requireDirectEvidence(value, field, citedEvidenceKeys));
         }
 
         boolean supplementaryMaterial() {

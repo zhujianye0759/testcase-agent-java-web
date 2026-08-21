@@ -128,6 +128,12 @@ public final class DefaultStructuredAllGenerationCoordinator implements Structur
                     material.documentId(), contentType, sourceLabel, material.units())) {
                 cancellationCheckpoint(taskId);
                 List<String> evidence = input.units().stream().map(RequirementMaterialQualityReviewInput.MaterialUnit::unitKey).toList();
+                Map<String, String> evidenceTexts = new LinkedHashMap<>();
+                input.units().forEach(unit -> {
+                    if (evidenceTexts.putIfAbsent(unit.unitKey(), unit.content()) != null) {
+                        throw new IllegalArgumentException("Review slice unit keys must be unique");
+                    }
+                });
                 String identity = identity(taskId, "REQUIREMENT_MATERIAL_REVIEW", input);
                 var registration = new StructuredGenerationAcceptanceStore.WorkRegistration(taskId, identity,
                         "requirement-material-quality-review", "REQUIREMENT_MATERIAL_REVIEW",
@@ -138,7 +144,7 @@ public final class DefaultStructuredAllGenerationCoordinator implements Structur
                             new RequirementMaterialQualityReviewInvocation(sessionId, request.agentId(), request.requirementScope(), input)).data().result());
                     RequirementMaterialReviewValidator.Result namespaced = namespaceReview(taskId, identity, result);
                     store.acceptReview(claim, reviewValidator, new RequirementMaterialReviewValidator.WorkItem(
-                            registry, input.materialKey(), input.contentTypeKey().wireValue(), evidence), namespaced);
+                            registry, input.materialKey(), input.contentTypeKey().wireValue(), evidence, evidenceTexts), namespaced);
                     return null;
                 });
             }

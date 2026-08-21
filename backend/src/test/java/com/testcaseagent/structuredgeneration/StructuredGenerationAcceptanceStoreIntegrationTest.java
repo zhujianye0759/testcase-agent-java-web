@@ -2,6 +2,8 @@ package com.testcaseagent.structuredgeneration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
+import static org.assertj.core.api.SoftAssertions.assertSoftly;
 
 import com.testcaseagent.validation.FeatureReconciliationValidator;
 import com.testcaseagent.validation.FunctionalTestcaseResultValidator;
@@ -19,6 +21,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -29,7 +33,7 @@ import org.testcontainers.containers.MySQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-/** MySQL acceptance tests for atomic structured result persistence. [Req-ID]: REQ-STG-001, REQ-STG-006 */
+/** MySQL acceptance tests for atomic structured result persistence. [Req-ID]: REQ-STG-001, REQ-STG-006, REQ-FTG-005 */
 @Testcontainers
 @SpringBootTest(classes = TestCaseAgentApplication.class)
 class StructuredGenerationAcceptanceStoreIntegrationTest {
@@ -88,8 +92,65 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM structured_reference_binding", Integer.class)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT status FROM structured_generation_work_item WHERE id = ?", String.class, workId)).isEqualTo("COMPLETED");
         assertThat(jdbc.queryForObject("SELECT source_label FROM structured_generation_work_item WHERE id = ?", String.class, workId)).isEqualTo("requirements slice 33-64");
-        RequirementMaterialReviewValidator.Result changed = new RequirementMaterialReviewValidator.Result(List.of(fact("fact-1", "changed function")), List.of());
+        RequirementMaterialReviewValidator.Result changed = new RequirementMaterialReviewValidator.Result(List.of(fact("fact-1", "取消订单")), List.of());
         assertThatThrownBy(() -> store.acceptReview(claim, validator, item, changed)).isInstanceOf(IllegalStateException.class);
+    }
+
+    /** [Req-ID]: REQ-FTG-005 */
+    @Test
+    void rejectsObservedFact00b8BecauseItsNarrationIsNotDirectlySupportedByTheCitedParsedUnit() {
+        StructuredGenerationAcceptanceStore.WorkClaim claim = claimReviewWork();
+        RequirementMaterialReviewValidator.WorkItem item = reviewItem();
+        RequirementMaterialReviewValidator.RequirementFact observed = new RequirementMaterialReviewValidator.RequirementFact(
+                "fact-00b802d0f40f0d37173b0a2fd8660f78", "用户中心→账号登录",
+                List.of("已注册且状态正常的用户"), List.of("用户在登录页提交账号和密码"),
+                List.of("账号", "密码"), List.of("密码必须正确", "用户状态必须正常", "用户必须已注册"),
+                List.of("系统进入首页", "首页显示当前用户名称"), List.of(),
+                List.of("用户会话状态由未登录变为已登录"), List.of(), List.of(), List.of("evidence-1"));
+
+        Throwable failure = catchThrowable(() -> store.acceptReview(claim, new RequirementMaterialReviewValidator(), item,
+                new RequirementMaterialReviewValidator.Result(
+                        List.of(observed), List.of(finding("finding-would-have-been-accepted")))));
+
+        assertReviewGroundingFailureLeftNoBusinessRows(claim, item, observed.factKey(), failure);
+    }
+
+    /** [Req-ID]: REQ-FTG-005 */
+    @ParameterizedTest(name = "rejects unsupported requirement-fact family: {0}")
+    @ValueSource(strings = {"function", "roles", "triggerConditions", "inputs", "businessRules", "outputs",
+            "permissions", "stateChanges", "exceptionHandling", "externalDependencies"})
+    void rejectsUnsupportedTextInEveryRequirementFactNarrativeFamily(String family) {
+        StructuredGenerationAcceptanceStore.WorkClaim claim = claimReviewWork();
+        RequirementMaterialReviewValidator.WorkItem item = reviewItem();
+        RequirementMaterialReviewValidator.RequirementFact unsupported = unsupportedFact(family);
+
+        Throwable failure = catchThrowable(() -> store.acceptReview(claim, new RequirementMaterialReviewValidator(), item,
+                new RequirementMaterialReviewValidator.Result(List.of(unsupported), List.of())));
+
+        assertReviewGroundingFailureLeftNoBusinessRows(claim, item, unsupported.factKey(), failure);
+    }
+
+    /** [Req-ID]: REQ-FTG-005 */
+    @Test
+    void acceptsObservedFact9439WhenEveryNarrativeItemIsACompleteParsedUnitFragment() {
+        StructuredGenerationAcceptanceStore.WorkClaim claim = claimReviewWork();
+        RequirementMaterialReviewValidator.RequirementFact grounded = new RequirementMaterialReviewValidator.RequirementFact(
+                "fact-943950fe000553b979502018f04c4c2f", "用户中心账号登录",
+                List.of("已注册且状态正常的用户"), List.of("用户在登录页提交账号和正确密码"),
+                List.of("账号", "正确密码"),
+                List.of("已注册且状态正常的用户在登录页提交账号和正确密码后，系统进入首页并显示当前用户名称"),
+                List.of("进入首页", "显示当前用户名称"), List.of("已注册且状态正常的用户"),
+                List.of("系统进入首页"), List.of(), List.of(), List.of("evidence-1"));
+
+        store.acceptReview(claim, new RequirementMaterialReviewValidator(), reviewItem(),
+                new RequirementMaterialReviewValidator.Result(List.of(grounded), List.of()));
+
+        assertThat(jdbc.queryForObject(
+                "SELECT COUNT(*) FROM structured_requirement_fact WHERE work_item_id = ?", Integer.class,
+                claim.workItemId())).isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+                "SELECT COUNT(*) FROM structured_reference_binding WHERE work_item_id = ?", Integer.class,
+                claim.workItemId())).isEqualTo(1);
     }
 
     /** [Req-ID]: REQ-STG-001, REQ-STG-003, REQ-STG-006 */
@@ -103,7 +164,7 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
         StructuredGenerationAcceptanceStore.WorkClaim review = store.claimNext("task-1", "worker-1").orElseThrow();
         store.acceptReview(review, new RequirementMaterialReviewValidator(),
                 new RequirementMaterialReviewValidator.WorkItem(
-                        liveRegistry, "material-1", "requirements_spec", List.of("evidence-1")),
+                        liveRegistry, "material-1", "requirements_spec", List.of("evidence-1"), reviewEvidenceTexts()),
                 new RequirementMaterialReviewValidator.Result(List.of(fact("fact-confirmed", "事实显示名称")), List.of()));
 
         store.register(new StructuredGenerationAcceptanceStore.WorkRegistration("task-1", "2".repeat(64),
@@ -364,7 +425,7 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
                 .register(StructuredKeyType.MATERIAL, "material-1")
                 .registerEvidence(new StructuredEvidence("evidence-1", "task-other", "material-1", false, false, true));
         RequirementMaterialReviewValidator.WorkItem foreign = new RequirementMaterialReviewValidator.WorkItem(
-                otherTaskRegistry, "material-1", "requirements_spec", List.of("evidence-1"));
+                otherTaskRegistry, "material-1", "requirements_spec", List.of("evidence-1"), reviewEvidenceTexts());
 
         assertThatThrownBy(() -> store.acceptReview(claim, new RequirementMaterialReviewValidator(), foreign,
                 new RequirementMaterialReviewValidator.Result(List.of(fact("fact-1")), List.of())))
@@ -620,7 +681,12 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
         StructuredValidationRegistry registry = StructuredValidationRegistry.forTask("task-1")
                 .register(StructuredKeyType.MATERIAL, "material-1")
                 .registerEvidence(new StructuredEvidence("evidence-1", "task-1", "material-1", false, false, true));
-        return new RequirementMaterialReviewValidator.WorkItem(registry, "material-1", "requirements_spec", List.of("evidence-1"));
+        return new RequirementMaterialReviewValidator.WorkItem(
+                registry, "material-1", "requirements_spec", List.of("evidence-1"), reviewEvidenceTexts());
+    }
+    private static Map<String, String> reviewEvidenceTexts() {
+        return Map.of("evidence-1", "用户中心→账号登录 功能 role 提交订单 取消订单 事实显示名称 "
+                + "已注册且状态正常的用户在登录页提交账号和正确密码后，系统进入首页并显示当前用户名称");
     }
     private static RequirementMaterialReviewValidator.RequirementFact fact(String key) {
         return fact(key, "功能");
@@ -628,6 +694,47 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
     private static RequirementMaterialReviewValidator.RequirementFact fact(String key, String function) {
         return new RequirementMaterialReviewValidator.RequirementFact(key, function, List.of("role"), List.of(), List.of(), List.of(),
                 List.of(), List.of(), List.of(), List.of(), List.of(), List.of("evidence-1"));
+    }
+
+    private static RequirementMaterialReviewValidator.RequirementFact unsupportedFact(String family) {
+        String unsupported = "材料没有写明的内容";
+        return new RequirementMaterialReviewValidator.RequirementFact(
+                "fact-unsupported-" + family,
+                "function".equals(family) ? unsupported : "用户中心账号登录",
+                "roles".equals(family) ? List.of(unsupported) : List.of(),
+                "triggerConditions".equals(family) ? List.of(unsupported) : List.of(),
+                "inputs".equals(family) ? List.of(unsupported) : List.of(),
+                "businessRules".equals(family) ? List.of(unsupported) : List.of(),
+                "outputs".equals(family) ? List.of(unsupported) : List.of(),
+                "permissions".equals(family) ? List.of(unsupported) : List.of(),
+                "stateChanges".equals(family) ? List.of(unsupported) : List.of(),
+                "exceptionHandling".equals(family) ? List.of(unsupported) : List.of(),
+                "externalDependencies".equals(family) ? List.of(unsupported) : List.of(),
+                List.of("evidence-1"));
+    }
+
+    private void assertReviewGroundingFailureLeftNoBusinessRows(
+            StructuredGenerationAcceptanceStore.WorkClaim claim,
+            RequirementMaterialReviewValidator.WorkItem item,
+            String factKey,
+            Throwable failure) {
+        assertSoftly(softly -> {
+            softly.assertThat(failure).isInstanceOf(IllegalArgumentException.class);
+            softly.assertThat(jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM structured_requirement_fact WHERE work_item_id = ?", Integer.class,
+                    claim.workItemId())).isZero();
+            softly.assertThat(jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM structured_review_finding WHERE work_item_id = ?", Integer.class,
+                    claim.workItemId())).isZero();
+            softly.assertThat(jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM structured_reference_binding WHERE work_item_id = ?", Integer.class,
+                    claim.workItemId())).isZero();
+            softly.assertThat(jdbc.queryForObject(
+                    "SELECT status FROM structured_generation_work_item WHERE id = ?", String.class,
+                    claim.workItemId())).isEqualTo("RUNNING");
+            softly.assertThat(catchThrowable(() -> item.registry().require(
+                    StructuredKeyType.REQUIREMENT_FACT, factKey))).isInstanceOf(IllegalArgumentException.class);
+        });
     }
     private static RequirementMaterialReviewValidator.ReviewFinding finding(String key) {
         return new RequirementMaterialReviewValidator.ReviewFinding(key, "ambiguity", "description", List.of("evidence-1"),

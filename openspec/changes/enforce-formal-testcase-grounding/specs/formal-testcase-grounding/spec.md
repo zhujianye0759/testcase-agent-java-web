@@ -61,3 +61,20 @@ KEE 与 Java SHALL 使用相同的字段类别：title 对应 `function`；preco
 #### Scenario: 重启后输入保持相同
 - **WHEN** 上游已完成且新 coordinator 从数据库恢复尚未执行的测试用例工作
 - **THEN** Java SHALL 从耐久 `AcceptedFact` 重建与首次执行字节语义相同的 `formal_supports`，不得依赖进程内 test point 描述或模型响应
+
+### Requirement: [REQ-FTG-005] 正式需求事实字段必须由其绑定证据直接支持
+Java SHALL 在 requirement review 结果原子持久化前，对每个正式 requirement fact 的 `function` 以及 `roles`、`trigger_conditions`、`inputs`、`business_rules`、`outputs`、`permissions`、`state_changes`、`exception_handling`、`external_dependencies` 中每个非空项分别验证。每项 MUST 在该 fact 引用、属于当前 task/material/slice 且已完整遍历的至少一条 parsed-unit 正文中连续直接出现；evidence key 合法本身 MUST NOT 证明 fact 正文有依据。
+
+校验 SHALL 使用 Unicode NFKC、ASCII 大小写及空白/标点归一化后的连续包含关系，MUST NOT 接受同义改写、语义拆写、词序重组或跨 evidence 的零散拼接。任一 fact 字段不满足时，Java SHALL 以 `business_validation_failed` 终止该 work item，完整 review result 的 fact、finding 和 reference binding 均 SHALL 零接收，且 MUST NOT 进入 Java 模型瞬时错误重试。
+
+#### Scenario: cited key 合法但事实正文改写或新增
+- **WHEN** evidence 原文仅写“提交账号和正确密码”及登录结果，而 fact 删除“正确”、拆写“密码必须正确/用户必须已注册”或新增“会话状态由未登录变为已登录”
+- **THEN** Java SHALL 拒绝整个 requirement review result，且不得将该 fact 用作后续 `formal_supports`
+
+#### Scenario: 同任务正控事实全部来自原文片段
+- **WHEN** fact 的各非空字段均可在其 cited parsed-unit 原文中按规定归一化后连续找到
+- **THEN** Java SHALL 在其他 review 业务规则也满足时允许该 fact 进入原子接收
+
+#### Scenario: 每类 requirement fact 叙述字段使用同一依据门禁
+- **WHEN** function 或任一角色、触发、输入、规则、输出、权限、状态、异常、依赖项缺少直接 evidence 片段
+- **THEN** Java SHALL 对任一字段族执行相同失败关闭判定，不得只校验部分字段族

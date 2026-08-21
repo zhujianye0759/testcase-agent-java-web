@@ -27,3 +27,9 @@
 - [x] 5.3 由 coordinator 从当前测试点绑定的耐久 `AcceptedFact` 构造确定顺序支持正文；限制 fact/evidence 闭包，缺失/空/越界在网络前失败关闭，不信任 test point description。 `[Req-ID]: REQ-FTG-003, REQ-FTG-004`
 - [x] 5.4 保持现有 formal validator、pending/coverage、`business_validation_failed` 非重试和原子零接收语义；增加账号/手机号、Token 正反控制及重启恢复一致性测试。 `[Req-ID]: REQ-FTG-001~004`
 - [x] 5.5 运行 input contract、wire、coordinator、validator、MySQL 聚焦，以及 `openspec validate enforce-formal-testcase-grounding --strict`、`git diff --check` 和敏感信息形态检查；KEE 对应资产 GREEN 前不得部署或创建新验收任务。 `[Req-ID]: all`
+
+## 6. Requirement fact 直接依据门禁
+
+- [x] 6.1 从最终任务 `cef21af2-20c6-446a-950b-c464dc17e951` 建立 requirement-review 原子接收 RED：`fact-00b8...` 的删词、拆写和新增状态必须拒绝；逐一覆盖 fact 全部叙述字段族，并以 `fact-9439...` 的直接原文片段作为正控。失败时 fact/finding/binding 零接收。 `[Req-ID]: REQ-FTG-005`
+- [x] 6.2 在当前 review work 的同 task/material/slice 冻结闭包中解析 cited evidence 正文，并在 `RequirementMaterialReviewValidator` 对完整 result 先校验后持久化；失败稳定分类为 `business_validation_failed` 且不重试。不得放宽 testcase validator。 `[Req-ID]: REQ-FTG-005`
+- [x] 6.3 运行 review validator、coordinator、MySQL acceptance、testcase grounding 回归，以及 OpenSpec strict、diff 和敏感信息门禁；KEE requirement review 与 testcase input-aware 校验完成前不得部署或创建任务。 `[Req-ID]: all`

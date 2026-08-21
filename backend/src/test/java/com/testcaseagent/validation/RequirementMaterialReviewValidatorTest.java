@@ -5,9 +5,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
-/** Tests requirement-material result business acceptance. [Req-ID]: REQ-STG-001, REQ-STG-002 */
+/** Tests requirement-material result business acceptance. [Req-ID]: REQ-STG-001, REQ-STG-002, REQ-FTG-005 */
 class RequirementMaterialReviewValidatorTest {
     private final RequirementMaterialReviewValidator validator = new RequirementMaterialReviewValidator();
 
@@ -61,12 +62,47 @@ class RequirementMaterialReviewValidatorTest {
                 new RequirementMaterialReviewValidator.Result(List.of(unsafe), List.of())));
     }
 
+    /** [Req-ID]: REQ-FTG-005 */
+    @Test
+    void requiresAnExactNonblankParsedUnitTextForEveryAllowedEvidenceKey() {
+        StructuredValidationRegistry registry = StructuredValidationRegistry.forTask("task-1")
+                .register(StructuredKeyType.MATERIAL, "material-1")
+                .registerEvidence(new StructuredEvidence("evidence-1", "task-1", "material-1", false, false, true));
+
+        assertThrows(IllegalArgumentException.class, () -> new RequirementMaterialReviewValidator.WorkItem(
+                registry, "material-1", "requirements_spec", List.of("evidence-1"), Map.of()));
+        assertThrows(IllegalArgumentException.class, () -> new RequirementMaterialReviewValidator.WorkItem(
+                registry, "material-1", "requirements_spec", List.of("evidence-1"), Map.of("evidence-1", " ")));
+        assertThrows(IllegalArgumentException.class, () -> new RequirementMaterialReviewValidator.WorkItem(
+                registry, "material-1", "requirements_spec", List.of("evidence-1"),
+                Map.of("evidence-1", "submit application", "evidence-extra", "other text")));
+    }
+
+    /** [Req-ID]: REQ-FTG-005 */
+    @Test
+    void rejectsARequirementFactAssembledAcrossTwoParsedUnits() {
+        StructuredValidationRegistry registry = StructuredValidationRegistry.forTask("task-1")
+                .register(StructuredKeyType.MATERIAL, "material-1")
+                .registerEvidence(new StructuredEvidence("evidence-1", "task-1", "material-1", false, false, true))
+                .registerEvidence(new StructuredEvidence("evidence-2", "task-1", "material-1", false, false, true));
+        RequirementMaterialReviewValidator.WorkItem item = new RequirementMaterialReviewValidator.WorkItem(
+                registry, "material-1", "requirements_spec", List.of("evidence-1", "evidence-2"),
+                Map.of("evidence-1", "用户提交账号", "evidence-2", "和正确密码"));
+        RequirementMaterialReviewValidator.RequirementFact stitched = new RequirementMaterialReviewValidator.RequirementFact(
+                "fact-1", "用户", List.of(), List.of(), List.of(), List.of("用户提交账号和正确密码"),
+                List.of(), List.of(), List.of(), List.of(), List.of(), List.of("evidence-1", "evidence-2"));
+
+        assertThrows(IllegalArgumentException.class, () -> validator.validate(
+                item, new RequirementMaterialReviewValidator.Result(List.of(stitched), List.of())));
+    }
+
     private static RequirementMaterialReviewValidator.WorkItem workItem(String contentType) {
         StructuredValidationRegistry registry = StructuredValidationRegistry.forTask("task-1")
                 .register(StructuredKeyType.MATERIAL, "material-1")
                 .registerEvidence(new StructuredEvidence("evidence-1", "task-1", "material-1", false, false, true))
                 .registerEvidence(new StructuredEvidence("evidence-other", "task-1", "material-2", false, false, true));
-        return new RequirementMaterialReviewValidator.WorkItem(registry, "material-1", contentType, List.of("evidence-1"));
+        return new RequirementMaterialReviewValidator.WorkItem(registry, "material-1", contentType,
+                List.of("evidence-1"), Map.of("evidence-1", "submit application 订单提交"));
     }
 
     private static RequirementMaterialReviewValidator.RequirementFact fact() {

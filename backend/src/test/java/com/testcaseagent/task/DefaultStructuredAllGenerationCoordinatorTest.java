@@ -42,8 +42,67 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.InOrder;
 
-/** Orchestration tests for the production structured ALL route. [Req-ID]: REQ-STG-001~007 */
+/** Orchestration tests for the production structured ALL route. [Req-ID]: REQ-STG-001~007, REQ-FTG-005 */
 class DefaultStructuredAllGenerationCoordinatorTest {
+
+    /** [Req-ID]: REQ-FTG-005 */
+    @Test
+    void classifiesUngroundedRequirementFactsAsBusinessValidationWithoutStartingTheNextStage() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        RequirementMaterialTraversalService traversal = mock(RequirementMaterialTraversalService.class);
+        StructuredSkillExecutionPort skills = mock(StructuredSkillExecutionPort.class);
+        StructuredSkillSessionPort sessions = mock(StructuredSkillSessionPort.class);
+        StructuredGenerationAcceptanceStore store = mock(StructuredGenerationAcceptanceStore.class);
+        WorkbookExporter exporter = mock(WorkbookExporter.class);
+        CreateGenerationTaskRequest request = mock(CreateGenerationTaskRequest.class);
+        when(request.agentId()).thenReturn("agent-1");
+        when(request.requirementScope()).thenReturn(mock(RequirementScope.class));
+        when(sessions.openStructuredSession()).thenReturn("session-1");
+        when(traversal.traverse("task-review-grounding", request, false)).thenReturn(
+                new RequirementMaterialTraversalService.TraversalResult(List.of(material(
+                        "material-1", "REQUIREMENT", "evidence-1",
+                        "已注册且状态正常的用户在登录页提交账号和正确密码后，系统进入首页并显示当前用户名称"))));
+        AtomicReference<StructuredGenerationAcceptanceStore.WorkRegistration> registration = new AtomicReference<>();
+        when(store.register(any())).thenAnswer(invocation -> {
+            registration.set(invocation.getArgument(0));
+            return "work-review-grounding";
+        });
+        when(store.claimRegistered(anyString(), anyString(), anyString())).thenAnswer(invocation -> {
+            var frozen = registration.get();
+            return java.util.Optional.of(new StructuredGenerationAcceptanceStore.WorkClaim(
+                    "work-review-grounding", "attempt-review-grounding", frozen.taskId(), frozen.identityKey(),
+                    frozen.skillName(), frozen.operationName(), 1, frozen.ordinalStart(), frozen.ordinalEnd(),
+                    frozen.materialKey(), frozen.allowedEvidenceKeys(), invocation.getArgument(2)));
+        });
+        when(skills.reviewRequirementMaterial(any())).thenReturn(success("requirement-material-quality-review",
+                new RequirementMaterialQualityReviewResult(List.of(new RequirementMaterialQualityReviewResult.RequirementFact(
+                        "model-fact", "用户中心→账号登录", List.of("已注册且状态正常的用户"),
+                        List.of("用户在登录页提交账号和密码"), List.of("账号", "密码"),
+                        List.of("密码必须正确", "用户状态必须正常", "用户必须已注册"),
+                        List.of("系统进入首页", "首页显示当前用户名称"), List.of(),
+                        List.of("用户会话状态由未登录变为已登录"), List.of(), List.of(),
+                        List.of("evidence-1"))), List.of())));
+        org.mockito.Mockito.doAnswer(invocation -> {
+            com.testcaseagent.validation.RequirementMaterialReviewValidator validator = invocation.getArgument(1);
+            validator.validate(invocation.getArgument(2), invocation.getArgument(3));
+            return null;
+        }).when(store).acceptReview(any(), any(), any(), any());
+        when(store.acceptedInputs("task-review-grounding"))
+                .thenThrow(new IllegalArgumentException("Ungrounded review fact crossed the acceptance boundary"));
+
+        var coordinator = new DefaultStructuredAllGenerationCoordinator(repository, traversal, skills, sessions,
+                store, exporter, new ObjectMapper());
+
+        assertThatThrownBy(() -> coordinator.execute("task-review-grounding", request))
+                .isInstanceOf(IllegalArgumentException.class);
+        verify(store).fail(any(), org.mockito.ArgumentMatchers.eq("business_validation_failed"));
+        verify(skills).reviewRequirementMaterial(any());
+        verify(skills, never()).extractFunctionList(any());
+        verify(skills, never()).reconcileFeatureScope(any());
+        verify(skills, never()).designFunctionalTestcases(any());
+        verify(exporter, never()).exportStructured(any());
+        verify(exporter, never()).exportMarkdown(any());
+    }
 
     @Test
     void runsReviewExtractReconcileAndTestcaseInOrderThenExportsOnlyPersistedStructuredRows() {
