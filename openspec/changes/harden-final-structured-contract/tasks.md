@@ -18,5 +18,5 @@
 - [x] 3.1 Run focused validators, coordinator, and MySQL/Testcontainers acceptance regressions.
 - [x] 3.2 Run affected backend/frontend regression, OpenSpec strict validation, build, diff, and sensitive-content checks. (The full backend run retains only the separately established legacy fixed-2N/JSON-whitespace failures; affected structured tests pass.)
 - [x] 3.3 Re-run selection-focused backend/frontend and scope regression gates after the document-leaf capability.
-- [ ] 3.4 Review the Java-only diff, commit locally, deploy the existing Java runtime, and run the final GET-only scope gate.
+- [x] 3.4 Review the Java-only diff, commit locally, deploy the existing Java runtime, and run the final GET-only scope gate.
 - [ ] 3.5 Create exactly one final structured ALL task only after all preceding gates pass; record API, database, page, and Excel evidence without retrying or creating another task.
