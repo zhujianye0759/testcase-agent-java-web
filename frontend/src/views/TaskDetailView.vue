@@ -176,7 +176,7 @@ watch(() => props.taskId, () => { void loadTask() })
 
 <template>
   <!-- [Req-ID]: REQ-WEB-003, REQ-WEB-004, REQ-WEB-005, REQ-WEB-006, REQ-WEB-007, REQ-WEB-008, REQ-CWR-001, REQ-CWR-002 -->
-  <!-- [Req-ID]: REQ-UIX-001, REQ-UIX-005, REQ-UIX-006, REQ-UIX-007 -->
+  <!-- [Req-ID]: REQ-UIX-001, REQ-UIX-005, REQ-UIX-006, REQ-UIX-007, REQ-UIX-009 -->
   <section
     class="task-detail"
     aria-labelledby="task-detail-title"
@@ -502,6 +502,7 @@ watch(() => props.taskId, () => { void loadTask() })
 </template>
 
 <style scoped>
+/* [Req-ID]: REQ-UIX-009 — dark glass stage flow on the mission-control surfaces. */
 .task-detail__progress-heading {
   display: flex;
   flex-wrap: wrap;
@@ -523,13 +524,42 @@ watch(() => props.taskId, () => { void loadTask() })
   list-style: none;
 }
 
+/* Pipeline stepper: node dots linked by connector hairlines read as one process line. */
 .task-detail__stage {
+  position: relative;
   min-width: 0;
-  padding: var(--space-16);
-  border: 1px solid var(--color-divider-input);
-  border-radius: var(--radius-md);
-  background: var(--color-surface-muted);
-  color: var(--color-text-secondary);
+  padding: var(--space-32) var(--space-8) var(--space-8);
+  color: var(--color-ink-tertiary);
+  text-align: center;
+}
+
+/* Connector runs from this node's center to the next node's center. */
+.task-detail__stage::before {
+  position: absolute;
+  top: 7px;
+  right: calc(-50% + 14px);
+  left: calc(50% + 14px);
+  height: 2px;
+  background: var(--color-glass-border);
+  content: '';
+}
+
+.task-detail__stage:last-child::before {
+  display: none;
+}
+
+.task-detail__stage::after {
+  position: absolute;
+  top: 1px;
+  left: 50%;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--color-glass-border-strong);
+  border-radius: 50%;
+  background: var(--color-shell-deep);
+  content: '';
+  transform: translateX(-50%);
+  transition: border-color var(--motion-fast), background var(--motion-fast), box-shadow var(--motion-fast);
 }
 
 .task-detail__stage strong,
@@ -542,14 +572,41 @@ watch(() => props.taskId, () => { void loadTask() })
   font: var(--type-caption);
 }
 
-.task-detail__stage--complete,
-.task-detail__stage--current {
-  border-color: var(--color-tech-cyan);
-  color: var(--color-text-primary);
+.task-detail__stage--complete {
+  color: var(--color-ink-secondary);
+}
+
+.task-detail__stage--complete::before {
+  background: var(--color-success);
+}
+
+.task-detail__stage--complete::after {
+  border-color: var(--color-success);
+  background: var(--color-success);
+  box-shadow: 0 0 12px var(--color-success-glass), 0 0 4px var(--color-success);
+}
+
+.task-detail__stage--complete strong {
+  color: var(--color-success-ink);
 }
 
 .task-detail__stage--current {
-  background: var(--color-tech-cyan-bg);
+  color: var(--color-ink-secondary);
+}
+
+.task-detail__stage--current::before {
+  background: var(--gradient-edge-cyan);
+}
+
+.task-detail__stage--current::after {
+  border-color: var(--color-accent-cyan);
+  background: var(--color-accent-cyan);
+  box-shadow: 0 0 16px rgb(34 211 238 / 65%);
+  animation: status-pulse 1.6s ease-in-out infinite;
+}
+
+.task-detail__stage--current strong {
+  color: var(--color-ink-primary);
 }
 
 .task-detail__progress-counts {
@@ -558,7 +615,7 @@ watch(() => props.taskId, () => { void loadTask() })
 
 .task-detail__business-reason {
   margin-top: var(--space-16);
-  color: var(--color-text-secondary);
+  color: var(--color-ink-secondary);
 }
 
 .task-detail__empty {
@@ -567,9 +624,10 @@ watch(() => props.taskId, () => { void loadTask() })
   gap: var(--space-16);
   margin-inline: var(--space-32);
   padding: var(--space-24);
-  border: 1px dashed var(--color-divider-input);
+  border: 1px dashed var(--color-glass-border-strong);
   border-radius: var(--radius-md);
-  background: var(--color-surface-muted);
+  background: var(--color-glass-muted);
+  color: var(--color-ink-secondary);
 }
 
 @media (max-width: 760px) {
@@ -578,8 +636,35 @@ watch(() => props.taskId, () => { void loadTask() })
     grid-template-columns: 1fr;
   }
 
+  /* Single-column layouts turn the pipeline vertical: rail on the left. */
+  .task-detail__stage {
+    padding: var(--space-0) var(--space-0) var(--space-0) var(--space-32);
+    text-align: left;
+  }
+
+  .task-detail__stage::before {
+    top: 22px;
+    right: auto;
+    bottom: calc(-1 * var(--space-8));
+    left: 7px;
+    width: 2px;
+    height: auto;
+  }
+
+  .task-detail__stage::after {
+    top: 3px;
+    left: 0;
+    transform: none;
+  }
+
   .task-detail__empty {
     margin-inline: var(--space-16);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .task-detail__stage--current::after {
+    animation: none;
   }
 }
 </style>

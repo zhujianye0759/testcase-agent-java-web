@@ -2,8 +2,8 @@ package com.testcaseagent.featureaudit;
 
 import com.testcaseagent.scope.ParsedMaterial;
 import com.testcaseagent.scope.ParsedMaterialUnit;
+import com.testcaseagent.scope.ParsedUnitCatalogPort;
 import com.testcaseagent.scope.RequirementDocumentCoordinate;
-import com.testcaseagent.scope.RequirementMaterialReaderPort;
 import com.testcaseagent.task.CreateGenerationTaskRequest;
 import com.testcaseagent.task.GenerationTaskRepository;
 import java.util.ArrayList;
@@ -13,18 +13,18 @@ import java.util.concurrent.CancellationException;
 /**
  * Enumerates every frozen requirement document before atomically opening its durable audit work.
  *
- * <p>It deliberately consumes only {@link RequirementMaterialReaderPort}; preview text and model output cannot
+ * <p>It deliberately consumes only {@link ParsedUnitCatalogPort}; preview text and model output cannot
  * satisfy this completion boundary. A later document failure happens before any inventory is persisted.</p>
  *
  * [Req-ID]: REQ-SMR-002, REQ-SMR-003, REQ-BFA-001
  */
 public final class RequirementMaterialTraversalService {
 
-    private final RequirementMaterialReaderPort materialReader;
+    private final ParsedUnitCatalogPort materialReader;
     private final GenerationTaskRepository repository;
 
     public RequirementMaterialTraversalService(
-            RequirementMaterialReaderPort materialReader, GenerationTaskRepository repository) {
+            ParsedUnitCatalogPort materialReader, GenerationTaskRepository repository) {
         this.materialReader = materialReader;
         this.repository = repository;
     }

@@ -7,6 +7,7 @@ The generation workflow is functionally complete, but the configured KEE agent s
 - Tighten the existing KEE API agent prompt so steps and expected results are one-to-one, negative coverage is concrete, wording is observable, test data is explicit, view operations are granular, and audit findings stay evidence-bounded.
 - Improve the configured Good/Bad example documents so AUTO examples demonstrate the tightened output quality while remaining method-only references and never formal requirement evidence.
 - Redesign the application shell, creation page, task list, and task detail as one coherent, modern technology-oriented PC experience using semantic tokens rather than scattered visual literals.
+- Refine the first visual implementation into a more distinctive, restrained control-deck experience: richer shell/surface hierarchy, controlled technical ambience, and stronger primary-action focus without changing any business workflow.
 - Preserve the current business workflow, REST contracts, strict knowledge scope, fixed Markdown tables, two accumulated Excel worksheets, shared operations, and accessible Chinese wording.
 - Add regression and browser acceptance coverage for loading, ready, empty, no-results, error, keyboard focus, duplicate-submit prevention, and 1024×768, 1440×820, and 1920×1080 viewports.
 

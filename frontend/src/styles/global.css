@@ -1,15 +1,27 @@
 @import './tokens.css';
 
+/*
+ * [Req-ID]: REQ-UIX-009 — immersive dark mission-control visual system.
+ * All values map to semantic tokens; decorative layers are non-semantic,
+ * non-interactive, and removed under prefers-reduced-motion.
+ */
+
 *,
 *::before,
 *::after {
   box-sizing: border-box;
 }
 
+:root {
+  color-scheme: dark;
+  accent-color: var(--color-accent-cyan);
+}
+
 html {
-  color: var(--color-text-primary);
-  background: var(--color-surface-muted);
+  color: var(--color-ink-primary);
+  background: var(--color-shell-abyss);
   font: var(--type-body);
+  scroll-behavior: smooth;
 }
 
 body {
@@ -32,13 +44,51 @@ a {
 }
 
 a {
-  color: var(--color-primary);
+  color: var(--color-accent-cyan);
   text-underline-offset: var(--space-4);
+  transition: color var(--motion-fast), text-decoration-color var(--motion-fast);
+}
+
+a:hover {
+  color: var(--color-primary-disabled);
+}
+
+::selection {
+  background: rgb(34 211 238 / 32%);
+  color: var(--color-ink-primary);
 }
 
 :focus-visible {
-  outline: var(--focus-ring-width) solid var(--color-primary);
+  outline: var(--focus-ring-width) solid var(--color-accent-cyan);
   outline-offset: var(--focus-ring-offset);
+  box-shadow: 0 0 0 var(--space-4) rgb(34 211 238 / 16%);
+}
+
+/* Thin dark scrollbars stay quiet against glass surfaces. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(148 180 226 / 30%) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: var(--radius-lg);
+  background: rgb(148 180 226 / 24%);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(148 180 226 / 42%);
+  background-clip: padding-box;
 }
 
 .skip-link {
@@ -47,9 +97,11 @@ a {
   inset-block-start: var(--space-8);
   inset-inline-start: var(--space-8);
   padding: var(--space-8) var(--space-16);
+  border: 1px solid var(--color-glass-border-strong);
   border-radius: var(--radius-md);
-  background: var(--color-bg-white);
+  background: var(--color-glass-raised);
   box-shadow: var(--shadow-middle);
+  color: var(--color-ink-primary);
   transform: translateY(calc(-100% - var(--space-16)));
 }
 
@@ -64,20 +116,85 @@ a {
   container-name: app-shell;
   container-type: inline-size;
   background:
-    linear-gradient(90deg, var(--color-tech-grid) 1px, transparent 1px),
-    linear-gradient(var(--color-tech-grid) 1px, transparent 1px),
-    var(--color-surface-muted);
-  background-size: var(--space-32) var(--space-32);
+    linear-gradient(180deg, var(--color-shell-deep), var(--color-shell-abyss) 30%, var(--color-shell-abyss)),
+    var(--color-shell-abyss);
 }
 
+/*
+ * Starfield ambience: two repeating dot tiles at different scales read as a
+ * deep sky instead of a pattern, and twinkle through a slow opacity sweep.
+ * Decorative only — no state, no interaction, static under reduced motion.
+ */
+.app-shell::before {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 18% 22%, var(--color-star-bright) 0 1px, transparent 1.6px),
+    radial-gradient(circle at 64% 8%, var(--color-star-soft) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 86% 38%, var(--color-star-bright) 0 1px, transparent 1.6px),
+    radial-gradient(circle at 42% 56%, var(--color-star-soft) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 8% 74%, var(--color-star-soft) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 72% 82%, var(--color-star-bright) 0 1px, transparent 1.6px),
+    radial-gradient(circle at 30% 88%, var(--color-star-soft) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 24% 44%, var(--color-star-bright) 0 1px, transparent 1.6px),
+    radial-gradient(circle at 52% 30%, var(--color-star-soft) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 90% 66%, var(--color-star-soft) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 60% 94%, var(--color-star-bright) 0 1px, transparent 1.6px),
+    radial-gradient(circle at 4% 12%, var(--color-star-soft) 0 1px, transparent 1.5px);
+  background-size: 560px 560px, 560px 560px, 560px 560px, 560px 560px, 560px 560px, 560px 560px, 380px 380px, 380px 380px, 380px 380px, 380px 380px, 380px 380px, 380px 380px;
+  content: '';
+  animation: star-twinkle 9s ease-in-out infinite alternate;
+}
+
+/*
+ * Meteor streak: a short light trail crosses the upper sky roughly once per
+ * cycle, spending most keyframes invisible. Decorative only.
+ */
+.app-shell::after {
+  position: absolute;
+  z-index: 0;
+  top: 10%;
+  left: -12%;
+  width: 220px;
+  height: 2px;
+  border-radius: 2px;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, var(--color-streak), transparent);
+  content: '';
+  filter: blur(0.5px) drop-shadow(0 0 6px var(--color-streak));
+  opacity: 0;
+  transform: rotate(-16deg);
+  animation: starfall 16s linear infinite;
+}
+
+/*
+ * Aurora ambience: oversized blurred gradients drifting slowly. Decorative
+ * only — it carries no state and is made static when reduced motion is set.
+ */
 .app-shell__ambient {
   position: absolute;
   z-index: 0;
-  inset: var(--space-0);
+  inset: -12%;
   pointer-events: none;
   background:
-    radial-gradient(circle at 14% 0%, var(--color-tech-glow), transparent 28%),
-    radial-gradient(circle at 86% 16%, var(--color-primary-bg), transparent 24%);
+    radial-gradient(38% 34% at 12% 4%, var(--color-aurora-cyan), transparent 72%),
+    radial-gradient(34% 32% at 86% 12%, var(--color-aurora-violet), transparent 72%),
+    radial-gradient(48% 40% at 52% 108%, var(--color-aurora-blue), transparent 74%);
+  filter: blur(40px) saturate(120%);
+  animation: aurora-drift 36s ease-in-out infinite alternate;
+}
+
+/* Counter-drifting magenta/blue blobs deepen the sky's color story. */
+.app-shell__ambient::before {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(30% 26% at 70% 78%, var(--color-aurora-magenta), transparent 70%),
+    radial-gradient(26% 24% at 24% 58%, var(--color-aurora-blue), transparent 72%);
+  content: '';
+  animation: aurora-drift 48s ease-in-out infinite alternate-reverse;
 }
 
 .app-shell__header,
@@ -87,10 +204,23 @@ a {
 }
 
 .app-shell__header {
+  position: relative;
   height: var(--shell-top-height);
-  border-bottom: 1px solid var(--color-tech-navy-soft);
-  background: var(--color-tech-navy);
-  box-shadow: var(--shadow-base);
+  border-bottom: 1px solid var(--color-glass-border);
+  background: rgb(6 12 28 / 72%);
+  box-shadow: var(--shadow-middle);
+  backdrop-filter: blur(18px) saturate(140%);
+}
+
+/* Gradient hairline under the shell bar: brand-colored, decorative. */
+.app-shell__header::after {
+  position: absolute;
+  inset-inline: var(--space-0);
+  inset-block-end: -1px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgb(34 211 238 / 55%) 30%, rgb(129 140 248 / 55%) 70%, transparent);
+  content: '';
+  pointer-events: none;
 }
 
 .app-shell__nav,
@@ -112,7 +242,7 @@ a {
   flex: 0 0 auto;
   gap: var(--space-8);
   align-items: center;
-  color: var(--color-bg-white);
+  color: var(--color-ink-primary);
   text-decoration: none;
 }
 
@@ -121,9 +251,10 @@ a {
   width: var(--space-32);
   height: var(--space-32);
   place-items: center;
-  border: 1px solid var(--color-tech-cyan);
+  border: 1px solid var(--color-accent-cyan);
   border-radius: var(--radius-md);
-  background: var(--color-tech-navy-soft);
+  background: var(--gradient-action-primary);
+  box-shadow: var(--shadow-glow-cyan);
   color: var(--color-bg-white);
   font: var(--type-caption);
   letter-spacing: 1px;
@@ -139,7 +270,7 @@ a {
 }
 
 .app-shell__brand small {
-  color: var(--color-primary-disabled);
+  color: var(--color-ink-tertiary);
   font: var(--type-caption);
   letter-spacing: 1px;
 }
@@ -150,20 +281,26 @@ a {
 }
 
 .app-shell__nav-link {
+  position: relative;
   display: inline-flex;
   align-items: center;
   padding-inline: var(--space-16);
   border-bottom: var(--space-4) solid transparent;
-  color: var(--color-primary-bg);
+  color: var(--color-ink-secondary);
   font: var(--type-body-strong);
   text-decoration: none;
+  transition: color var(--motion-fast), border-color var(--motion-fast), background var(--motion-fast);
 }
 
 .app-shell__nav-link:hover,
 .app-shell__nav-link--active {
-  border-color: var(--color-tech-cyan);
-  color: var(--color-bg-white);
-  background: rgb(255 255 255 / 8%);
+  border-color: var(--color-accent-cyan);
+  color: var(--color-ink-primary);
+  background: linear-gradient(180deg, transparent, rgb(34 211 238 / 10%));
+}
+
+.app-shell__nav-link--active {
+  box-shadow: inset 0 calc(var(--space-4) * -1) var(--space-8) calc(var(--space-4) * -1) var(--color-accent-cyan);
 }
 
 .app-shell__service-context {
@@ -171,16 +308,21 @@ a {
   gap: var(--space-8);
   align-items: center;
   margin-inline-start: auto;
-  color: var(--color-primary-bg);
+  padding: var(--space-4) var(--space-16);
+  border: 1px solid var(--color-glass-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-glass-muted);
+  color: var(--color-ink-secondary);
   font: var(--type-caption);
 }
 
 .app-shell__service-context span {
-  width: var(--space-16);
-  height: var(--space-4);
-  border-radius: var(--radius-sm);
-  background: var(--color-tech-cyan);
-  box-shadow: 0 0 var(--space-8) var(--color-tech-glow);
+  width: var(--space-8);
+  height: var(--space-8);
+  border-radius: 50%;
+  background: var(--color-accent-cyan);
+  box-shadow: 0 0 var(--space-8) var(--color-accent-cyan);
+  animation: status-pulse 2.4s ease-in-out infinite;
 }
 
 .app-shell__main {
@@ -188,17 +330,19 @@ a {
   padding-block: var(--space-32) var(--space-48);
 }
 
+/* Page entrance: transform/opacity only, removed under reduced motion. */
+.app-shell__main > * {
+  animation: rise-in var(--motion-complex) both;
+}
+
+/*
+ * Top-level sections are unboxed: the hero band, context strip, and
+ * individual module cards carry the hierarchy instead of one big panel.
+ */
 .generation-workspace,
 .task-list,
 .task-detail {
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  background: var(--color-surface-raised);
-  box-shadow: var(--shadow-base);
-}
-
-.generation-workspace {
-  overflow: hidden;
+  position: relative;
 }
 
 .generation-workspace__hero,
@@ -209,11 +353,32 @@ a {
   gap: var(--space-24);
   align-items: flex-start;
   justify-content: space-between;
-  padding: var(--space-32);
-  border-bottom: 1px solid var(--color-border);
+  padding: var(--space-40) var(--space-32);
+  overflow: hidden;
+  border-bottom: 1px solid var(--color-glass-border);
   background:
-    linear-gradient(90deg, var(--color-primary-bg), transparent 62%),
-    var(--color-surface-raised);
+    linear-gradient(100deg, transparent 44%, rgb(56 189 248 / 7%) 50%, transparent 56%),
+    linear-gradient(80deg, transparent 58%, rgb(129 140 248 / 6%) 64%, transparent 70%),
+    radial-gradient(42% 96% at 8% 0%, rgb(34 211 238 / 16%), transparent 60%),
+    radial-gradient(38% 88% at 88% 16%, rgb(129 140 248 / 14%), transparent 62%),
+    linear-gradient(112deg, rgb(34 211 238 / 8%), transparent 52%),
+    linear-gradient(90deg, #0B1B3D, #12264F 56%, #1B2A5E);
+}
+
+/* Slow sheen sweep gives the band life without any pattern chrome. */
+.generation-workspace__hero::before,
+.task-list__heading::before,
+.task-detail__heading::before {
+  position: absolute;
+  top: -20%;
+  bottom: -20%;
+  left: 0;
+  width: 34%;
+  pointer-events: none;
+  background: linear-gradient(100deg, transparent, rgb(148 205 255 / 7%), transparent);
+  content: '';
+  transform: translateX(-120%) skewX(-12deg);
+  animation: hero-sheen 8.5s ease-in-out infinite;
 }
 
 .generation-workspace__hero::after,
@@ -223,15 +388,35 @@ a {
   inset-inline-start: var(--space-0);
   inset-block: var(--space-24);
   width: var(--space-4);
-  background: var(--color-tech-cyan);
+  border-radius: var(--radius-sm);
+  background: var(--gradient-edge-cyan);
+  box-shadow: var(--shadow-glow-cyan);
   content: '';
 }
 
+.generation-workspace__hero > *,
+.task-list__heading > *,
+.task-detail__heading > * {
+  position: relative;
+  z-index: 1;
+}
+
 .page-eyebrow {
-  margin: var(--space-0) var(--space-0) var(--space-8);
-  color: var(--color-tech-cyan);
+  display: flex;
+  gap: var(--space-8);
+  align-items: center;
+  margin: var(--space-0) var(--space-0) var(--space-16);
+  color: var(--color-accent-cyan);
   font: var(--type-caption);
-  letter-spacing: 1px;
+  letter-spacing: 2px;
+}
+
+.page-eyebrow::before {
+  width: var(--space-24);
+  height: 1px;
+  background: var(--color-accent-cyan);
+  box-shadow: var(--shadow-glow-cyan);
+  content: '';
 }
 
 h1,
@@ -245,22 +430,117 @@ h1 {
   font: var(--type-h1);
 }
 
+/* Display-scale gradient titles give the band its focal point. */
+.generation-workspace__hero h1,
+.task-list__heading h1,
+.task-detail__heading h1 {
+  background: var(--gradient-text-heading);
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  font: var(--type-display-36);
+  letter-spacing: 0.5px;
+}
+
+/* The creation hero is the product's front door: full display scale + glow. */
+.generation-workspace__hero h1 {
+  font: var(--type-display-48);
+  letter-spacing: 1px;
+  filter: drop-shadow(0 0 24px rgb(167 139 250 / 32%));
+}
+
 h2 {
+  color: var(--color-ink-primary);
   font: var(--type-h2);
 }
 
 h3 {
+  color: var(--color-ink-primary);
   font: var(--type-h3);
 }
 
 p {
-  color: var(--color-text-secondary);
+  color: var(--color-ink-secondary);
 }
 
 .generation-workspace__lead {
   max-width: 720px;
   margin-top: var(--space-8);
   font: var(--type-paragraph-large);
+}
+
+.generation-workspace__hero .generation-workspace__lead,
+.task-list__heading > div > p:not(.page-eyebrow),
+.task-detail__heading > div > p:not(.page-eyebrow) {
+  color: rgb(234 241 251 / 78%);
+}
+
+.generation-workspace__hero-note p {
+  color: var(--color-ink-secondary);
+}
+
+/*
+ * Decorative radar schematic for the creation hero. Purely ornamental:
+ * aria-hidden in the template, pointer-events none, static under reduced motion.
+ */
+.generation-workspace__hero-visual {
+  position: relative;
+  flex: 0 0 auto;
+  align-self: center;
+  width: 160px;
+  height: 160px;
+  margin-inline: var(--space-8);
+  border: 1px solid rgb(167 139 250 / 36%);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgb(167 139 250 / 12%), transparent 68%);
+  box-shadow: 0 0 28px rgb(167 139 250 / 26%), inset 0 0 var(--space-24) rgb(167 139 250 / 12%);
+  pointer-events: none;
+}
+
+.generation-workspace__hero-visual::before {
+  position: absolute;
+  inset: var(--space-24);
+  border: 1px solid rgb(167 139 250 / 26%);
+  border-radius: 50%;
+  content: '';
+}
+
+.generation-workspace__hero-visual::after {
+  position: absolute;
+  inset: var(--space-56);
+  border: 1px solid rgb(167 139 250 / 40%);
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--color-accent-cyan) 0 3px, transparent 4px);
+  content: '';
+}
+
+.generation-workspace__hero-visual span {
+  position: absolute;
+  inset: var(--space-0);
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, rgb(167 139 250 / 44%), transparent 24%);
+  animation: radar-sweep 6s linear infinite;
+}
+
+.generation-workspace__hero-visual span::before,
+.generation-workspace__hero-visual span::after {
+  position: absolute;
+  width: var(--space-4);
+  height: var(--space-4);
+  border-radius: 50%;
+  background: var(--color-accent-violet);
+  box-shadow: 0 0 var(--space-8) var(--color-accent-violet);
+  content: '';
+}
+
+.generation-workspace__hero-visual span::before {
+  inset-block-start: 26%;
+  inset-inline-start: 62%;
+}
+
+.generation-workspace__hero-visual span::after {
+  inset-block-start: 64%;
+  inset-inline-start: 30%;
 }
 
 .generation-workspace__hero-note,
@@ -272,16 +552,21 @@ p {
   align-items: flex-start;
   max-width: 280px;
   padding: var(--space-16);
-  border: 1px solid var(--color-divider-input);
+  border: 1px solid var(--color-glass-border-strong);
   border-radius: var(--radius-md);
-  background: var(--color-surface-muted);
-  color: var(--color-text-secondary);
+  background: rgb(8 15 33 / 55%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 8%);
+  backdrop-filter: blur(12px);
+  color: var(--color-ink-secondary);
   font: var(--type-caption);
 }
 
 .generation-workspace__hero-note span,
 .task-list__heading-note span {
-  color: var(--color-tech-cyan);
+  background: var(--gradient-text-heading);
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
   font: var(--type-body-strong);
 }
 
@@ -291,44 +576,90 @@ p {
   align-items: center;
   justify-content: space-between;
   padding: var(--space-16) var(--space-32);
-  border-bottom: 1px solid var(--color-border);
-  background: var(--color-surface-muted);
+  border-block: 1px solid var(--color-glass-border);
+  background: var(--color-glass-muted);
+}
+
+.generation-workspace__context p {
+  display: flex;
+  gap: var(--space-8);
+  align-items: center;
+}
+
+.generation-workspace__context p::before {
+  flex: 0 0 auto;
+  width: var(--space-4);
+  height: var(--space-4);
+  border-radius: 50%;
+  background: var(--color-accent-cyan);
+  box-shadow: var(--shadow-glow-cyan);
+  content: '';
 }
 
 .generation-workspace__context a {
   flex: 0 0 auto;
+  padding: var(--space-4) var(--space-16);
+  border: 1px solid var(--color-glass-border-strong);
+  border-radius: var(--radius-md);
   font: var(--type-body-strong);
+  text-decoration: none;
+  transition: border-color var(--motion-fast), background var(--motion-fast), color var(--motion-fast);
+}
+
+.generation-workspace__context a:hover {
+  border-color: var(--color-accent-cyan);
+  background: rgb(34 211 238 / 10%);
+  color: var(--color-accent-cyan);
 }
 
 .task-form {
   display: grid;
   gap: var(--space-24);
   padding: var(--space-32);
+  counter-reset: form-step;
 }
 
+/* Base layout is single-column: the rail unwraps so its children flow inline. */
+.task-form__rail {
+  display: contents;
+}
+
+/* Sections breathe through whitespace and numbered legends instead of nested panels. */
 .task-form fieldset {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
   gap: var(--space-16);
   min-width: 0;
   margin: var(--space-0);
-  padding: var(--space-24);
-  border: 1px solid var(--color-divider-input);
-  border-radius: var(--radius-md);
-  background: var(--color-surface-raised);
+  padding: var(--space-16) var(--space-0) var(--space-8);
+  border: 0;
+  border-block-start: 1px solid var(--color-glass-border);
+  counter-increment: form-step;
+}
+
+.task-form fieldset:first-of-type {
+  border-block-start: 0;
 }
 
 .task-form legend {
   grid-column: 1 / -1;
   padding: var(--space-0);
-  color: var(--color-tech-navy);
+  color: var(--color-ink-primary);
   font: var(--type-h3);
+}
+
+/* Step numbers come from the section order, not from markup text. */
+.task-form legend::before {
+  margin-inline-end: var(--space-8);
+  color: var(--color-accent-violet);
+  content: counter(form-step, decimal-leading-zero);
 }
 
 .task-form label {
   display: grid;
   gap: var(--space-8);
-  color: var(--color-text-primary);
+  color: var(--color-ink-primary);
   font: var(--type-body-strong);
 }
 
@@ -340,30 +671,85 @@ p {
   align-items: flex-start;
   min-height: 96px;
   padding: var(--space-16);
-  border: 1px solid var(--color-divider-input);
+  border: 1px solid var(--color-glass-border);
   border-radius: var(--radius-md);
-  background: var(--color-surface-muted);
+  background:
+    radial-gradient(120% 70% at 50% 0%, rgb(148 205 255 / 5%), transparent 60%),
+    var(--color-glass-inset);
   cursor: pointer;
-  transition: border-color var(--motion-fast), box-shadow var(--motion-fast), background var(--motion-fast);
+  transition: border-color var(--motion-fast), box-shadow var(--motion-fast), background var(--motion-fast), transform var(--motion-fast);
 }
 
 .task-form__mode .task-form__choice:hover {
-  border-color: var(--color-primary);
-  box-shadow: var(--shadow-base);
+  border-color: var(--color-glass-border-strong);
+  box-shadow: var(--shadow-base), var(--shadow-glow-cyan);
+  transform: translateY(calc(var(--space-4) * -1));
 }
 
 .task-form__mode .task-form__choice--selected {
-  border-color: var(--color-primary);
-  background: var(--color-primary-bg);
-  box-shadow: inset var(--space-4) 0 var(--color-tech-cyan);
+  border-color: transparent;
+  background:
+    radial-gradient(120% 70% at 50% 0%, rgb(196 181 253 / 9%), transparent 60%) padding-box,
+    linear-gradient(160deg, rgb(167 139 250 / 13%), rgb(59 130 246 / 10%)) padding-box,
+    linear-gradient(var(--color-glass-active), var(--color-glass-active)) padding-box,
+    var(--gradient-edge-violet) border-box;
+  box-shadow: inset var(--space-4) 0 var(--color-accent-violet), 0 0 18px rgb(167 139 250 / 22%);
 }
 
-.task-form__mode .task-form__choice input {
+/*
+ * Border beam: a bright arc travels the selected card's edge (Linear/
+ * Aceternity-style). Masked to a 1px ring; the card's own gradient edge
+ * stays underneath, so this degrades gracefully where @property is missing.
+ */
+.task-form__mode .task-form__choice--selected::after {
+  position: absolute;
+  inset: -1px;
+  padding: 1px;
+  border-radius: inherit;
+  pointer-events: none;
+  background: conic-gradient(from var(--beam-angle), transparent 0 72%, var(--color-accent-violet) 82%, rgb(255 255 255 / 95%) 86%, var(--color-accent-violet) 90%, transparent 100%);
+  content: '';
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  animation: beam-spin 4.5s linear infinite;
+}
+
+/* Custom dark radio: ring + glowing dot, keyboard focus stays visible. */
+.task-form__mode .task-form__choice input[type='radio'] {
+  appearance: none;
   flex: 0 0 auto;
-  width: auto;
-  min-height: auto;
+  display: grid;
+  place-items: center;
+  width: var(--icon-size-16);
+  height: var(--icon-size-16);
+  min-height: var(--icon-size-16);
   margin: var(--space-4) var(--space-0) var(--space-0);
   padding: var(--space-0);
+  border: 1px solid var(--color-glass-border-strong);
+  border-radius: 50%;
+  background: var(--color-glass-inset);
+  cursor: pointer;
+  transition: border-color var(--motion-fast), box-shadow var(--motion-fast);
+}
+
+.task-form__mode .task-form__choice input[type='radio']::before {
+  width: var(--space-8);
+  height: var(--space-8);
+  border-radius: 50%;
+  background: var(--color-accent-cyan);
+  box-shadow: 0 0 var(--space-8) var(--color-accent-cyan);
+  content: '';
+  transform: scale(0);
+  transition: transform var(--motion-fast);
+}
+
+.task-form__mode .task-form__choice input[type='radio']:checked {
+  border-color: var(--color-accent-cyan);
+  box-shadow: 0 0 0 var(--space-4) rgb(34 211 238 / 14%);
+}
+
+.task-form__mode .task-form__choice input[type='radio']:checked::before {
+  transform: scale(1);
 }
 
 .task-form__mode .task-form__choice span,
@@ -373,13 +759,13 @@ p {
 }
 
 .task-form__mode .task-form__choice strong {
-  color: var(--color-tech-navy);
+  color: var(--color-ink-primary);
   font: var(--type-body-strong);
 }
 
 .task-form__mode .task-form__choice small,
 .task-form__strategy-note span {
-  color: var(--color-text-secondary);
+  color: var(--color-ink-secondary);
   font: var(--type-caption);
 }
 
@@ -396,6 +782,7 @@ p {
 
 .task-form__mode .task-form__help {
   padding-top: var(--space-8);
+  color: var(--color-ink-tertiary);
 }
 
 .task-form input:not([type='radio']),
@@ -404,10 +791,25 @@ p {
   width: 100%;
   min-height: 40px;
   padding: var(--space-8);
-  border: 1px solid var(--color-divider-input);
+  border: 1px solid var(--color-glass-border);
   border-radius: var(--radius-sm);
-  background: var(--color-bg-white);
-  color: var(--color-text-primary);
+  background: var(--color-glass-inset);
+  color: var(--color-ink-primary);
+  transition: border-color var(--motion-fast), box-shadow var(--motion-fast), background var(--motion-fast);
+}
+
+.task-form input:not([type='radio']):hover,
+.task-form select:hover,
+.task-form textarea:hover {
+  border-color: var(--color-glass-border-strong);
+}
+
+.task-form input:not([type='radio']):focus-visible,
+.task-form select:focus-visible,
+.task-form textarea:focus-visible {
+  border-color: var(--color-accent-cyan);
+  outline: none;
+  box-shadow: 0 0 0 var(--space-4) rgb(34 211 238 / 18%), var(--shadow-glow-cyan);
 }
 
 .task-form textarea {
@@ -415,22 +817,42 @@ p {
   resize: vertical;
 }
 
+/* Custom chevron keeps native select semantics with a dark-theme face. */
+.task-form select {
+  appearance: none;
+  padding-inline-end: var(--space-32);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' fill='none' stroke='%2322D3EE' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right var(--space-16) center;
+  cursor: pointer;
+}
+
 .task-form input::placeholder,
 .task-form textarea::placeholder {
-  color: var(--color-text-placeholder);
+  color: var(--color-ink-placeholder);
 }
 
 .task-form__scope-summary,
 .task-form__loading,
 .task-form__strategy-note {
   padding: var(--space-16);
-  border-left: var(--space-4) solid var(--color-tech-cyan);
-  background: var(--color-surface-inset);
+  border-left: var(--space-4) solid var(--color-accent-cyan);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, rgb(34 211 238 / 8%), transparent 72%);
+}
+
+.task-form__scope-summary strong,
+.task-form__strategy-note strong {
+  color: var(--color-ink-primary);
+}
+
+.task-form__scope-summary span {
+  color: var(--color-ink-secondary);
 }
 
 .task-form__scope-cascade {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-16);
 }
 
@@ -443,16 +865,20 @@ p {
   display: grid;
   gap: var(--space-8);
   padding: var(--space-8) var(--space-16);
-  border: 1px solid var(--color-divider-input);
+  border: 1px solid var(--color-glass-border);
   border-radius: var(--radius-sm);
-  background: var(--color-surface-muted);
+  background: var(--color-glass-inset);
+}
+
+.task-form__scope-value strong {
+  color: var(--color-ink-primary);
 }
 
 .task-form__scope-value span,
 .task-form__materials > p,
 .task-form__material-choice small,
 .task-form__material-single span {
-  color: var(--color-text-secondary);
+  color: var(--color-ink-secondary);
   font: var(--type-caption);
 }
 
@@ -485,23 +911,66 @@ p {
   min-height: 56px;
   margin: var(--space-0);
   padding: var(--space-8) var(--space-16);
-  border: 1px solid var(--color-divider-input);
+  border: 1px solid var(--color-glass-border);
   border-radius: var(--radius-sm);
-  background: var(--color-surface-muted);
+  background: var(--color-glass-inset);
+  transition: border-color var(--motion-fast), box-shadow var(--motion-fast), background var(--motion-fast);
+}
+
+.task-form .task-form__material-choice:hover {
+  border-color: var(--color-glass-border-strong);
 }
 
 .task-form__material-choice:has(input:checked) {
-  border-color: var(--color-primary);
-  background: var(--color-primary-bg);
+  border-color: transparent;
+  background:
+    linear-gradient(90deg, rgb(34 211 238 / 12%), rgb(59 130 246 / 10%)) padding-box,
+    linear-gradient(var(--color-glass-active), var(--color-glass-active)) padding-box,
+    var(--gradient-edge-cyan) border-box;
+  box-shadow: inset var(--space-4) 0 var(--color-accent-cyan);
 }
 
-.task-form .task-form__material-choice input[type='checkbox'] {
+/* Custom dark checkbox: cyan fill with a dark check stroke when checked. */
+.task-form .task-form__material-choice input[type='checkbox'],
+.task-form details input[type='checkbox'] {
+  appearance: none;
   flex: 0 0 auto;
+  display: grid;
+  place-items: center;
   width: var(--icon-size-16);
   min-height: var(--icon-size-16);
   height: var(--icon-size-16);
   padding: var(--space-0);
   margin: var(--space-0);
+  border: 1px solid var(--color-glass-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-glass-inset);
+  cursor: pointer;
+  transition: border-color var(--motion-fast), background var(--motion-fast), box-shadow var(--motion-fast);
+}
+
+.task-form .task-form__material-choice input[type='checkbox']::before,
+.task-form details input[type='checkbox']::before {
+  width: var(--space-8);
+  height: var(--space-4);
+  margin-top: calc(var(--space-4) / -2);
+  border-left: 2px solid var(--color-shell-abyss);
+  border-bottom: 2px solid var(--color-shell-abyss);
+  content: '';
+  transform: rotate(-45deg) scale(0);
+  transition: transform var(--motion-fast);
+}
+
+.task-form .task-form__material-choice input[type='checkbox']:checked,
+.task-form details input[type='checkbox']:checked {
+  border-color: var(--color-accent-cyan);
+  background: var(--color-accent-cyan);
+  box-shadow: 0 0 var(--space-8) rgb(34 211 238 / 40%);
+}
+
+.task-form .task-form__material-choice input[type='checkbox']:checked::before,
+.task-form details input[type='checkbox']:checked::before {
+  transform: rotate(-45deg) scale(1);
 }
 
 .task-form__material-choice span,
@@ -510,12 +979,31 @@ p {
   gap: var(--space-4);
 }
 
+.task-form__material-single strong,
+.task-form__material-choice strong {
+  color: var(--color-ink-primary);
+}
+
 .task-form__selection-hint {
-  color: var(--color-warning-active) !important;
+  color: var(--color-warning-ink) !important;
 }
 
 .task-form__loading {
-  color: var(--color-text-secondary);
+  position: relative;
+  overflow: hidden;
+  color: var(--color-ink-secondary);
+}
+
+/* Loading shimmer: a transform-based sweep, removed under reduced motion. */
+.task-form__loading::after,
+.task-list__state[role='status']::after,
+.task-detail > [role='status']:not([data-state='empty'])::after {
+  position: absolute;
+  inset: var(--space-0);
+  pointer-events: none;
+  background: linear-gradient(100deg, transparent 20%, rgb(34 211 238 / 10%) 50%, transparent 80%);
+  content: '';
+  animation: shimmer 1.8s linear infinite;
 }
 
 .task-form details {
@@ -524,7 +1012,7 @@ p {
 
 .task-form summary {
   width: fit-content;
-  color: var(--color-primary);
+  color: var(--color-accent-cyan);
   font: var(--type-body-strong);
   cursor: pointer;
 }
@@ -534,6 +1022,7 @@ p {
   gap: var(--space-8);
   align-items: center;
   margin-top: var(--space-16);
+  color: var(--color-ink-secondary);
   font: var(--type-body);
 }
 
@@ -544,10 +1033,11 @@ p {
 .task-form__error,
 .task-detail__error,
 .task-list__state--error {
-  border: 1px solid var(--color-error-disabled);
+  border: 1px solid var(--color-error-edge);
+  border-left-width: var(--space-4);
   border-radius: var(--radius-md);
-  background: var(--color-error-bg);
-  color: var(--color-error-active);
+  background: var(--color-error-glass);
+  color: var(--color-error-ink);
 }
 
 .task-form__error {
@@ -555,17 +1045,37 @@ p {
   padding: var(--space-16);
 }
 
+/*
+ * Launch actions: a sticky glass bar pinned near the viewport bottom while
+ * the form is taller than the screen, docking into place when reached.
+ */
 .task-form__actions {
+  position: sticky;
+  z-index: var(--layer-sticky-actions);
+  bottom: var(--space-16);
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: stretch;
   gap: var(--space-16);
-  align-items: center;
-  justify-content: flex-end;
+  padding: var(--space-16);
+  border: 1px solid var(--color-glass-border-strong);
+  border-radius: var(--radius-lg);
+  background: rgb(8 15 33 / 82%);
+  box-shadow: var(--shadow-middle), inset 0 1px 0 rgb(255 255 255 / 7%);
+  backdrop-filter: blur(14px);
 }
 
 .task-form__actions p {
-  flex: 1 1 320px;
+  color: var(--color-ink-tertiary);
   font: var(--type-caption);
+}
+
+.task-form__actions button {
+  width: 100%;
+}
+
+.task-form__actions button[type='submit'] {
+  min-height: var(--space-48);
 }
 
 button,
@@ -582,7 +1092,7 @@ button,
   text-align: center;
   text-decoration: none;
   cursor: pointer;
-  transition: background var(--motion-fast), border-color var(--motion-fast), box-shadow var(--motion-fast);
+  transition: background var(--motion-fast), border-color var(--motion-fast), box-shadow var(--motion-fast), transform var(--motion-fast);
 }
 
 button:hover:not(:disabled),
@@ -591,28 +1101,82 @@ button:hover:not(:disabled),
   border-color: var(--color-primary-hover);
   background: var(--color-primary-hover);
   box-shadow: var(--shadow-base);
+  transform: translateY(calc(var(--space-4) / -2));
+}
+
+/* The single gradient primary action of the creation and detail regions. */
+.task-form__actions button[type='submit'],
+.task-detail__download-action {
+  border-color: transparent;
+  background: var(--gradient-action-primary);
+  background-size: 180% 180%;
+  box-shadow: var(--shadow-glow-action);
+  animation: action-flow 6s ease-in-out infinite alternate;
+}
+
+.task-form__actions button[type='submit']:hover:not(:disabled),
+.task-detail__download-action:hover {
+  border-color: transparent;
+  background: var(--gradient-action-primary);
+  background-size: 180% 180%;
+  box-shadow: var(--shadow-glow-action), var(--shadow-glow-cyan);
+  filter: brightness(1.12);
 }
 
 button:active:not(:disabled),
 .task-detail__download-action:active,
 .task-list__state a:active {
-  border-color: var(--color-primary-active);
-  background: var(--color-primary-active);
+  transform: translateY(0);
+  filter: brightness(0.94);
 }
 
 button:disabled {
-  border-color: var(--color-primary-disabled);
-  background: var(--color-primary-disabled);
+  border-color: var(--color-glass-border);
+  background: var(--color-glass-muted);
+  box-shadow: none;
+  color: var(--color-ink-tertiary);
   cursor: not-allowed;
 }
 
+/* Disabled must win over the gradient and pagination variants above it. */
+.task-form__actions button[type='submit']:disabled,
+.task-list__pagination button:disabled {
+  border-color: var(--color-glass-border);
+  background: var(--color-glass-muted);
+  box-shadow: none;
+  color: var(--color-ink-tertiary);
+  filter: none;
+}
+
 .task-form .task-form__secondary-action,
-.task-detail__cancel-action,
 .task-detail__dialog-actions button:first-child,
 .task-list__state--error button {
-  border-color: var(--color-divider-input);
-  background: var(--color-bg-white);
-  color: var(--color-primary);
+  border-color: var(--color-glass-border-strong);
+  background: var(--color-glass-muted);
+  box-shadow: none;
+  color: var(--color-ink-primary);
+}
+
+.task-form .task-form__secondary-action:hover:not(:disabled),
+.task-detail__dialog-actions button:first-child:hover:not(:disabled),
+.task-list__state--error button:hover:not(:disabled) {
+  border-color: var(--color-accent-cyan);
+  background: rgb(34 211 238 / 10%);
+  box-shadow: none;
+  color: var(--color-accent-cyan);
+}
+
+/* Destructive cancel stays visually distinct from safe secondary actions. */
+.task-detail__cancel-action {
+  border-color: var(--color-error-edge);
+  background: var(--color-error-glass);
+  color: var(--color-error-ink);
+}
+
+.task-detail__cancel-action:hover:not(:disabled) {
+  border-color: var(--color-error-ink);
+  background: rgb(239 68 68 / 20%);
+  box-shadow: none;
 }
 
 .task-list,
@@ -636,34 +1200,43 @@ button:disabled {
 }
 
 .task-list__state {
+  position: relative;
   display: grid;
+  overflow: hidden;
   align-content: center;
   justify-items: start;
   gap: var(--space-16);
   min-height: 240px;
   padding: var(--space-24);
-  border: 1px dashed var(--color-divider-input);
+  border: 1px dashed var(--color-glass-border-strong);
   border-radius: var(--radius-md);
-  background: var(--color-surface-muted);
+  background: var(--color-glass-muted);
+  color: var(--color-ink-secondary);
 }
 
 .task-list__state > p {
   color: inherit;
 }
 
+.task-list__state h2 {
+  color: var(--color-ink-primary);
+}
+
 .task-list__overview {
   display: flex;
   justify-content: space-between;
   padding-bottom: var(--space-16);
-  border-bottom: 1px solid var(--color-border);
-  color: var(--color-text-secondary);
+  border-bottom: 1px solid rgb(34 211 238 / 30%);
+  color: var(--color-ink-tertiary);
   font: var(--type-caption);
 }
 
 .task-list__table-wrapper {
   overflow-x: auto;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-glass-border);
   border-radius: var(--radius-md);
+  background: var(--color-glass-inset);
+  box-shadow: var(--shadow-base);
 }
 
 .task-list table {
@@ -675,7 +1248,7 @@ button:disabled {
 .task-list th,
 .task-list td {
   padding: var(--space-16);
-  border-bottom: 1px solid var(--color-border);
+  border-bottom: 1px solid rgb(148 180 226 / 10%);
   text-align: left;
   vertical-align: top;
 }
@@ -684,41 +1257,78 @@ button:disabled {
   border-bottom: var(--space-0);
 }
 
+.task-list tbody tr {
+  transition: background var(--motion-fast);
+  animation: row-enter 380ms both;
+}
+
+/* Staggered reveal (AI-native list motion): a short wave through the rows. */
+.task-list tbody tr:nth-child(2) {
+  animation-delay: 45ms;
+}
+
+.task-list tbody tr:nth-child(3) {
+  animation-delay: 90ms;
+}
+
+.task-list tbody tr:nth-child(4) {
+  animation-delay: 135ms;
+}
+
+.task-list tbody tr:nth-child(5) {
+  animation-delay: 180ms;
+}
+
+.task-list tbody tr:nth-child(n + 6) {
+  animation-delay: 225ms;
+}
+
 .task-list tbody tr:hover {
-  background: var(--color-surface-muted);
+  background: linear-gradient(90deg, rgb(34 211 238 / 8%), transparent 72%);
 }
 
 .task-list th {
-  background: var(--color-surface-inset);
-  color: var(--color-text-secondary);
+  border-bottom: 1px solid rgb(34 211 238 / 24%);
+  background: rgb(8 15 33 / 85%);
+  color: var(--color-ink-primary);
   font: var(--type-body-strong);
+}
+
+.task-list td {
+  color: var(--color-ink-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.task-list td strong {
+  color: var(--color-ink-primary);
 }
 
 .status-chip {
   display: inline-flex;
-  gap: var(--space-4);
+  gap: var(--space-8);
   align-items: center;
   min-height: 24px;
   padding-inline: var(--space-8);
-  border: 1px solid var(--color-divider-input);
+  border: 1px solid var(--color-glass-border);
   border-radius: var(--radius-sm);
-  background: var(--color-surface-muted);
-  color: var(--color-tech-navy);
+  background: var(--color-glass-muted);
+  color: var(--color-ink-secondary);
   font: var(--type-caption);
 }
 
 .status-chip::before {
-  width: var(--space-4);
-  height: var(--space-4);
+  width: var(--space-8);
+  height: var(--space-8);
   border-radius: 50%;
   background: currentcolor;
+  box-shadow: 0 0 var(--space-8) currentcolor;
   content: '';
 }
 
 .task-list__status--completed {
-  border-color: var(--color-success-disabled);
-  background: var(--color-success-bg);
-  color: var(--color-success-active);
+  border-color: var(--color-success-edge);
+  background: var(--color-success-glass);
+  color: var(--color-success-ink);
 }
 
 .task-list__status--partial,
@@ -727,16 +1337,25 @@ button:disabled {
 .task-list__status--generating,
 .task-list__status--validating,
 .task-list__status--running {
-  border-color: var(--color-warning-disabled);
-  background: var(--color-warning-bg);
-  color: var(--color-warning-active);
+  border-color: var(--color-warning-edge);
+  background: var(--color-warning-glass);
+  color: var(--color-warning-ink);
+}
+
+/* In-progress chips pulse their dot; the text label already carries meaning. */
+.task-list__status--queued::before,
+.task-list__status--auditing::before,
+.task-list__status--generating::before,
+.task-list__status--validating::before,
+.task-list__status--running::before {
+  animation: status-pulse 1.6s ease-in-out infinite;
 }
 
 .task-list__status--failed,
 .task-list__status--cancelled {
-  border-color: var(--color-error-disabled);
-  background: var(--color-error-bg);
-  color: var(--color-error-active);
+  border-color: var(--color-error-edge);
+  background: var(--color-error-glass);
+  color: var(--color-error-ink);
 }
 
 .task-list__pagination {
@@ -750,20 +1369,32 @@ button:disabled {
 
 .task-list__pagination span {
   padding-inline: var(--space-8);
-  color: var(--color-text-secondary);
+  color: var(--color-ink-tertiary);
   font: var(--type-caption);
 }
 
 .task-list__pagination button {
   min-height: 32px;
+  border-color: var(--color-glass-border-strong);
+  background: var(--color-glass-muted);
+  color: var(--color-ink-primary);
+}
+
+.task-list__pagination button:hover:not(:disabled) {
+  border-color: var(--color-accent-cyan);
+  background: rgb(34 211 238 / 10%);
+  color: var(--color-accent-cyan);
 }
 
 .task-detail > [role='status'] {
+  position: relative;
   display: block;
+  overflow: hidden;
   padding: var(--space-24);
-  border: 1px dashed var(--color-divider-input);
+  border: 1px dashed var(--color-glass-border-strong);
   border-radius: var(--radius-md);
-  background: var(--color-surface-muted);
+  background: var(--color-glass-muted);
+  color: var(--color-ink-secondary);
 }
 
 .task-detail__summary {
@@ -777,9 +1408,19 @@ button:disabled {
   position: relative;
   min-width: 0;
   padding: var(--space-24);
-  border: 1px solid var(--color-divider-input);
+  border: 1px solid var(--color-glass-border);
   border-radius: var(--radius-md);
-  background: var(--color-surface-muted);
+  background:
+    radial-gradient(130% 60% at 50% 0%, rgb(148 205 255 / 6%), transparent 62%),
+    var(--color-glass-muted);
+  box-shadow: var(--shadow-base), inset 0 1px 0 rgb(255 255 255 / 5%);
+  transition: border-color var(--motion-fast), box-shadow var(--motion-fast), transform var(--motion-fast);
+}
+
+.task-detail__summary div:hover {
+  border-color: var(--color-glass-border-strong);
+  box-shadow: var(--shadow-middle), var(--shadow-glow-cyan);
+  transform: translateY(calc(var(--space-4) / -2));
 }
 
 .task-detail__summary div::before {
@@ -787,14 +1428,16 @@ button:disabled {
   width: var(--space-24);
   height: var(--space-4);
   margin-bottom: var(--space-16);
-  background: var(--color-tech-cyan);
+  border-radius: var(--radius-sm);
+  background: var(--gradient-edge-cyan);
+  box-shadow: var(--shadow-glow-cyan);
   content: '';
 }
 
 .task-detail__summary dt,
 .task-detail__description-list dt,
 .task-detail__result-details dt {
-  color: var(--color-text-secondary);
+  color: var(--color-ink-tertiary);
   font: var(--type-caption);
 }
 
@@ -802,7 +1445,7 @@ button:disabled {
 .task-detail__description-list dd,
 .task-detail__result-details dd {
   margin: var(--space-8) var(--space-0) var(--space-0);
-  color: var(--color-text-primary);
+  color: var(--color-ink-primary);
 }
 
 .task-detail__summary dd:not(.status-chip) {
@@ -824,7 +1467,7 @@ button:disabled {
 .task-detail__section {
   margin-top: var(--space-32);
   padding-top: var(--space-24);
-  border-top: 1px solid var(--color-border);
+  border-top: 1px solid var(--color-glass-border);
 }
 
 .task-detail__section h2 {
@@ -841,9 +1484,11 @@ button:disabled {
 .task-detail__cards article {
   min-width: 0;
   padding: var(--space-16);
-  border: 1px solid var(--color-divider-input);
+  border: 1px solid var(--color-glass-border);
   border-radius: var(--radius-md);
-  background: var(--color-surface-raised);
+  background:
+    radial-gradient(130% 60% at 50% 0%, rgb(148 205 255 / 5%), transparent 62%),
+    var(--color-glass-muted);
 }
 
 .task-detail__cards {
@@ -854,6 +1499,13 @@ button:disabled {
 
 .task-detail__cards article {
   box-shadow: var(--shadow-base);
+  transition: border-color var(--motion-fast), box-shadow var(--motion-fast), transform var(--motion-fast);
+}
+
+.task-detail__cards article:hover {
+  border-color: var(--color-glass-border-strong);
+  box-shadow: var(--shadow-middle), var(--shadow-glow-cyan);
+  transform: translateY(calc(var(--space-4) / -2));
 }
 
 .task-detail__cards article > p {
@@ -866,7 +1518,7 @@ button:disabled {
 
 .task-detail summary {
   width: fit-content;
-  color: var(--color-primary);
+  color: var(--color-accent-cyan);
   font: var(--type-body-strong);
   cursor: pointer;
 }
@@ -901,24 +1553,173 @@ button:disabled {
   z-index: var(--layer-dialog);
   width: min(100% - var(--space-32), 560px);
   padding: var(--space-24);
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-glass-border-strong);
   border-radius: var(--radius-lg);
-  background: var(--color-surface-raised);
-  box-shadow: var(--shadow-high);
+  background: rgb(8 15 33 / 92%);
+  box-shadow: var(--shadow-high), var(--shadow-glow-cyan);
+  color: var(--color-ink-primary);
+  backdrop-filter: blur(16px);
 }
 
 .task-detail__dialog::backdrop {
-  background: rgb(16 42 76 / 48%);
+  background: var(--color-backdrop-scrim);
+  backdrop-filter: blur(6px);
 }
 
 .task-detail__dialog h2 {
   margin-bottom: var(--space-8);
 }
 
+@keyframes aurora-drift {
+  from {
+    transform: translate3d(-2%, -1%, 0) scale(1);
+  }
+
+  to {
+    transform: translate3d(2%, 2%, 0) scale(1.06);
+  }
+}
+
+@keyframes radar-sweep {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+@keyframes star-twinkle {
+  from {
+    opacity: 0.55;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+/* The meteor is visible only for a short slice of the cycle. */
+@keyframes starfall {
+  0%,
+  78% {
+    opacity: 0;
+    transform: translate3d(0, 0, 0) rotate(-16deg);
+  }
+
+  80% {
+    opacity: 0.9;
+  }
+
+  88%,
+  100% {
+    opacity: 0;
+    transform: translate3d(72vw, 24vh, 0) rotate(-16deg);
+  }
+}
+
+/* Sheen rests off-canvas for most of the cycle, then sweeps once. */
+@keyframes hero-sheen {
+  0%,
+  55% {
+    transform: translateX(-120%) skewX(-12deg);
+  }
+
+  85%,
+  100% {
+    transform: translateX(420%) skewX(-12deg);
+  }
+}
+
+/* Registered so the border beam can animate the conic start angle. */
+@property --beam-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes beam-spin {
+  to {
+    --beam-angle: 360deg;
+  }
+}
+
+/* Primary action gradient drifts slowly so the launch button feels alive. */
+@keyframes action-flow {
+  from {
+    background-position: 0% 40%;
+  }
+
+  to {
+    background-position: 100% 60%;
+  }
+}
+
+/* List rows rise and fade in; stagger comes from per-row animation-delay. */
+@keyframes row-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@keyframes shimmer {
+  from {
+    transform: translateX(-100%);
+  }
+
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--space-8));
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @container app-shell (min-width: 1200px) {
   .app-shell__nav,
   .app-shell__main {
     padding-inline: var(--space-24);
+  }
+
+  /* Two-column console: configuration modules left, execution rail right. */
+  .task-form {
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+  }
+
+  .task-form > fieldset {
+    grid-column: 1;
+  }
+
+  .task-form__rail {
+    display: grid;
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    gap: var(--space-24);
+    align-content: start;
+    align-self: stretch;
   }
 }
 
@@ -941,6 +1742,7 @@ button:disabled {
   .app-shell__brand small,
   .app-shell__service-context,
   .generation-workspace__hero-note,
+  .generation-workspace__hero-visual,
   .task-list__heading-note,
   .task-detail__heading-note {
     display: none;
@@ -965,7 +1767,7 @@ button:disabled {
   }
 
   .task-form fieldset {
-    padding: var(--space-16);
+    padding-inline: var(--space-0);
   }
 
   .task-form__mode .task-form__choice,
@@ -996,9 +1798,49 @@ button:disabled {
     scroll-behavior: auto !important;
     transition-duration: 0ms !important;
     animation-duration: 0ms !important;
+    animation-iteration-count: 1 !important;
   }
 
   .app-shell__ambient {
-    background: transparent;
+    animation: none;
+  }
+
+  .app-shell::before,
+  .app-shell::after {
+    animation: none;
+  }
+
+  .app-shell::after {
+    opacity: 0;
+  }
+
+  .generation-workspace__hero::before,
+  .task-list__heading::before,
+  .task-detail__heading::before {
+    animation: none;
+  }
+
+  .app-shell__ambient::before,
+  .task-form__mode .task-form__choice--selected::after,
+  .task-form__actions button[type='submit'],
+  .task-detail__download-action {
+    animation: none;
+  }
+
+  .generation-workspace__hero-visual span {
+    animation: none;
+  }
+
+  .app-shell__main > * {
+    animation: none;
+  }
+
+  .task-form__mode .task-form__choice:hover,
+  .task-detail__summary div:hover,
+  .task-detail__cards article:hover,
+  button:hover:not(:disabled),
+  .task-detail__download-action:hover,
+  .task-list__state a:hover {
+    transform: none;
   }
 }

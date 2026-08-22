@@ -10,8 +10,10 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Resolves opaque browser choices to a freshly revalidated, immutable formal requirement scope.
@@ -39,6 +41,7 @@ public final class DynamicTaskScopeResolver {
         if (!selected.equals(revalidated)) {
             throw new IllegalArgumentException("所选知识范围已变化，请刷新后重新选择");
         }
+        requireTaskPrerequisites(revalidated);
 
         ScopeSelection coordinate = revalidated.get(0);
         List<RequirementDocumentCoordinate> documents = revalidated.stream()
@@ -49,7 +52,7 @@ public final class DynamicTaskScopeResolver {
         List<String> admissionTypes = revalidated.stream().map(ScopeSelection::admissionTypeKey)
                 .distinct().sorted().toList();
         RequirementScope requirementScope = new RequirementScope(coordinate.knowledgeBaseId(), coordinate.systemId(),
-                coordinate.versionId(), coordinate.materialCategory(), null,
+                coordinate.versionId(), coordinate.materialCategory(), coordinate.projectId(),
                 documents);
 
         if (command.taskMode() == GenerationTaskMode.ALL) {
@@ -77,8 +80,30 @@ public final class DynamicTaskScopeResolver {
         ScopeSelection first = values.get(0);
         boolean mixed = values.stream().anyMatch(value -> !first.knowledgeBaseId().equals(value.knowledgeBaseId())
                 || !first.systemId().equals(value.systemId()) || !first.versionId().equals(value.versionId())
+                || !first.projectId().equals(value.projectId())
                 || !first.materialCategory().equals(value.materialCategory()));
-        if (mixed) throw new IllegalArgumentException("一次任务只能选择同一知识库、系统和版本下的材料");
+        if (mixed) throw new IllegalArgumentException("一次任务只能选择同一知识库、系统、版本和项目下的材料");
+    }
+
+    private static void requireTaskPrerequisites(List<ScopeSelection> values) {
+        Set<String> materialTypes = values.stream().map(ScopeSelection::admissionTypeKey).collect(java.util.stream.Collectors.toSet());
+        if (!materialTypes.contains("function_list")) {
+            throw new IllegalArgumentException("任务必须包含功能清单材料");
+        }
+        if (!materialTypes.contains("requirements_spec") && !materialTypes.contains("work_order_plan")) {
+            throw new IllegalArgumentException("任务必须包含需求规格说明书或工单方案作为正式需求材料");
+        }
+        Set<String> hashes = new HashSet<>();
+        for (ScopeSelection value : values) {
+            if (!value.documentSha256ById().keySet().equals(Set.copyOf(value.documentIds()))) {
+                throw new IllegalArgumentException("材料文件哈希范围与文档范围不一致");
+            }
+            for (String hash : value.documentSha256ById().values()) {
+                if (hash == null || hash.isBlank() || !hashes.add(hash)) {
+                    throw new IllegalArgumentException("任务材料存在重复或缺失的文件 SHA-256");
+                }
+            }
+        }
     }
 
     private static String featureId(String description) {

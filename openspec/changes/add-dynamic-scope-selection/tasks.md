@@ -22,3 +22,4 @@
 - [x] 4.1 Pass focused and full backend tests, frontend unit/type/lint/build gates, strict OpenSpec validation, and secret scans.
 - [x] 4.2 Restart only the Java Web backend and verify the live KEE catalog exposes business labels without UUIDs, accepts a selected strategic-operations scope, freezes the current ready document whitelist, and completes a real two-sheet Excel generation.
 - [x] 4.3 Complete main-thread diff/impact review, confirm no KEE source or runtime mutation, inspect rendered evidence, and create the repository commit.
+- [x] 4.4 Add RED frontend coverage and simplify the material-range form so the eligible requirement knowledge base is the single tester-facing `业务系统` selector, remove the redundant `知识库` and `系统` fields, preserve version/material reset and opaque selection submission, then perform browser acceptance at 1024×768, 1440×820, and 1920×1080. `[Req-ID]: REQ-WEB-010`

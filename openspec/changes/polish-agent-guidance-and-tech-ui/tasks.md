@@ -16,3 +16,8 @@
 - [x] 3.1 Pass frontend unit tests, type-check, lint, and production build; pass unchanged backend regression and strict OpenSpec validation.
 - [x] 3.2 Run browser acceptance at 1024×768, 1440×820, and 1920×1080, including representative loading, ready, empty/no-results, error, keyboard focus, and reduced-motion checks.
 - [x] 3.3 Complete main-thread code review, inspect rendered evidence, verify no KEE core or backend contract drift, and create the final repository commit.
+
+## 4. Visual Refinement
+
+- [x] 4.1 Refine the shared shell and core work surfaces for REQ-UIX-008 without changing page workflow, text, API contracts, or scope-selection behavior.
+- [x] 4.2 Pass focused frontend regression, type-check, lint, production build, strict OpenSpec validation, and 1024×768, 1440×820, and 1920×1080 browser review including keyboard focus and reduced motion.

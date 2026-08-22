@@ -50,6 +50,12 @@ Alternative considered: install a component framework or adopt a full dark theme
 
 Vue unit tests remain the contract for wording, states, requests, recovery, and keyboard semantics. The browser script will then capture representative pages at 1024×768, 1440×820, and 1920×1080 for main-thread visual review. Reduced-motion and visible-focus checks are mandatory; screenshots alone are not acceptance.
 
+### 6. Refine the visual language without inventing operational data
+
+The refinement uses a deeper control-deck shell, layered light work surfaces, a restrained cyan/blue technical accent, and non-semantic ambient grid/halo treatment. It does not add dashboards, health indicators, fake counts, or progress claims. The creation page remains a form page: the visual treatment may improve scan order and action focus but must not alter its fields, default choices, request payload, or error recovery.
+
+Alternative considered: add real-time instrumentation or a full dark dashboard. Rejected because no supporting business data/contract exists and the current PC foundation intentionally remains a readable light enterprise workspace.
+
 ## Risks / Trade-offs
 
 - **Prompt-only rules may still be violated by the model** → Verify with focused live generation and record any residual variability without silently adding deferred validators.

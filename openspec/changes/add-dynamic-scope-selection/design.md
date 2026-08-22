@@ -67,7 +67,7 @@ The existing `ExampleScope` validation and independence rule remain unchanged. T
 
 ### 5. Use one catalog response and local cascading controls
 
-`GET /api/task-options` returns the immutable nested catalog. The Vue page keeps four visible business layers: knowledge base, system, version, and material types. A single available value auto-selects; multiple values use native select/checkbox controls. Changing an upper level clears invalid lower selections. Loading, empty, and refresh failure affect only the material-range region; form input remains intact. Every request generation ignores stale responses.
+`GET /api/task-options` returns the immutable nested catalog. The Vue page treats each eligible requirement knowledge base as one tester-facing business system: it keeps three visible business layers, `业务系统` (the knowledge-base label), version, and material types. It does not render a second system selector. The backend retains the system coordinate that belongs to the selected knowledge base for scope validation and freezing. A single available value auto-selects; multiple values use native select/checkbox controls. Changing an upper level clears invalid lower selections. Loading, empty, and refresh failure affect only the material-range region; form input remains intact. Every request generation ignores stale responses.
 
 The create payload changes from one `scopeOptionId` to `scopeSelectionIds`. This is an internal same-release API change; backend and frontend are deployed together.
 

@@ -52,3 +52,14 @@ The complete creation, list, and detail workflow SHALL remain usable at 1024×76
 #### Scenario: Workflow is exercised at supported PC viewports
 - **WHEN** browser acceptance runs the ready and representative non-ready states at each required viewport
 - **THEN** the workflow remains operable and visual evidence is captured for main-thread review
+
+### Requirement: Distinctive but non-intrusive control-deck refinement
+The application shell and core workflow surfaces SHALL use the same semantic visual roles to establish a distinctive control-deck character: deep shell contrast, restrained technical ambience, layered work surfaces, and an unambiguous primary action. Decorative effects SHALL be non-semantic, non-interactive, readable at supported PC widths, and removed or made static when reduced motion is preferred. `[Req-ID]: REQ-UIX-008`
+
+#### Scenario: User works with the creation page
+- **WHEN** the authorized scope is ready at a supported PC viewport
+- **THEN** the user can distinguish the page context, task mode, material scope, and primary generation action without decorative content obscuring labels, input values, focus, or error feedback
+
+#### Scenario: User prefers reduced motion
+- **WHEN** the browser exposes `prefers-reduced-motion: reduce`
+- **THEN** nonessential ambient movement and transform effects do not run while the shell and all workflow actions remain understandable

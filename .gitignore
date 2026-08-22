@@ -1,9 +1,13 @@
 .codex/
 .codegraph/
 .comet/
+.claude/
+.mimosa/
 .env
 .idea/
 .vscode/
+__pycache__/
+/.runtime-*.log
 
 backend/target/
 frontend/node_modules/

@@ -3,6 +3,8 @@ package com.testcaseagent.knowledgeagent;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.core.StreamReadFeature;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -15,6 +17,7 @@ import com.testcaseagent.scope.RequirementScope;
 import com.testcaseagent.scope.ScopeViolation;
 import com.testcaseagent.testcase.FewShotPolicy;
 import java.time.Duration;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -41,7 +44,7 @@ import reactor.core.publisher.Mono;
  * [Req-ID]: REQ-KAG-001, REQ-KAG-002, REQ-KAG-003, REQ-KAG-004, REQ-KAG-005, REQ-SCP-001,
  * REQ-SCP-003, REQ-FEW-002, REQ-FEW-003, REQ-ANA-004, REQ-KSI-004
  */
-public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort, RequirementMaterialReaderPort {
+public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort, RequirementMaterialReaderPort, StructuredSkillExecutionPort {
 
     private static final String API_KEY_HEADER = "X-API-Key";
     private static final Set<String> PARSED_UNITS_BUSINESS_ERRORS = Set.of(
@@ -64,6 +67,10 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
     private final ThreadLocal<PreparedSkillSession> preparedSession = new ThreadLocal<>();
     private final ObjectMapper objectMapper = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+    private final ObjectMapper structuredObjectMapper = new ObjectMapper(JsonFactory.builder()
+            .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION).build())
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, true)
+            .configure(DeserializationFeature.FAIL_ON_TRAILING_TOKENS, true);
 
     public WebClientKnowledgeAgentAdapter(String apiBaseUrl, String apiKey, Duration timeout,
             int maxAgentDiscoveryAttempts, int maxEventCharacters) {
@@ -121,6 +128,130 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
         preparedSession.remove();
     }
 
+    /** Executes the material-review route without creating a chat session or parsing SSE/Markdown. [Req-ID]: REQ-SKI-002, REQ-SKI-004 */
+    @Override
+    public StructuredSkillSuccessEnvelope<RequirementMaterialQualityReviewResult> reviewRequirementMaterial(
+            RequirementMaterialQualityReviewInvocation invocation) {
+        return invokeStructured(invocation.sessionId(), invocation.agentId(), StructuredSkillName.REQUIREMENT_MATERIAL_QUALITY_REVIEW,
+                invocation.requirementScope(), invocation.input(), RequirementMaterialQualityReviewResult.class);
+    }
+
+    /** Executes the feature-reconciliation route without ordinary Agent Chat fallback. [Req-ID]: REQ-SKI-002, REQ-SKI-004 */
+    @Override
+    public StructuredSkillSuccessEnvelope<FeatureScopeReconciliationResult> reconcileFeatureScope(
+            FeatureScopeReconciliationInvocation invocation) {
+        return invokeStructured(invocation.sessionId(), invocation.agentId(), StructuredSkillName.FEATURE_SCOPE_RECONCILIATION,
+                invocation.requirementScope(), invocation.input(), FeatureScopeReconciliationResult.class);
+    }
+
+    /** Executes one testcase-design route without SSE, tools, or Markdown parsing. [Req-ID]: REQ-SKI-002, REQ-SKI-004 */
+    @Override
+    public StructuredSkillSuccessEnvelope<FunctionalTestcaseDesignResult> designFunctionalTestcases(
+            FunctionalTestcaseDesignInvocation invocation) {
+        return invokeStructured(invocation.sessionId(), invocation.agentId(), StructuredSkillName.FUNCTIONAL_TESTCASE_DESIGN,
+                invocation.requirementScope(), invocation.input(), FunctionalTestcaseDesignResult.class);
+    }
+
+    private <T> StructuredSkillSuccessEnvelope<T> invokeStructured(String sessionId, String agentId, StructuredSkillName skillName,
+            RequirementScope requirementScope, Object input, Class<T> resultType) {
+        StructuredSkillScope scope = StructuredSkillScope.from(requirementScope);
+        StructuredSkillRequest request = new StructuredSkillRequest(agentId, skillName.wireValue(), scope.knowledgeBaseIds(),
+                scope.knowledgeIds(), scope.systemScopes(), input);
+        byte[] body;
+        try {
+            body = structuredObjectMapper.writeValueAsBytes(request);
+        } catch (JsonProcessingException exception) {
+            throw new StructuredSkillExecutionException(StructuredSkillErrorType.INVALID_REQUEST, false);
+        }
+        if (body.length > 2 * 1024 * 1024) throw new StructuredSkillExecutionException(StructuredSkillErrorType.REQUEST_TOO_LARGE, false);
+        try {
+            StructuredHttpResponse response = webClient.post().uri("/agent-chat/{sessionId}/isolated-skill", sessionId).header(API_KEY_HEADER, apiKey)
+                    .contentType(MediaType.APPLICATION_JSON).accept(MediaType.APPLICATION_JSON).bodyValue(body)
+                    .exchangeToMono(clientResponse -> clientResponse.bodyToMono(String.class).defaultIfEmpty("")
+                            .map(value -> new StructuredHttpResponse(clientResponse.statusCode().is2xxSuccessful(), value))).block(timeout);
+            if (response == null) throw new StructuredSkillExecutionException(StructuredSkillErrorType.MODEL_EXECUTION_FAILED, false);
+            return parseStructuredResponse(response.body(), skillName, resultType);
+        } catch (StructuredSkillExecutionException exception) {
+            throw exception;
+        } catch (RuntimeException exception) {
+            throw new StructuredSkillExecutionException(StructuredSkillErrorType.MODEL_EXECUTION_FAILED, false);
+        }
+    }
+
+    private <T> StructuredSkillSuccessEnvelope<T> parseStructuredResponse(String response, StructuredSkillName expectedSkill, Class<T> resultType) {
+        if (response.getBytes(StandardCharsets.UTF_8).length > 4 * 1024 * 1024) {
+            throw new StructuredSkillExecutionException(StructuredSkillErrorType.RESPONSE_TOO_LARGE, false);
+        }
+        try {
+            JsonNode root = structuredObjectMapper.readTree(response);
+            if (root == null || !root.isObject() || !root.path("success").isBoolean()) throw invalidStructuredResponse();
+            if (!root.path("success").booleanValue()) throw structuredFailure(root);
+            exactStructuredFields(root, Set.of("success", "data"));
+            JsonNode data = root.path("data");
+            if (!data.isObject()) throw invalidStructuredResponse();
+            exactStructuredFields(data, Set.of("schema_version", "skill_name", "repair_attempted", "result"));
+            if (!"1.0".equals(data.path("schema_version").asText()) || !expectedSkill.wireValue().equals(data.path("skill_name").asText())
+                    || !data.path("repair_attempted").isBoolean() || !data.path("result").isObject()) throw invalidStructuredResponse();
+            validateResultFields(data.path("result"), expectedSkill);
+            T result = structuredObjectMapper.treeToValue(data.path("result"), resultType);
+            return new StructuredSkillSuccessEnvelope<>(true, new StructuredSkillSuccess<>("1.0", expectedSkill.wireValue(),
+                    data.path("repair_attempted").booleanValue(), result));
+        } catch (StructuredSkillExecutionException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw invalidStructuredResponse();
+        }
+    }
+
+    private StructuredSkillExecutionException structuredFailure(JsonNode root) {
+        JsonNode details = root.path("error").path("details");
+        try {
+            if (!details.isObject()) return invalidStructuredResponse();
+            Set<String> detailFields = new HashSet<>(); details.fieldNames().forEachRemaining(detailFields::add);
+            if (!(detailFields.equals(Set.of("type")) || detailFields.equals(Set.of("type", "repair_attempted")))) return invalidStructuredResponse();
+            boolean repaired = details.path("repair_attempted").isBoolean() && details.path("repair_attempted").booleanValue();
+            return new StructuredSkillExecutionException(StructuredSkillErrorType.fromWire(details.path("type").asText()), repaired);
+        } catch (RuntimeException exception) { return invalidStructuredResponse(); }
+    }
+
+    private static StructuredSkillExecutionException invalidStructuredResponse() {
+        return new StructuredSkillExecutionException(StructuredSkillErrorType.STRUCTURED_OUTPUT_INVALID, false);
+    }
+
+    private static void exactStructuredFields(JsonNode object, Set<String> expected) {
+        Set<String> actual = new HashSet<>(); object.fieldNames().forEachRemaining(actual::add);
+        if (!actual.equals(expected)) throw invalidStructuredResponse();
+    }
+
+    private static void validateResultFields(JsonNode result, StructuredSkillName skill) {
+        switch (skill) {
+            case REQUIREMENT_MATERIAL_QUALITY_REVIEW -> {
+                exactStructuredFields(result, Set.of("requirement_facts", "review_findings"));
+                exactArrayObjects(result.path("requirement_facts"), Set.of("fact_key", "function", "roles", "trigger_conditions", "inputs",
+                        "business_rules", "outputs", "permissions", "state_changes", "exception_handling", "external_dependencies", "evidence_keys"));
+                exactArrayObjects(result.path("review_findings"), Set.of("finding_key", "issue_type", "description", "evidence_keys",
+                        "test_design_impact", "current_project_recommendation", "design_center_guideline_recommendation", "handling_level"));
+            }
+            case FEATURE_SCOPE_RECONCILIATION -> {
+                exactStructuredFields(result, Set.of("reconciliations"));
+                exactArrayObjects(result.path("reconciliations"), Set.of("reconciliation_key", "function_list_item_keys", "requirement_fact_keys",
+                        "classification", "evidence_keys", "scope_recommendation", "confirmation_status"));
+            }
+            case FUNCTIONAL_TESTCASE_DESIGN -> {
+                exactStructuredFields(result, Set.of("function_key", "test_point_key", "testcases"));
+                JsonNode testcases = result.path("testcases");
+                exactArrayObjects(testcases, Set.of("case_key", "title", "preconditions", "steps", "requirement_fact_keys", "evidence_keys",
+                        "case_status", "missing_information"));
+                for (JsonNode testcase : testcases) exactArrayObjects(testcase.path("steps"), Set.of("step_no", "action", "expected"));
+            }
+        }
+    }
+
+    private static void exactArrayObjects(JsonNode values, Set<String> expectedFields) {
+        if (!values.isArray()) throw invalidStructuredResponse();
+        for (JsonNode value : values) { if (!value.isObject()) throw invalidStructuredResponse(); exactStructuredFields(value, expectedFields); }
+    }
+
     /**
      * Reads the current persisted chunks page by page and accepts them only after the explicit
      * terminal page proves a complete, contiguous enumeration. A bad page must fail the entire
@@ -143,6 +274,7 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
         String cursor = null;
         Integer totalUnits = null;
         int expectedOrdinal = 1;
+        ParsedUnitsPageUnit previousUnit = null;
 
         while (true) {
             ParsedUnitsPage page = fetchParsedUnitsPage(requestedKnowledgeId, effectiveLimit, cursor);
@@ -164,8 +296,14 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
                 }
                 if (!unitIds.add(unit.unitId())) throw parsedUnitsFailure("unit_id repeats across pages");
                 if (unit.ordinal() != expectedOrdinal) throw parsedUnitsFailure("ordinal is not strictly continuous");
+                if (previousUnit != null && (unit.chunkIndex() < previousUnit.chunkIndex()
+                        || (unit.chunkIndex() == previousUnit.chunkIndex()
+                        && unit.unitId().compareTo(previousUnit.unitId()) <= 0))) {
+                    throw parsedUnitsFailure("units are outside stable order");
+                }
                 acceptedUnits.add(new ParsedMaterialUnit(unit.unitId(), unit.chunkIndex(), unit.ordinal(), unit.content(),
                         unit.startAt(), unit.endAt()));
+                previousUnit = unit;
                 expectedOrdinal++;
             }
 
@@ -531,6 +669,10 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
     private static String requireText(String value, String field) { if (value == null || value.isBlank()) throw new IllegalArgumentException(field + " must not be blank"); return value; }
 
     private record SessionRequest(String title, String description) { }
+    private record StructuredSkillRequest(@JsonProperty("agent_id") String agentId, @JsonProperty("skill_name") String skillName,
+            @JsonProperty("knowledge_base_ids") List<String> knowledgeBaseIds, @JsonProperty("knowledge_ids") List<String> knowledgeIds,
+            @JsonProperty("system_scopes") List<SystemScopePayload> systemScopes, Object input) { }
+    private record StructuredHttpResponse(boolean successful, String body) { }
     private record SessionEnvelope(boolean success, SessionData data) { }
     private record SessionData(String id) { }
     private record AgentEnvelope(boolean success, AgentSummary data) { }
@@ -639,7 +781,7 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
 
     private record AgentChatRequest(@JsonProperty("agent_id") String agentId, String query,
             @JsonProperty("agent_enabled") boolean agentEnabled, @JsonProperty("knowledge_base_ids") List<String> knowledgeBaseIds,
-            @JsonProperty("knowledge_ids") List<String> knowledgeIds, @JsonProperty("system_scopes") List<SystemScopePayload> systemScopes,
+            @JsonProperty("knowledge_ids") List<String> knowledgeIds, @JsonProperty("system_scopes") List<LegacySystemScopePayload> systemScopes,
             @JsonProperty("web_search_enabled") boolean webSearchEnabled, @JsonProperty("disable_title") boolean disableTitle, String channel,
             @JsonProperty("skill_names") List<String> skillNames) {
         private static AgentChatRequest forGeneration(KnowledgeAgentInvocation invocation, String query) {
@@ -657,17 +799,17 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
         private static AgentChatRequest from(String agentId, RequirementScope scope, List<String> types, String query, String skillName) {
             List<String> documents = scope.documents().stream().map(document -> document.documentId()).toList();
             return new AgentChatRequest(agentId, query, true, List.of(scope.knowledgeBaseId()), documents,
-                    List.of(SystemScopePayload.from(scope, types)), false, true, "api", List.of(skillName));
+                    List.of(LegacySystemScopePayload.from(scope, types)), false, true, "api", List.of(skillName));
         }
     }
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
-    private record SystemScopePayload(@JsonProperty("knowledge_base_id") String knowledgeBaseId,
+    private record LegacySystemScopePayload(@JsonProperty("knowledge_base_id") String knowledgeBaseId,
             @JsonProperty("version_id") String versionId, @JsonProperty("content_categories") List<String> contentCategories,
             @JsonProperty("admission_type_keys") List<String> admissionTypeKeys, @JsonProperty("project_id") String projectId,
             @JsonProperty("knowledge_ids") List<String> knowledgeIds) {
-        private static SystemScopePayload from(RequirementScope scope, List<String> types) {
-            return new SystemScopePayload(scope.knowledgeBaseId(), scope.versionId(), List.of(scope.materialCategory()), types,
+        private static LegacySystemScopePayload from(RequirementScope scope, List<String> types) {
+            return new LegacySystemScopePayload(scope.knowledgeBaseId(), scope.versionId(), List.of(scope.materialCategory()), types,
                     scope.projectId(), scope.documents().stream().map(document -> document.documentId()).toList());
         }
     }

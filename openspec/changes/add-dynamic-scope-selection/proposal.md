@@ -10,6 +10,7 @@ The generation page currently receives one server-configured scope option, so us
 - Keep the configured generation agent and independent Good/Bad example scope server-owned and unchanged by user selection.
 - Add explicit loading, empty, local error, stale-response, keyboard, and retry behavior for each asynchronous selector level.
 - Replace the single fixed requirement-scope option as the default creation path while retaining fail-closed rejection for missing, stale, unauthorized, empty, disabled, or unparsed selections.
+- Treat each eligible requirement knowledge base as the tester-facing business-system choice, and remove the redundant separate system selector from the page while retaining its internal scope coordinate.
 
 ## Capabilities
 
