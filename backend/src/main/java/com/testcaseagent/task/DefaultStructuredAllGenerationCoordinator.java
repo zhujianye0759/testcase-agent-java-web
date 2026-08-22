@@ -199,7 +199,8 @@ public final class DefaultStructuredAllGenerationCoordinator implements Structur
             FeatureReconciliationValidator.Result namespaced = namespaceReconciliation(taskId, identity, mapped);
             store.acceptReconciliation(claim, reconciliationValidator, new FeatureReconciliationValidator.WorkItem(
                     registry, input.functionListItems().stream().map(FeatureScopeReconciliationInput.FunctionListItem::itemKey).toList(),
-                    input.requirementFacts().stream().map(FeatureScopeReconciliationInput.RequirementFact::factKey).toList(), evidence),
+                    input.requirementFacts().stream().map(FeatureScopeReconciliationInput.RequirementFact::factKey).toList(),
+                    evidenceByFunctionListItem(input), evidenceByRequirementFact(input)),
                     namespaced);
             return null;
         });
@@ -447,6 +448,22 @@ public final class DefaultStructuredAllGenerationCoordinator implements Structur
         accepted.functionItems().forEach(item -> evidence.addAll(item.evidenceKeys()));
         accepted.facts().forEach(fact -> evidence.addAll(fact.evidenceKeys()));
         return List.copyOf(evidence);
+    }
+
+    private static Map<String, List<String>> evidenceByFunctionListItem(FeatureScopeReconciliationInput input) {
+        Map<String, List<String>> evidence = new LinkedHashMap<>();
+        for (FeatureScopeReconciliationInput.FunctionListItem item : input.functionListItems()) {
+            evidence.put(item.itemKey(), item.evidenceKeys());
+        }
+        return Map.copyOf(evidence);
+    }
+
+    private static Map<String, List<String>> evidenceByRequirementFact(FeatureScopeReconciliationInput input) {
+        Map<String, List<String>> evidence = new LinkedHashMap<>();
+        for (FeatureScopeReconciliationInput.RequirementFact fact : input.requirementFacts()) {
+            evidence.put(fact.factKey(), fact.evidenceKeys());
+        }
+        return Map.copyOf(evidence);
     }
 
     private String identity(String taskId, String operation, Object input) {

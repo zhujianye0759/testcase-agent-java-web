@@ -32,6 +32,60 @@ class FeatureReconciliationValidatorTest {
         assertThrows(IllegalArgumentException.class, () -> validator.validate(workItem, result));
     }
 
+    /** [Req-ID]: REQ-FSC-002 */
+    @Test
+    void rejectsAReconciliationWhoseEvidenceOmitsPartOfItsReferencedSourceClosure() {
+        StructuredValidationRegistry registry = StructuredValidationRegistry.forTask("task-1")
+                .register(StructuredKeyType.FUNCTION_LIST_ITEM, "item-1")
+                .register(StructuredKeyType.REQUIREMENT_FACT, "fact-1")
+                .registerEvidence(new StructuredEvidence("evidence-1", "task-1", "material-1", false, false, true))
+                .registerEvidence(new StructuredEvidence("evidence-2", "task-1", "material-1", false, false, true));
+        FeatureReconciliationValidator.WorkItem workItem = new FeatureReconciliationValidator.WorkItem(
+                registry, List.of("item-1"), List.of("fact-1"), List.of("evidence-1", "evidence-2"));
+        FeatureReconciliationValidator.Reconciliation incompleteEvidence = new FeatureReconciliationValidator.Reconciliation(
+                "reconciliation-1", List.of("item-1"), List.of("fact-1"),
+                FeatureReconciliationValidator.Classification.EXACT_MATCH, List.of("evidence-1"), "scope",
+                FeatureReconciliationValidator.ConfirmationStatus.CONFIRMED);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> validator.validate(workItem, new FeatureReconciliationValidator.Result(List.of(incompleteEvidence))));
+    }
+
+    /** [Req-ID]: REQ-FSC-002 */
+    @Test
+    void rejectsConfirmedInsufficientEvidence() {
+        FeatureReconciliationValidator.Reconciliation confirmed = reconciliation("reconciliation-1", List.of("item-1"),
+                List.of("fact-1"), FeatureReconciliationValidator.Classification.INSUFFICIENT_EVIDENCE,
+                FeatureReconciliationValidator.ConfirmationStatus.CONFIRMED);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> validator.validate(workItem(), new FeatureReconciliationValidator.Result(List.of(confirmed))));
+    }
+
+    /** [Req-ID]: REQ-FSC-002 */
+    @Test
+    void rejectsEvidenceOwnedOnlyByAnotherReferencedInput() {
+        StructuredValidationRegistry registry = StructuredValidationRegistry.forTask("task-1")
+                .register(StructuredKeyType.FUNCTION_LIST_ITEM, "item-1")
+                .register(StructuredKeyType.FUNCTION_LIST_ITEM, "item-2")
+                .register(StructuredKeyType.REQUIREMENT_FACT, "fact-1")
+                .registerEvidence(new StructuredEvidence("evidence-1", "task-1", "material-1", false, false, true))
+                .registerEvidence(new StructuredEvidence("evidence-2", "task-1", "material-1", false, false, true));
+        FeatureReconciliationValidator.WorkItem workItem = new FeatureReconciliationValidator.WorkItem(
+                registry, List.of("item-1", "item-2"), List.of("fact-1"),
+                java.util.Map.of("item-1", List.of("evidence-1"), "item-2", List.of("evidence-2")),
+                java.util.Map.of("fact-1", List.of("evidence-1")));
+        FeatureReconciliationValidator.Result result = new FeatureReconciliationValidator.Result(List.of(
+                new FeatureReconciliationValidator.Reconciliation("reconciliation-1", List.of("item-1"), List.of("fact-1"),
+                        FeatureReconciliationValidator.Classification.EXACT_MATCH, List.of("evidence-1", "evidence-2"), "scope",
+                        FeatureReconciliationValidator.ConfirmationStatus.CONFIRMED),
+                new FeatureReconciliationValidator.Reconciliation("reconciliation-2", List.of("item-2"), List.of(),
+                        FeatureReconciliationValidator.Classification.FUNCTION_LIST_ONLY, List.of("evidence-2"), "scope",
+                        FeatureReconciliationValidator.ConfirmationStatus.PENDING_CONFIRMATION)));
+
+        assertThrows(IllegalArgumentException.class, () -> validator.validate(workItem, result));
+    }
+
     @Test
     void rejectsInternalStableKeysInReaderFacingRecommendation() {
         FeatureReconciliationValidator.Reconciliation unsafe = new FeatureReconciliationValidator.Reconciliation(

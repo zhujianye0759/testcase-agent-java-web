@@ -66,8 +66,13 @@ public final class FunctionalTestcaseResultValidator {
         ReaderFacingTextPolicy.requireSafeItems(requiredList(row.preconditions(), "preconditions"), "precondition");
         validateInitialization(row.initialization());
         for (Input input : requiredList(row.inputs(), "inputs")) validateInput(input);
-        validateSteps(requiredList(row.steps(), "steps"));
-        ReaderFacingTextPolicy.requireSafeItems(requiredList(row.expectedResults(), "expectedResults"), "expected result");
+        List<Step> steps = requiredList(row.steps(), "steps");
+        validateSteps(steps);
+        List<String> expectedResults = requiredList(row.expectedResults(), "expectedResults");
+        ReaderFacingTextPolicy.requireSafeItems(expectedResults, "expected result");
+        if (!expectedResults.equals(steps.stream().map(Step::expected).toList())) {
+            throw new IllegalArgumentException("expectedResults must exactly follow the ordered step expectations");
+        }
         ReaderFacingTextPolicy.requireSafe(row.evaluationCriteria(), "evaluationCriteria");
         ReaderFacingTextPolicy.requireSafe(row.resultEvaluationCriteria(), "resultEvaluationCriteria");
         ReaderFacingTextPolicy.requireSafeItems(requiredList(row.terminationConditions(), "terminationConditions"), "termination condition");

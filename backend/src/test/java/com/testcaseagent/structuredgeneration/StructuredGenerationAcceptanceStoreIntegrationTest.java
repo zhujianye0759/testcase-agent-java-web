@@ -913,8 +913,16 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
         });
     }
     private static RequirementMaterialReviewValidator.ReviewFinding finding(String key) {
-        return new RequirementMaterialReviewValidator.ReviewFinding(key, "ambiguity", "description", List.of("evidence-1"),
-                "impact", "project recommendation", "guideline recommendation", RequirementMaterialReviewValidator.HandlingLevel.IMPROVEMENT);
+        return new RequirementMaterialReviewValidator.ReviewFinding(
+                key, RequirementMaterialReviewValidator.RootCauseKind.AMBIGUOUS_REQUIREMENT,
+                "需求表述存在歧义", new RequirementMaterialReviewValidator.AffectedScope(List.of("evidence-1"), "账号登录范围"),
+                new RequirementMaterialReviewValidator.BadSourceExample("evidence-1", "提交订单"),
+                new RequirementMaterialReviewValidator.ProposedGoodExample(
+                        RequirementMaterialReviewValidator.ProposalStatus.PENDING_CONFIRMATION,
+                        "建议补充明确的执行条件（待需求方确认）。"),
+                "材料未明确账号登录的执行条件。", List.of("evidence-1"), "无法形成可执行的正式测试场景。",
+                "请当前项目补充执行条件。", "建议统一需求条件表述。",
+                RequirementMaterialReviewValidator.HandlingLevel.IMPROVEMENT);
     }
 
     private static Callable<Void> acceptReviewAfter(CountDownLatch start, StructuredGenerationAcceptanceStore acceptanceStore,

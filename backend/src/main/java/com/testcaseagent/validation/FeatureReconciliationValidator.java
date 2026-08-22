@@ -1,7 +1,11 @@
 package com.testcaseagent.validation;
 
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -32,8 +36,16 @@ public final class FeatureReconciliationValidator {
             if (row.classification() == null || row.confirmationStatus() == null) {
                 throw new IllegalArgumentException("classification and confirmationStatus must not be null");
             }
+            if (row.classification() == Classification.INSUFFICIENT_EVIDENCE
+                    && row.confirmationStatus() != ConfirmationStatus.PENDING_CONFIRMATION) {
+                throw new IllegalArgumentException("insufficientEvidence reconciliation must remain pending confirmation");
+            }
             ReaderFacingTextPolicy.requireSafe(row.scopeRecommendation(), "scopeRecommendation");
-            requireEvidence(item, requiredList(row.evidenceKeys(), "reconciliation evidenceKeys"));
+            Set<String> returnedEvidence = requireEvidence(item, requiredList(row.evidenceKeys(), "reconciliation evidenceKeys"));
+            Set<String> expectedEvidence = item.evidenceFor(itemKeys, factKeys);
+            if (!returnedEvidence.equals(expectedEvidence)) {
+                throw new IllegalArgumentException("Reconciliation evidence must exactly close its referenced input sources");
+            }
         }
         if (!coveredItems.equals(Set.copyOf(item.functionListItemKeys())) || !coveredFacts.equals(Set.copyOf(item.requirementFactKeys()))) {
             throw new IllegalArgumentException("Every input source requires a terminal reconciliation disposition");
@@ -51,8 +63,8 @@ public final class FeatureReconciliationValidator {
         }
     }
 
-    private static void requireEvidence(WorkItem item, List<String> evidenceKeys) {
-        Set<String> distinct = new HashSet<>();
+    private static Set<String> requireEvidence(WorkItem item, List<String> evidenceKeys) {
+        Set<String> distinct = new LinkedHashSet<>();
         for (String key : evidenceKeys) {
             String evidenceKey = required(key, "evidenceKey");
             if (!distinct.add(evidenceKey) || !item.allowedEvidenceKeys().contains(evidenceKey)) {
@@ -60,6 +72,7 @@ public final class FeatureReconciliationValidator {
             }
             item.registry().requireEvidence(evidenceKey);
         }
+        return distinct;
     }
 
     private static <T> List<T> requiredList(List<T> values, String field) {
@@ -72,20 +85,71 @@ public final class FeatureReconciliationValidator {
         return value;
     }
 
-    /** Current source and evidence closure for one reconciliation work item. */
+    /** Current source and exact evidence closure for one reconciliation work item. */
     public record WorkItem(StructuredValidationRegistry registry, List<String> functionListItemKeys,
-            List<String> requirementFactKeys, List<String> allowedEvidenceKeys) {
+            List<String> requirementFactKeys, Map<String, List<String>> functionListItemEvidenceKeys,
+            Map<String, List<String>> requirementFactEvidenceKeys) {
         public WorkItem {
             registry = Objects.requireNonNull(registry, "registry must not be null");
             functionListItemKeys = requiredList(functionListItemKeys, "functionListItemKeys");
             requirementFactKeys = requiredList(requirementFactKeys, "requirementFactKeys");
-            allowedEvidenceKeys = requiredList(allowedEvidenceKeys, "allowedEvidenceKeys");
             if (functionListItemKeys.isEmpty() || functionListItemKeys.size() > 200 || requirementFactKeys.size() > 200) {
                 throw new IllegalArgumentException("Invalid reconciliation input source count");
             }
             requireDistinct(functionListItemKeys, StructuredKeyType.FUNCTION_LIST_ITEM, registry);
             requireDistinct(requirementFactKeys, StructuredKeyType.REQUIREMENT_FACT, registry);
-            for (String evidenceKey : allowedEvidenceKeys) registry.requireEvidence(evidenceKey);
+            functionListItemEvidenceKeys = evidenceBySource(functionListItemKeys, functionListItemEvidenceKeys,
+                    "functionListItemEvidenceKeys", registry);
+            requirementFactEvidenceKeys = evidenceBySource(requirementFactKeys, requirementFactEvidenceKeys,
+                    "requirementFactEvidenceKeys", registry);
+        }
+
+        /** Compatibility constructor for legacy tests that did not preserve per-source evidence metadata. */
+        public WorkItem(StructuredValidationRegistry registry, List<String> functionListItemKeys,
+                List<String> requirementFactKeys, List<String> allowedEvidenceKeys) {
+            this(registry, functionListItemKeys, requirementFactKeys,
+                    sameEvidenceForEverySource(functionListItemKeys, allowedEvidenceKeys),
+                    sameEvidenceForEverySource(requirementFactKeys, allowedEvidenceKeys));
+        }
+
+        public List<String> allowedEvidenceKeys() {
+            return List.copyOf(evidenceFor(functionListItemKeys, requirementFactKeys));
+        }
+
+        private Set<String> evidenceFor(List<String> itemKeys, List<String> factKeys) {
+            Set<String> evidence = new LinkedHashSet<>();
+            for (String key : itemKeys) evidence.addAll(functionListItemEvidenceKeys.get(key));
+            for (String key : factKeys) evidence.addAll(requirementFactEvidenceKeys.get(key));
+            return evidence;
+        }
+
+        private static Map<String, List<String>> evidenceBySource(List<String> sourceKeys,
+                Map<String, List<String>> supplied, String field, StructuredValidationRegistry registry) {
+            Map<String, List<String>> sourceEvidence = Objects.requireNonNull(supplied, field + " must not be null");
+            if (!sourceEvidence.keySet().equals(new LinkedHashSet<>(sourceKeys))) {
+                throw new IllegalArgumentException(field + " must exactly match reconciliation source keys");
+            }
+            Map<String, List<String>> checked = new LinkedHashMap<>();
+            for (String sourceKey : sourceKeys) {
+                List<String> evidence = requiredList(sourceEvidence.get(sourceKey), field + " value");
+                if (evidence.isEmpty()) throw new IllegalArgumentException(field + " values must not be empty");
+                Set<String> distinct = new LinkedHashSet<>();
+                for (String value : evidence) {
+                    String key = required(value, "evidenceKey");
+                    if (!distinct.add(key)) throw new IllegalArgumentException("Source evidence keys must be unique");
+                    registry.requireEvidence(key);
+                }
+                checked.put(sourceKey, List.copyOf(evidence));
+            }
+            return Collections.unmodifiableMap(checked);
+        }
+
+        private static Map<String, List<String>> sameEvidenceForEverySource(List<String> sourceKeys,
+                List<String> allowedEvidenceKeys) {
+            List<String> evidence = requiredList(allowedEvidenceKeys, "allowedEvidenceKeys");
+            Map<String, List<String>> result = new LinkedHashMap<>();
+            for (String key : sourceKeys) result.put(key, evidence);
+            return result;
         }
     }
 

@@ -145,6 +145,18 @@ class RequirementMaterialReviewValidatorTest {
                 new RequirementMaterialReviewValidator.Result(List.of(), List.of(finding, duplicate))));
     }
 
+    /** [Req-ID]: REQ-FSC-004 */
+    @Test
+    void rejectsLegacyFindingWithoutTheFrozenRootCauseProof() {
+        RequirementMaterialReviewValidator.ReviewFinding legacy = new RequirementMaterialReviewValidator.ReviewFinding(
+                "finding-legacy", "异常处理缺失", "材料未说明失败处理。", List.of("evidence-1"),
+                "无法形成异常场景。", "请补充失败处理。", "建议补充异常结果。",
+                RequirementMaterialReviewValidator.HandlingLevel.CONTINUE_INCOMPLETE);
+
+        assertThrows(IllegalArgumentException.class, () -> validator.validate(workItem("requirements_spec"),
+                new RequirementMaterialReviewValidator.Result(List.of(), List.of(legacy))));
+    }
+
     private static RequirementMaterialReviewValidator.WorkItem workItem(String contentType) {
         StructuredValidationRegistry registry = StructuredValidationRegistry.forTask("task-1")
                 .register(StructuredKeyType.MATERIAL, "material-1")
@@ -166,7 +178,15 @@ class RequirementMaterialReviewValidatorTest {
     }
 
     private static RequirementMaterialReviewValidator.ReviewFinding finding() {
-        return new RequirementMaterialReviewValidator.ReviewFinding("finding-1", "ambiguous", "description", List.of("evidence-1"),
-                "impact", "project", "center", RequirementMaterialReviewValidator.HandlingLevel.CONTINUE_INCOMPLETE);
+        return new RequirementMaterialReviewValidator.ReviewFinding(
+                "finding-1", RequirementMaterialReviewValidator.RootCauseKind.AMBIGUOUS_REQUIREMENT,
+                "需求表述存在歧义", new RequirementMaterialReviewValidator.AffectedScope(List.of("evidence-1"), "订单提交范围"),
+                new RequirementMaterialReviewValidator.BadSourceExample("evidence-1", "订单提交"),
+                new RequirementMaterialReviewValidator.ProposedGoodExample(
+                        RequirementMaterialReviewValidator.ProposalStatus.PENDING_CONFIRMATION,
+                        "建议补充订单提交的明确条件（待需求方确认）。"),
+                "材料未明确订单提交的执行条件。", List.of("evidence-1"), "无法形成可执行的正式测试场景。",
+                "请补充当前项目的执行条件。", "建议明确需求条件。",
+                RequirementMaterialReviewValidator.HandlingLevel.CONTINUE_INCOMPLETE);
     }
 }

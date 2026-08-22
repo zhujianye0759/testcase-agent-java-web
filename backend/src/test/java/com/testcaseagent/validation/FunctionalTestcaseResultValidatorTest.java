@@ -152,6 +152,33 @@ class FunctionalTestcaseResultValidatorTest {
                 new FunctionalTestcaseResultValidator.Result("function-1", "point-1", List.of(testcase))));
     }
 
+    /** [Req-ID]: REQ-FSC-003 */
+    @Test
+    void rejectsExpectedResultsThatDoNotExactlyFollowTheOrderedStepExpectations() {
+        StructuredValidationRegistry registry = registry();
+        FunctionalTestcaseResultValidator.WorkItem workItem = new FunctionalTestcaseResultValidator.WorkItem(
+                registry, "function-1", "Function one", "point-1", "two-step test",
+                FunctionalTestcaseResultValidator.TestPointType.NORMAL_BEHAVIOR,
+                FunctionalTestcaseResultValidator.Basis.FORMAL_REQUIREMENT,
+                List.of("fact-1"), List.of("evidence-1"), List.of(), List.of(
+                        new FunctionalTestcaseResultValidator.FormalSupport("fact-1", "title", List.of(),
+                                List.of("action-one", "action-two"), List.of(), List.of(),
+                                List.of("expected-one", "expected-two"), List.of(), List.of(), List.of(), List.of(),
+                                Map.of("evidence-1", "title action-one expected-one action-two expected-two"))));
+        FunctionalTestcaseResultValidator.Testcase testcase = new FunctionalTestcaseResultValidator.Testcase(
+                "case-ordered", "title", "title", FunctionalTestcaseResultValidator.Priority.MEDIUM, List.of(),
+                FunctionalTestcaseResultValidator.Initialization.empty(), List.of(), List.of(
+                        new FunctionalTestcaseResultValidator.Step(1, "action-one", "expected-one"),
+                        new FunctionalTestcaseResultValidator.Step(2, "action-two", "expected-two")),
+                List.of("expected-two", "expected-one"), FunctionalTestcaseResultValidator.EVALUATION,
+                FunctionalTestcaseResultValidator.RESULT_EVALUATION, List.of(),
+                FunctionalTestcaseResultValidator.RESULT_COLLECTION, FunctionalTestcaseResultValidator.AuthoringInformation.empty(),
+                List.of("fact-1"), List.of("evidence-1"), FunctionalTestcaseResultValidator.CaseStatus.FORMAL, List.of());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> validator.validate(workItem, new FunctionalTestcaseResultValidator.Result("function-1", "point-1", List.of(testcase))));
+    }
+
     @Test
     void rejectsLiveFixtureFormalTitleThatExpandsAccountIntoUnsupportedAccountTypes() {
         FunctionalTestcaseResultValidator.Testcase testcase = controlledFormalCase(
