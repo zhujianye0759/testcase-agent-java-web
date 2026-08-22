@@ -5,7 +5,7 @@ import java.util.List;
 /**
  * Browser-safe hierarchy containing business labels and opaque application-owned IDs only.
  *
- * [Req-ID]: REQ-CAT-002
+ * [Req-ID]: REQ-CAT-002, REQ-FSC-006
  */
 public record ScopeCatalogView(List<KnowledgeBaseOption> knowledgeBases) {
     public ScopeCatalogView {
@@ -24,5 +24,10 @@ public record ScopeCatalogView(List<KnowledgeBaseOption> knowledgeBases) {
         public VersionOption { materialTypes = List.copyOf(materialTypes); }
     }
 
-    public record MaterialTypeOption(String id, String label, int documentCount) { }
+    public record MaterialTypeOption(String id, String label, int documentCount, List<DocumentOption> documents) {
+        public MaterialTypeOption { documents = List.copyOf(documents); }
+        public MaterialTypeOption(String id, String label, int documentCount) { this(id, label, documentCount, List.of()); }
+    }
+
+    public record DocumentOption(String id, String label) { }
 }

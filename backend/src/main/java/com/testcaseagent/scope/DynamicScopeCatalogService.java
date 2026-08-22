@@ -26,7 +26,7 @@ import java.util.stream.Collectors;
  * <p>A refresh is published only after every required response has been validated, so a partial
  * KEE outage can never widen or partially replace the last trusted snapshot.</p>
  *
- * [Req-ID]: REQ-CAT-001, REQ-CAT-002, REQ-CAT-003
+ * [Req-ID]: REQ-CAT-001, REQ-CAT-002, REQ-CAT-003, REQ-FSC-006
  */
 public final class DynamicScopeCatalogService {
     private static final String ADMISSION_MATERIAL = "admission_material";
@@ -92,6 +92,7 @@ public final class DynamicScopeCatalogService {
         List<KnowledgeDocument> documents = port.listDocuments(knowledgeBase.id());
         List<ScopeCatalogView.VersionOption> versions = port.listSystemVersions(knowledgeBase.id()).stream()
                 .filter(SystemVersion::active)
+                .filter(SystemVersion::current)
                 .filter(version -> container.systemId().equals(version.systemId()))
                 .sorted(Comparator.comparing(SystemVersion::displayName).thenComparing(SystemVersion::id))
                 .map(version -> buildVersion(knowledgeBase, container, version, documents, selections))
@@ -129,7 +130,20 @@ public final class DynamicScopeCatalogService {
                     if (selections.put(selectionId, selection) != null) {
                         throw new ScopeCatalogUnavailableException("Duplicate opaque scope selection");
                     }
-                    return new ScopeCatalogView.MaterialTypeOption(selectionId, entry.getKey().label(), documentIds.size());
+                    List<ScopeCatalogView.DocumentOption> documentOptions = entry.getValue().stream()
+                            .sorted(Comparator.comparing(KnowledgeDocument::fileName).thenComparing(KnowledgeDocument::id))
+                            .map(document -> {
+                                String documentSelectionId = opaque("scope-document-", knowledgeBase.id(), container.systemId(),
+                                        version.id(), entry.getKey().projectId(), ADMISSION_MATERIAL, entry.getKey().key(), document.id());
+                                ScopeSelection documentSelection = new ScopeSelection(documentSelectionId, knowledgeBase.id(),
+                                        container.systemId(), version.id(), entry.getKey().projectId(), ADMISSION_MATERIAL,
+                                        entry.getKey().key(), List.of(document.id()), Map.of(document.id(), document.fileSha256()));
+                                if (selections.put(documentSelectionId, documentSelection) != null) {
+                                    throw new ScopeCatalogUnavailableException("Duplicate opaque document scope selection");
+                                }
+                                return new ScopeCatalogView.DocumentOption(documentSelectionId, document.fileName());
+                            }).toList();
+                    return new ScopeCatalogView.MaterialTypeOption(selectionId, entry.getKey().label(), documentIds.size(), documentOptions);
                 }).toList();
         return new ScopeCatalogView.VersionOption(
                 opaque("version-", knowledgeBase.id(), container.systemId(), version.id()), version.displayName(), materialTypes);
@@ -149,7 +163,8 @@ public final class DynamicScopeCatalogService {
     }
 
     private static String label(KnowledgeScopeCatalogPort.DocumentScope scope) {
-        return blank(scope.contentTypeLabel()) ? scope.contentTypeKey() : scope.contentTypeLabel();
+        String candidate = scope.contentTypeLabel();
+        return blank(candidate) || scope.contentTypeKey().equals(candidate.trim()) ? "未命名材料类型" : candidate.trim();
     }
 
     private static boolean blank(String value) {

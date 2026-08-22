@@ -16,14 +16,14 @@ import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
-/** [Test-Ref]: DynamicTaskScopeResolverTest [Req-ID]: REQ-CAT-004, REQ-CAT-005, REQ-SCP-001, REQ-SCP-004 */
+/** [Test-Ref]: DynamicTaskScopeResolverTest [Req-ID]: REQ-CAT-004, REQ-CAT-005, REQ-SCP-001, REQ-SCP-004, REQ-FSC-006 */
 class DynamicTaskScopeResolverTest {
 
     @Test
-    void revalidatesSelectedLeavesAndFreezesTheirExactDocumentUnion() {
+    void keepsLegacyMaterialTypeSelectionCompatibleAndFreezesItsExactAggregateDocumentUnion() {
         DynamicScopeCatalogService catalog = catalog();
         ScopeCatalogSnapshot snapshot = catalog.catalog(false);
-        List<String> selected = snapshot.selections().keySet().stream().sorted().toList();
+        List<String> selected = legacyMaterialTypeSelectionIds(snapshot);
         DynamicTaskScopeResolver resolver = new DynamicTaskScopeResolver(catalog, profile());
 
         CreateGenerationTaskRequest request = resolver.resolve(command(selected));
@@ -50,7 +50,7 @@ class DynamicTaskScopeResolverTest {
                 document("requirement-list-b", "hash-requirement-list-b", "requirement_list"),
                 document("prototype-doc", "hash-prototype", "prototype"))),
                 Duration.ofHours(1), Clock.systemUTC());
-        List<String> selections = catalog.catalog(false).selections().keySet().stream().sorted().toList();
+        List<String> selections = legacyMaterialTypeSelectionIds(catalog.catalog(false));
 
         CreateGenerationTaskRequest request = new DynamicTaskScopeResolver(catalog, profile()).resolve(command(selections));
 
@@ -58,6 +58,56 @@ class DynamicTaskScopeResolverTest {
                 .containsExactlyInAnyOrder("function_list", "work_order_plan", "requirement_list", "requirement_list", "prototype");
         assertThat(request.requirementAdmissionTypeKeys())
                 .containsExactlyInAnyOrder("function_list", "work_order_plan", "requirement_list", "prototype");
+    }
+
+    /** [Req-ID]: REQ-FSC-006 */
+    @Test
+    void freezesOnlyTheExplicitlySelectedDocumentWhenOneMaterialTypeHasTwoDocuments() {
+        DynamicScopeCatalogService catalog = new DynamicScopeCatalogService(new FixedDocumentsCatalogPort(List.of(
+                document("function-doc", "hash-function", "function_list"),
+                document("work-order-doc", "hash-work-order", "work_order_plan"),
+                document("prototype-selected", "hash-prototype-selected", "prototype"),
+                document("prototype-excluded", "hash-prototype-excluded", "prototype"))),
+                Duration.ofHours(1), Clock.systemUTC());
+        ScopeCatalogSnapshot snapshot = catalog.catalog(false);
+        List<String> selected = documentSelectionIds(snapshot).stream()
+                .filter(id -> !snapshot.selections().get(id).documentIds().contains("prototype-excluded"))
+                .toList();
+
+        CreateGenerationTaskRequest request = new DynamicTaskScopeResolver(catalog, profile()).resolve(command(selected));
+
+        assertThat(request.requirementScope().documents()).extracting(RequirementDocumentCoordinate::documentId)
+                .containsExactly("function-doc", "prototype-selected", "work-order-doc");
+    }
+
+    /** [Req-ID]: REQ-FSC-006 */
+    @Test
+    void rejectsDuplicateDocumentLeafSelectionInsteadOfSilentlyDeduplicatingIt() {
+        String documentSelectionId = documentSelectionIds(catalog().catalog(false)).get(0);
+
+        assertThatThrownBy(() -> command(List.of(documentSelectionId, documentSelectionId)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("不能重复选择");
+    }
+
+    /** [Req-ID]: REQ-FSC-006 */
+    @Test
+    void rejectsAnAggregateSelectionCombinedWithItsOverlappingDocumentLeaf() {
+        ScopeCatalogSnapshot snapshot = catalog().catalog(false);
+        String functionAggregate = snapshot.view().knowledgeBases().stream().flatMap(kb -> kb.systems().stream())
+                .flatMap(system -> system.versions().stream()).flatMap(version -> version.materialTypes().stream())
+                .filter(type -> type.label().equals("功能清单")).findFirst().orElseThrow().id();
+        String functionLeaf = snapshot.selections().get(functionAggregate).documentIds().get(0);
+        String functionLeafSelection = documentSelectionIds(snapshot).stream()
+                .filter(id -> snapshot.selections().get(id).documentIds().contains(functionLeaf)).findFirst().orElseThrow();
+        String workOrderAggregate = snapshot.view().knowledgeBases().stream().flatMap(kb -> kb.systems().stream())
+                .flatMap(system -> system.versions().stream()).flatMap(version -> version.materialTypes().stream())
+                .filter(type -> type.label().equals("工单方案")).findFirst().orElseThrow().id();
+
+        assertThatThrownBy(() -> new DynamicTaskScopeResolver(catalog(), profile())
+                .resolve(command(List.of(functionAggregate, functionLeafSelection, workOrderAggregate))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("SHA-256");
     }
 
     @Test
@@ -87,7 +137,7 @@ class DynamicTaskScopeResolverTest {
     void rejectsMaterialLeavesFromDifferentKnowledgeCoordinates() {
         DynamicScopeCatalogService catalog = new DynamicScopeCatalogService(
                 new MixedCatalogPort(), Duration.ofHours(1), Clock.systemUTC());
-        List<String> selections = catalog.catalog(false).selections().keySet().stream().sorted().toList();
+        List<String> selections = legacyMaterialTypeSelectionIds(catalog.catalog(false));
 
         assertThatThrownBy(() -> new DynamicTaskScopeResolver(catalog, profile()).resolve(command(selections)))
                 .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("同一知识库");
@@ -98,7 +148,7 @@ class DynamicTaskScopeResolverTest {
         DynamicScopeCatalogService missingFormal = new DynamicScopeCatalogService(
                 new FixedDocumentsCatalogPort(List.of(document("function-doc", "hash-function", "function_list"))),
                 Duration.ofHours(1), Clock.systemUTC());
-        List<String> missingFormalSelections = missingFormal.catalog(false).selections().keySet().stream().toList();
+        List<String> missingFormalSelections = legacyMaterialTypeSelectionIds(missingFormal.catalog(false));
         assertThatThrownBy(() -> new DynamicTaskScopeResolver(missingFormal, profile())
                 .resolve(command(missingFormalSelections)))
                 .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("正式需求材料");
@@ -107,7 +157,7 @@ class DynamicTaskScopeResolverTest {
                 new FixedDocumentsCatalogPort(List.of(document("function-doc", "same-hash", "function_list"),
                         document("work-order-doc", "same-hash", "work_order_plan"))),
                 Duration.ofHours(1), Clock.systemUTC());
-        List<String> duplicateSelections = duplicateHashes.catalog(false).selections().keySet().stream().sorted().toList();
+        List<String> duplicateSelections = legacyMaterialTypeSelectionIds(duplicateHashes.catalog(false));
         assertThatThrownBy(() -> new DynamicTaskScopeResolver(duplicateHashes, profile())
                 .resolve(command(duplicateSelections)))
                 .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("SHA-256");
@@ -116,6 +166,19 @@ class DynamicTaskScopeResolverTest {
     private static CreateGenerationTaskCommand command(List<String> selected) {
         return new CreateGenerationTaskCommand(GenerationTaskMode.ALL, "", FewShotPolicy.AUTO,
                 "markdown-1.0", "1.0", selected, "");
+    }
+
+    private static List<String> legacyMaterialTypeSelectionIds(ScopeCatalogSnapshot snapshot) {
+        return snapshot.view().knowledgeBases().stream().flatMap(kb -> kb.systems().stream())
+                .flatMap(system -> system.versions().stream()).flatMap(version -> version.materialTypes().stream())
+                .map(com.testcaseagent.scope.ScopeCatalogView.MaterialTypeOption::id).sorted().toList();
+    }
+
+    private static List<String> documentSelectionIds(ScopeCatalogSnapshot snapshot) {
+        return snapshot.view().knowledgeBases().stream().flatMap(kb -> kb.systems().stream())
+                .flatMap(system -> system.versions().stream()).flatMap(version -> version.materialTypes().stream())
+                .flatMap(type -> type.documents().stream())
+                .map(com.testcaseagent.scope.ScopeCatalogView.DocumentOption::id).sorted().toList();
     }
 
     private static TaskGenerationProfileProperties profile() {

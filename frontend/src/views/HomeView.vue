@@ -43,6 +43,22 @@ const selectedSystem = computed(() => systems.value.find(item => item.id === for
 const versions = computed(() => selectedSystem.value?.versions ?? [])
 const selectedVersion = computed(() => versions.value.find(item => item.id === form.versionId))
 const materialTypes = computed(() => selectedVersion.value?.materialTypes ?? [])
+const materialChoices = computed(() => materialTypes.value.flatMap(material => {
+  if (material.documents !== undefined) {
+    return material.documents.map(document => ({
+      id: document.id,
+      materialLabel: material.label,
+      documentLabel: document.label,
+      fromDocumentOptions: true,
+    }))
+  }
+  return [{
+    id: material.id,
+    materialLabel: material.label,
+    documentLabel: `${material.documentCount} 份可用文档`,
+    fromDocumentOptions: false,
+  }]
+}))
 const hasCatalog = computed(() => knowledgeBases.value.length > 0)
 const canSubmit = computed(() => !submitting.value && !loadingOptions.value && form.scopeSelectionIds.length > 0)
 
@@ -88,7 +104,7 @@ function resetVersionSelection() {
 }
 
 function resetMaterialSelection() {
-  form.scopeSelectionIds = materialTypes.value.length === 1 ? [materialTypes.value[0].id] : []
+  form.scopeSelectionIds = materialChoices.value.length === 1 ? [materialChoices.value[0].id] : []
 }
 
 async function submitTask() {
@@ -124,7 +140,7 @@ async function submitTask() {
 </script>
 
 <template>
-  <!-- [Req-ID]: REQ-WEB-001, REQ-WEB-006, REQ-WEB-007, REQ-WEB-009, REQ-WEB-010 -->
+  <!-- [Req-ID]: REQ-WEB-001, REQ-WEB-006, REQ-WEB-007, REQ-WEB-009, REQ-WEB-010, REQ-FSC-006 -->
   <!-- [Req-ID]: REQ-UIX-001, REQ-UIX-003, REQ-UIX-006, REQ-UIX-007, REQ-UIX-009 -->
   <section
     class="generation-workspace"
@@ -303,32 +319,39 @@ async function submitTask() {
             v-if="materialTypes.length"
             class="task-form__materials"
           >
-            <p>材料类型（可多选）</p>
+            <p>材料文档（可多选）</p>
             <p
-              v-if="materialTypes.length === 1"
+              v-if="materialChoices.length === 0"
+              class="task-form__selection-hint"
+              role="status"
+            >
+              当前材料范围没有可选择的已完成文档，请刷新后再试。
+            </p>
+            <p
+              v-if="materialChoices.length === 1"
               class="task-form__material-single"
             >
-              <strong>{{ materialTypes[0].label }}</strong>
-              <span>{{ materialTypes[0].documentCount }} 份可用文档 · 已自动选择</span>
+              <strong>{{ materialChoices[0].materialLabel }}</strong>
+              <span>{{ materialChoices[0].documentLabel }} · 已自动选择</span>
             </p>
             <label
-              v-for="material in materialTypes.length > 1 ? materialTypes : []"
+              v-for="material in materialChoices.length > 1 ? materialChoices : []"
               :key="material.id"
               class="task-form__material-choice"
             >
               <input
                 v-model="form.scopeSelectionIds"
                 type="checkbox"
-                name="materialTypeIds"
+                :name="material.fromDocumentOptions ? 'materialDocumentIds' : 'materialTypeIds'"
                 :value="material.id"
               >
-              <span><strong>{{ material.label }}</strong><small>{{ material.documentCount }} 份可用文档</small></span>
+              <span><strong>{{ material.materialLabel }}</strong><small>{{ material.documentLabel }}</small></span>
             </label>
             <p
-              v-if="materialTypes.length > 1 && form.scopeSelectionIds.length === 0"
+              v-if="materialChoices.length > 1 && form.scopeSelectionIds.length === 0"
               class="task-form__selection-hint"
             >
-              请至少选择一种材料类型。
+              请至少选择一份材料文档。
             </p>
           </div>
         </div>

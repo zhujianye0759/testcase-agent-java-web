@@ -33,11 +33,16 @@ The reconciliation work item carries immutable item-to-evidence and fact-to-evid
 
 Wire DTOs are already strict; the Java validator will make the same condition mandatory so in-process callers cannot retain a legacy, incomplete finding. Root-cause merging remains task-scoped in the existing transactional store.
 
+### Keep legacy type IDs while offering document-leaf IDs
+
+The catalog retains its opaque material-type selection ID for older callers and returns one opaque document-leaf ID per completed, enabled document under the current version. The resolver re-reads the selected knowledge base and requires the full leaf coordinate, document set, and file hashes to be unchanged before freezing only those documents. The frontend uses leaf IDs whenever the leaf field is present; an explicit empty array disables selection, while only a missing field falls back to the aggregate type ID. Catalog display values use Chinese type labels and cleaned basenames, never transport IDs or internal type keys.
+
 ## Risks / Trade-offs
 
 - [Older in-process fixtures construct legacy findings] → update only affected test fixtures to include the frozen finding fields; do not relax production acceptance.
 - [Exact evidence union rejects formerly tolerated broad evidence] → this is intentional fail-closed behavior; errors are classified through the existing business-validation path with zero acceptance.
 - [No schema migration] → this change validates and uses fields already persisted in V13; tests include the acceptance-store transaction seam to prove no partial rows.
+- [Old callers submit material-type IDs] → aggregate IDs remain resolvable; new callers can select one leaf from a shared type without widening the frozen scope.
 
 ## Migration Plan
 

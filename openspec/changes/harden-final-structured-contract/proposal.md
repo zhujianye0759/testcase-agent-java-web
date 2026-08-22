@@ -9,6 +9,7 @@ The final KEE structured-skill contract adds exact source-closure obligations th
 - Enforce that each testcase's `expected_results` is exactly the ordered sequence of its persisted step expectations.
 - Require full frozen review-finding identity, source quote, Chinese analysis, pending proposed-good example, and task-level root-cause consolidation at every Java acceptance boundary.
 - Preserve the supplementary-material prohibition for formal requirement facts and the existing high-granularity formal/pending delivery boundary.
+- Expose server-authorized document leaves beneath each task-option material type so callers can freeze an exact document set without widening to another document of the same type.
 
 ## Capabilities
 
@@ -23,4 +24,9 @@ The final KEE structured-skill contract adds exact source-closure obligations th
 ## Impact
 
 - Affected code: structured coordinator, material-slice planner, requirement-review, reconciliation, testcase validators, acceptance store, their tests, and Java OpenSpec artifacts.
-- Affected external boundary: existing KEE isolated-skill JSON calls only. No KEE implementation, normal Agent Chat, task payload, database schema, or task creation behavior is changed by this proposal.
+- Affected external boundary: existing KEE isolated-skill JSON calls and Java task-options/task-creation selection. No KEE implementation, normal Agent Chat, or database schema is changed.
+
+## Compatibility
+
+- The task-creation endpoint does not gain a new route or accept raw KEE document IDs; it only accepts opaque Java-issued aggregate or document-leaf selection IDs.
+- Legacy material-type selection IDs and existing task snapshots remain readable.

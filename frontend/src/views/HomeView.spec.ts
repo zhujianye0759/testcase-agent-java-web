@@ -202,4 +202,113 @@ describe('generation task form', () => {
     expect(createTask).toHaveBeenCalledWith(expect.objectContaining({ scopeSelectionIds: ['scope-3'] }))
   })
 
+  // [Req-ID]: REQ-FSC-006
+  it('submits individually selected documents instead of widening to every document of the same type', async () => {
+    const createTask = vi.fn().mockResolvedValue({ id: 'task-123' })
+    const { wrapper } = await mountPage({
+      createTask,
+      loadTaskOptions: vi.fn().mockResolvedValue({ knowledgeBases: [{
+        id: 'kb-safe', label: '梅州知识库', systems: [{
+          id: 'system-safe', label: '电表智能验收应用', versions: [{
+            id: 'version-safe', label: 'V1.0', materialTypes: [
+              {
+                id: 'legacy-function-list', label: '功能清单', documentCount: 1,
+                documents: [{ id: 'document-function-list', label: '应用功能清单.xlsx' }],
+              },
+              {
+                id: 'legacy-prototype', label: '界面原型图', documentCount: 2,
+                documents: [
+                  { id: 'document-prototype-selected', label: '一图：界面原型图.docx' },
+                  { id: 'document-prototype-fixture', label: '1页PDF.pdf' },
+                ],
+              },
+            ],
+          }],
+        }],
+      }] }),
+    })
+
+    expect(wrapper.findAll('input[name="materialDocumentIds"]')).toHaveLength(3)
+    expect(wrapper.text()).toContain('应用功能清单.xlsx')
+    expect(wrapper.text()).toContain('一图：界面原型图.docx')
+    expect(wrapper.text()).not.toContain('document-prototype-selected')
+    expect(wrapper.text()).not.toContain('legacy-prototype')
+    await wrapper.get('input[value="document-function-list"]').setValue(true)
+    await wrapper.get('input[value="document-prototype-selected"]').setValue(true)
+    await wrapper.get('form').trigger('submit.prevent')
+
+    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
+      scopeSelectionIds: ['document-function-list', 'document-prototype-selected'],
+    }))
+    expect(createTask).not.toHaveBeenCalledWith(expect.objectContaining({
+      scopeSelectionIds: expect.arrayContaining(['legacy-prototype']),
+    }))
+  })
+
+  // [Req-ID]: REQ-FSC-006
+  it('uses a legacy aggregate selection only when the backend omits document leaves', async () => {
+    const createTask = vi.fn().mockResolvedValue({ id: 'task-123' })
+    const { wrapper } = await mountPage({
+      createTask,
+      loadTaskOptions: vi.fn().mockResolvedValue({ knowledgeBases: [{
+        id: 'kb-safe', label: '历史知识库', systems: [{
+          id: 'system-safe', label: '历史系统', versions: [{
+            id: 'version-safe', label: 'V1.0', materialTypes: [
+              { id: 'legacy-only-scope', label: '工单方案', documentCount: 1 },
+            ],
+          }],
+        }],
+      }] }),
+    })
+
+    await wrapper.get('form').trigger('submit.prevent')
+
+    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({ scopeSelectionIds: ['legacy-only-scope'] }))
+  })
+
+  // [Req-ID]: REQ-FSC-006
+  it('fails closed when a current backend explicitly reports no selectable documents', async () => {
+    const createTask = vi.fn().mockResolvedValue({ id: 'task-123' })
+    const { wrapper } = await mountPage({
+      createTask,
+      loadTaskOptions: vi.fn().mockResolvedValue({ knowledgeBases: [{
+        id: 'kb-safe', label: '梅州知识库', systems: [{
+          id: 'system-safe', label: '电表智能验收应用', versions: [{
+            id: 'version-safe', label: 'V1.0', materialTypes: [
+              { id: 'must-not-fallback', label: '界面原型图', documentCount: 0, documents: [] },
+            ],
+          }],
+        }],
+      }] }),
+    })
+
+    expect(wrapper.text()).toContain('当前材料范围没有可选择的已完成文档')
+    expect(wrapper.find('input[value="must-not-fallback"]').exists()).toBe(false)
+    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('form').trigger('submit.prevent')
+
+    expect(createTask).not.toHaveBeenCalled()
+  })
+
+  // [Req-ID]: REQ-FSC-006
+  it('renders the server-provided Chinese material label and safe file name without internal identifiers', async () => {
+    const { wrapper } = await mountPage({
+      loadTaskOptions: vi.fn().mockResolvedValue({ knowledgeBases: [{
+        id: 'kb-safe', label: '梅州知识库', systems: [{
+          id: 'system-safe', label: '电表智能验收应用', versions: [{
+            id: 'version-safe', label: 'V1.0', materialTypes: [{
+              id: 'scope-safe', label: '未命名材料类型', documentCount: 1,
+              documents: [{ id: 'document-safe', label: '应用功能清单.xlsx' }],
+            }],
+          }],
+        }],
+      }] }),
+    })
+
+    expect(wrapper.text()).toContain('未命名材料类型')
+    expect(wrapper.text()).toContain('应用功能清单.xlsx')
+    expect(wrapper.text()).not.toContain('work_order_plan')
+    expect(wrapper.text()).not.toContain('document-safe')
+  })
+
 })

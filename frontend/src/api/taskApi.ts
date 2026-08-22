@@ -14,6 +14,13 @@ export interface MaterialTypeOption {
   id: string
   label: string
   documentCount: number
+  /** Exact server-authorized document leaves. Omitted by an older backend, which keeps legacy type selection usable. */
+  documents?: MaterialDocumentOption[]
+}
+
+export interface MaterialDocumentOption {
+  id: string
+  label: string
 }
 
 export interface ScopeVersionOption {

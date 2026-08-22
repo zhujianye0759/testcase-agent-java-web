@@ -82,6 +82,7 @@ class WebClientKnowledgeScopeCatalogAdapterTest {
         assertThat(port.listDocuments("kb-1")).singleElement().satisfies(document -> {
             assertThat(document.parseStatus()).isEqualTo("completed");
             assertThat(document.fileSha256()).isEqualTo("sha256-doc-1");
+            assertThat(document.fileName()).isEqualTo("材料-doc-1");
             assertThat(document.scope().projectId()).isEqualTo("project-1");
             assertThat(document.scope().contentTypeLabel()).isEqualTo("功能清单");
         });
@@ -111,10 +112,10 @@ class WebClientKnowledgeScopeCatalogAdapterTest {
 
     private static String documentPage(int page, int total, String id, String typeKey, String typeName) {
         return """
-                {"success":true,"data":[{"id":"%s","knowledge_base_id":"kb-1","file_hash":"sha256-%s","parse_status":"completed",
+                {"success":true,"data":[{"id":"%s","knowledge_base_id":"kb-1","file_name":"材料-%s","file_hash":"sha256-%s","parse_status":"completed",
                  "enable_status":"enabled","knowledge_scope":{"system_id":"zlyg","version_id":"version-1",
                  "project_id":"project-1","content_category":"admission_material","content_type_key":"%s","content_type_name":"%s"}}],
                  "page":%d,"page_size":2,"total":%d}
-                """.formatted(id, id, typeKey, typeName, page, total);
+                """.formatted(id, id, id, typeKey, typeName, page, total);
     }
 }
