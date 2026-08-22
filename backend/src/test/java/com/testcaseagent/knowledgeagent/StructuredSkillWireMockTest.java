@@ -58,6 +58,27 @@ class StructuredSkillWireMockTest {
         kee.verify(0, postRequestedFor(urlEqualTo("/api/v1/sessions")));
     }
 
+    /** [Req-ID]: REQ-SMS-003 */
+    @Test
+    void serializesOnlyTheSelectedReviewDocumentWhileKeepingMaterialKeyOpaque() {
+        kee.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill")).willReturn(okJson(success())));
+        RequirementScope taskSnapshot = new RequirementScope("kb-1", "system-1", "version-1", "requirements_spec", "project-1",
+                List.of(new RequirementDocumentCoordinate("function-document"),
+                        new RequirementDocumentCoordinate("review-document")));
+        RequirementMaterialQualityReviewInput input = new RequirementMaterialQualityReviewInput("caller-material-key",
+                MaterialContentTypeKey.REQUIREMENTS_SPEC, "需求", List.of(
+                        new RequirementMaterialQualityReviewInput.MaterialUnit("unit-33", 33, "内容")));
+
+        adapter().reviewRequirementMaterial(new RequirementMaterialQualityReviewInvocation("session-1", "agent-1",
+                taskSnapshot.singleDocumentAuthorization("review-document"), input));
+
+        kee.verify(postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill"))
+                .withRequestBody(matchingJsonPath("$.knowledge_ids[0]", equalTo("review-document")))
+                .withRequestBody(matchingJsonPath("$.system_scopes[0].knowledge_ids[0]", equalTo("review-document")))
+                .withRequestBody(matchingJsonPath("$.input.material_key", equalTo("caller-material-key")))
+                .withRequestBody(notMatching(".*\\\"function-document\\\".*")));
+    }
+
     /** [Req-ID]: REQ-SKI-002, REQ-SKI-003, REQ-SKI-004 */
     @Test
     void callsTheExtractOperationWithGlobalOrdinalsAndRejectsAMismatchedOperationResult() {

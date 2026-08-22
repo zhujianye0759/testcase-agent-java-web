@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.testcaseagent.fewshot.ExampleQualityKind;
 import com.testcaseagent.scope.DynamicScopeCatalogService;
 import com.testcaseagent.scope.KnowledgeScopeCatalogPort;
+import com.testcaseagent.scope.RequirementDocumentCoordinate;
 import com.testcaseagent.scope.ScopeCatalogSnapshot;
 import com.testcaseagent.testcase.FewShotPolicy;
 import com.testcaseagent.testcase.GenerationTaskMode;
@@ -37,6 +38,26 @@ class DynamicTaskScopeResolverTest {
         assertThat(request.exampleScope().knowledgeBaseId()).isEqualTo("example-kb");
         assertThat(request.exampleScope().expectedQualityKinds()).containsExactlyInAnyOrderEntriesOf(java.util.Map.of(
                 "good-example", ExampleQualityKind.GOOD_CASE, "bad-example", ExampleQualityKind.BAD_CASE));
+    }
+
+    /** [Req-ID]: REQ-SMS-001 */
+    @Test
+    void freezesTheFiveMeizhouMaterialTypesWithoutPromotingSupplementaryDocumentsToFormalPrerequisites() {
+        DynamicScopeCatalogService catalog = new DynamicScopeCatalogService(new FixedDocumentsCatalogPort(List.of(
+                document("function-doc", "hash-function", "function_list"),
+                document("work-order-doc", "hash-work-order", "work_order_plan"),
+                document("requirement-list-a", "hash-requirement-list-a", "requirement_list"),
+                document("requirement-list-b", "hash-requirement-list-b", "requirement_list"),
+                document("prototype-doc", "hash-prototype", "prototype"))),
+                Duration.ofHours(1), Clock.systemUTC());
+        List<String> selections = catalog.catalog(false).selections().keySet().stream().sorted().toList();
+
+        CreateGenerationTaskRequest request = new DynamicTaskScopeResolver(catalog, profile()).resolve(command(selections));
+
+        assertThat(request.requirementScope().documents()).extracting(RequirementDocumentCoordinate::materialTypeKey)
+                .containsExactlyInAnyOrder("function_list", "work_order_plan", "requirement_list", "requirement_list", "prototype");
+        assertThat(request.requirementAdmissionTypeKeys())
+                .containsExactlyInAnyOrder("function_list", "work_order_plan", "requirement_list", "prototype");
     }
 
     @Test

@@ -22,6 +22,7 @@ import com.testcaseagent.knowledgeagent.RequirementMaterialQualityReviewInvocati
 import com.testcaseagent.knowledgeagent.StructuredSkillExecutionException;
 import com.testcaseagent.knowledgeagent.StructuredSkillExecutionPort;
 import com.testcaseagent.knowledgeagent.StructuredSkillSessionPort;
+import com.testcaseagent.scope.RequirementScope;
 import com.testcaseagent.structuredgeneration.StructuredCompletionGate;
 import com.testcaseagent.structuredgeneration.StructuredCoverageStatus;
 import com.testcaseagent.structuredgeneration.StructuredGenerationAcceptanceStore;
@@ -135,13 +136,14 @@ public final class DefaultStructuredAllGenerationCoordinator implements Structur
                     }
                 });
                 String identity = identity(taskId, "REQUIREMENT_MATERIAL_REVIEW", input);
+                RequirementScope reviewScope = request.requirementScope().singleDocumentAuthorization(material.documentId());
                 var registration = new StructuredGenerationAcceptanceStore.WorkRegistration(taskId, identity,
                         "requirement-material-quality-review", "REQUIREMENT_MATERIAL_REVIEW",
                         input.units().get(0).ordinal(), input.units().get(input.units().size() - 1).ordinal(),
                         input.materialKey(), input.sourceLabel(), evidence, null, null);
                 executeWork(registration, claim -> {
                     var result = StructuredSkillResultMapper.review(skills.reviewRequirementMaterial(
-                            new RequirementMaterialQualityReviewInvocation(sessionId, request.agentId(), request.requirementScope(), input)).data().result());
+                            new RequirementMaterialQualityReviewInvocation(sessionId, request.agentId(), reviewScope, input)).data().result());
                     RequirementMaterialReviewValidator.Result namespaced = namespaceReview(taskId, identity, result);
                     store.acceptReview(claim, reviewValidator, new RequirementMaterialReviewValidator.WorkItem(
                             registry, input.materialKey(), input.contentTypeKey().wireValue(), evidence, evidenceTexts), namespaced);

@@ -62,6 +62,17 @@ class RequirementMaterialReviewValidatorTest {
                 new RequirementMaterialReviewValidator.Result(List.of(unsafe), List.of())));
     }
 
+    /** [Req-ID]: REQ-SMS-001 */
+    @Test
+    void acceptsFindingsButRejectsFormalFactsForRequirementListMaterial() {
+        RequirementMaterialReviewValidator.WorkItem workItem = workItem("requirement_list");
+
+        assertDoesNotThrow(() -> validator.validate(workItem,
+                new RequirementMaterialReviewValidator.Result(List.of(), List.of(finding()))));
+        assertThrows(IllegalArgumentException.class, () -> validator.validate(workItem,
+                new RequirementMaterialReviewValidator.Result(List.of(fact()), List.of())));
+    }
+
     /** [Req-ID]: REQ-FTG-005 */
     @Test
     void requiresAnExactNonblankParsedUnitTextForEveryAllowedEvidenceKey() {

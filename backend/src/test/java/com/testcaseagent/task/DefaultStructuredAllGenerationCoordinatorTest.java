@@ -28,6 +28,7 @@ import com.testcaseagent.knowledgeagent.StructuredSkillErrorType;
 import com.testcaseagent.knowledgeagent.StructuredSkillSessionPort;
 import com.testcaseagent.knowledgeagent.StructuredSkillSuccess;
 import com.testcaseagent.knowledgeagent.StructuredSkillSuccessEnvelope;
+import com.testcaseagent.scope.RequirementDocumentCoordinate;
 import com.testcaseagent.scope.RequirementScope;
 import com.testcaseagent.structuredgeneration.StructuredGenerationAcceptanceStore;
 import java.nio.file.Path;
@@ -56,7 +57,7 @@ class DefaultStructuredAllGenerationCoordinatorTest {
         WorkbookExporter exporter = mock(WorkbookExporter.class);
         CreateGenerationTaskRequest request = mock(CreateGenerationTaskRequest.class);
         when(request.agentId()).thenReturn("agent-1");
-        when(request.requirementScope()).thenReturn(mock(RequirementScope.class));
+        when(request.requirementScope()).thenReturn(scope("material-1"));
         when(sessions.openStructuredSession()).thenReturn("session-1");
         when(traversal.traverse("task-review-grounding", request, false)).thenReturn(
                 new RequirementMaterialTraversalService.TraversalResult(List.of(material(
@@ -113,7 +114,9 @@ class DefaultStructuredAllGenerationCoordinatorTest {
         StructuredGenerationAcceptanceStore store = mock(StructuredGenerationAcceptanceStore.class);
         WorkbookExporter exporter = mock(WorkbookExporter.class);
         CreateGenerationTaskRequest request = mock(CreateGenerationTaskRequest.class);
-        RequirementScope scope = mock(RequirementScope.class);
+        RequirementScope scope = RequirementScope.freeze("kb-1", "system-1", "version-1", "requirements_spec", "project-1",
+                List.of(new RequirementDocumentCoordinate("requirement-1"),
+                        new RequirementDocumentCoordinate("function-list-1")));
         when(request.agentId()).thenReturn("agent-1");
         when(request.requirementScope()).thenReturn(scope);
         when(sessions.openStructuredSession()).thenReturn("session-1");
@@ -216,6 +219,26 @@ class DefaultStructuredAllGenerationCoordinatorTest {
         order.verify(skills).reconcileFeatureScope(any());
         order.verify(skills, org.mockito.Mockito.atLeastOnce()).designFunctionalTestcases(any());
          order.verify(exporter).exportStructured(persistedRows);
+         var reviewInvocation = org.mockito.ArgumentCaptor.forClass(
+                 com.testcaseagent.knowledgeagent.RequirementMaterialQualityReviewInvocation.class);
+         verify(skills).reviewRequirementMaterial(reviewInvocation.capture());
+         assertThat(reviewInvocation.getValue().requirementScope().documents())
+                 .extracting(RequirementDocumentCoordinate::documentId)
+                 .containsExactly("requirement-1");
+         assertThat(reviewInvocation.getValue().input().materialKey()).isEqualTo("requirement-1");
+         var extractionInvocation = org.mockito.ArgumentCaptor.forClass(
+                 com.testcaseagent.knowledgeagent.FunctionListExtractionInvocation.class);
+         verify(skills).extractFunctionList(extractionInvocation.capture());
+         assertThat(extractionInvocation.getValue().requirementScope()).isEqualTo(scope);
+         var reconciliationInvocation = org.mockito.ArgumentCaptor.forClass(
+                 com.testcaseagent.knowledgeagent.FeatureScopeReconciliationInvocation.class);
+         verify(skills).reconcileFeatureScope(reconciliationInvocation.capture());
+         assertThat(reconciliationInvocation.getValue().requirementScope()).isEqualTo(scope);
+         var testcaseInvocations = org.mockito.ArgumentCaptor.forClass(
+                 com.testcaseagent.knowledgeagent.FunctionalTestcaseDesignInvocation.class);
+         verify(skills, org.mockito.Mockito.atLeastOnce()).designFunctionalTestcases(testcaseInvocations.capture());
+         assertThat(testcaseInvocations.getAllValues())
+                 .allSatisfy(invocation -> assertThat(invocation.requirementScope()).isEqualTo(scope));
          var accepted = org.mockito.ArgumentCaptor.forClass(
                  com.testcaseagent.validation.FunctionalTestcaseResultValidator.Result.class);
          verify(store, org.mockito.Mockito.atLeastOnce()).acceptTestcases(any(), any(), any(), accepted.capture());
@@ -254,7 +277,7 @@ class DefaultStructuredAllGenerationCoordinatorTest {
         WorkbookExporter exporter = mock(WorkbookExporter.class);
         CreateGenerationTaskRequest request = mock(CreateGenerationTaskRequest.class);
         when(request.agentId()).thenReturn("agent-1");
-        when(request.requirementScope()).thenReturn(mock(RequirementScope.class));
+        when(request.requirementScope()).thenReturn(scope("requirement-1", "function-list-1"));
         when(sessions.openStructuredSession()).thenReturn("session-1");
         when(traversal.traverse("task-empty", request, false)).thenReturn(
                 new RequirementMaterialTraversalService.TraversalResult(List.of(
@@ -303,7 +326,7 @@ class DefaultStructuredAllGenerationCoordinatorTest {
         WorkbookExporter exporter = mock(WorkbookExporter.class);
         CreateGenerationTaskRequest request = mock(CreateGenerationTaskRequest.class);
         when(request.agentId()).thenReturn("agent-1");
-        when(request.requirementScope()).thenReturn(mock(RequirementScope.class));
+        when(request.requirementScope()).thenReturn(scope("requirement-1", "function-list-1"));
         when(sessions.openStructuredSession()).thenReturn("session-1");
         when(traversal.traverse("task-retry", request, false)).thenReturn(
                 new RequirementMaterialTraversalService.TraversalResult(List.of(
@@ -397,7 +420,7 @@ class DefaultStructuredAllGenerationCoordinatorTest {
         WorkbookExporter exporter = mock(WorkbookExporter.class);
         CreateGenerationTaskRequest request = mock(CreateGenerationTaskRequest.class);
         when(request.agentId()).thenReturn("agent-1");
-        when(request.requirementScope()).thenReturn(mock(RequirementScope.class));
+        when(request.requirementScope()).thenReturn(scope("requirement-1", "function-list-1"));
         when(sessions.openStructuredSession()).thenReturn("session-grounding");
         when(traversal.traverse("task-grounding", request, false)).thenReturn(
                 new RequirementMaterialTraversalService.TraversalResult(List.of(
@@ -503,7 +526,7 @@ class DefaultStructuredAllGenerationCoordinatorTest {
         WorkbookExporter exporter = mock(WorkbookExporter.class);
         CreateGenerationTaskRequest request = mock(CreateGenerationTaskRequest.class);
         when(request.agentId()).thenReturn("agent-1");
-        when(request.requirementScope()).thenReturn(mock(RequirementScope.class));
+        when(request.requirementScope()).thenReturn(scope("requirement-1", "function-list-1"));
         when(sessions.openStructuredSession()).thenReturn("session-1");
         when(traversal.traverse("task-cancel-between", request, false)).thenReturn(
                 new RequirementMaterialTraversalService.TraversalResult(List.of(functionMaterialWithUnits(33))));
@@ -543,7 +566,7 @@ class DefaultStructuredAllGenerationCoordinatorTest {
         WorkbookExporter exporter = mock(WorkbookExporter.class);
         CreateGenerationTaskRequest request = mock(CreateGenerationTaskRequest.class);
         when(request.agentId()).thenReturn("agent-1");
-        when(request.requirementScope()).thenReturn(mock(RequirementScope.class));
+        when(request.requirementScope()).thenReturn(scope("requirement-1", "function-list-1"));
         when(sessions.openStructuredSession()).thenReturn("session-restart");
         when(traversal.traverse("task-restart", request, false)).thenReturn(
                 new RequirementMaterialTraversalService.TraversalResult(List.of(
@@ -643,6 +666,11 @@ class DefaultStructuredAllGenerationCoordinatorTest {
     private static MaterialInventoryDocument material(String documentId, String role, String unitId, String content) {
         return new MaterialInventoryDocument(documentId, documentId, role, 1, true,
                 List.of(new MaterialInventoryUnit(documentId, role, unitId, 0, 1, content, 0, content.length())));
+    }
+
+    private static RequirementScope scope(String... documentIds) {
+        return RequirementScope.freeze("kb-1", "system-1", "version-1", "requirements_spec", "project-1",
+                java.util.Arrays.stream(documentIds).map(RequirementDocumentCoordinate::new).toList());
     }
 
     private static MaterialInventoryDocument functionMaterialWithUnits(int count) {

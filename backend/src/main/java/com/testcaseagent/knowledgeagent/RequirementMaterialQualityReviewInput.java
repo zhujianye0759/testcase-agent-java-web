@@ -5,7 +5,12 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
-/** Exact input for one bounded requirement-material review slice. [Req-ID]: REQ-SKI-003 */
+/**
+ * Exact input for one bounded requirement-material review slice. The caller-owned material key
+ * is an opaque correlation value, not a KnowledgeEngineeringEngine document identifier.
+ *
+ * [Req-ID]: REQ-SKI-003, REQ-SMS-003
+ */
 @JsonIgnoreProperties(ignoreUnknown = false)
 public record RequirementMaterialQualityReviewInput(
         @JsonProperty("material_key") String materialKey,

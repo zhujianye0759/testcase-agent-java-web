@@ -36,6 +36,27 @@ public record RequirementScope(
     }
 
     /**
+     * Derives a non-mutating one-document authorization from this frozen task snapshot.
+     *
+     * <p>This is only for an operation whose server-side contract is limited to one stored
+     * document. The caller-provided material key remains outside this scope and is not used as
+     * a document identity.</p>
+     *
+     * [Req-ID]: REQ-SMS-003
+     *
+     * @param documentId document already present in this frozen snapshot
+     * @return a scope retaining every coordinate except unselected documents
+     */
+    public RequirementScope singleDocumentAuthorization(String documentId) {
+        String selectedDocumentId = ScopeValues.requireText(documentId, "documentId");
+        RequirementDocumentCoordinate selected = documents.stream()
+                .filter(document -> document.documentId().equals(selectedDocumentId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("documentId is outside the frozen RequirementScope"));
+        return new RequirementScope(knowledgeBaseId, systemId, versionId, materialCategory, projectId, List.of(selected));
+    }
+
+    /**
      * Produces a stable SHA-256 identity for this exact frozen coordinate set.
      *
      * @return lowercase SHA-256 snapshot hash

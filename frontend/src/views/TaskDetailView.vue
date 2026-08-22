@@ -158,6 +158,8 @@ function admissionTypeText(types?: string) {
   const labels: Record<string, string> = {
     requirements_spec: '需求规格说明',
     work_order_plan: '工单方案',
+    prototype: '界面原型图',
+    requirement_list: '需求清单',
     function_list: '功能清单',
     interface_list: '接口清单',
     detailed_design: '详细设计',

@@ -99,6 +99,26 @@ class ScopePolicyTest {
                 .isInstanceOf(ScopeViolation.class);
     }
 
+    /** [Req-ID]: REQ-SMS-003 */
+    @Test
+    void derivesOneDocumentAuthorizationWithoutChangingTheFrozenTaskSnapshot() {
+        RequirementScope frozen = RequirementScope.freeze(
+                "knowledge-strategy", "system-strategy", "version-1.0", "admission-material", "project-strategy",
+                List.of(new RequirementDocumentCoordinate("document-function"),
+                        new RequirementDocumentCoordinate("document-review")));
+
+        RequirementScope reviewScope = frozen.singleDocumentAuthorization("document-review");
+
+        assertThat(reviewScope.documents()).extracting(RequirementDocumentCoordinate::documentId)
+                .containsExactly("document-review");
+        assertThat(reviewScope.knowledgeBaseId()).isEqualTo(frozen.knowledgeBaseId());
+        assertThat(frozen.documents()).extracting(RequirementDocumentCoordinate::documentId)
+                .containsExactly("document-function", "document-review");
+        assertThatThrownBy(() -> frozen.singleDocumentAuthorization("document-outside"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("outside the frozen RequirementScope");
+    }
+
     private static RequirementScope scope() {
         return RequirementScope.freeze(
                 "knowledge-strategy",

@@ -54,6 +54,27 @@ const completedDetail = {
 
 // [Req-ID]: REQ-WEB-003, REQ-WEB-004, REQ-WEB-005, REQ-WEB-006, REQ-WEB-007, REQ-WEB-008
 describe('generation task detail', () => {
+  it('[Req-ID]: REQ-SMS-001 renders supplementary material types as reader-safe Chinese labels', async () => {
+    const wrapper = mount(TaskDetailView, {
+      props: {
+        taskId: 'task-supplementary-materials',
+        getTask: vi.fn().mockResolvedValue({
+          ...completedDetail,
+          frozenScope: {
+            ...completedDetail.frozenScope,
+            admissionType: 'function_list,work_order_plan,prototype,requirement_list',
+            documentCount: 5,
+          },
+        }),
+      } as never,
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('功能清单、工单方案、界面原型图、需求清单')
+    expect(wrapper.text()).not.toContain('prototype')
+    expect(wrapper.text()).not.toContain('requirement_list')
+  })
+
   it('[Req-ID]: REQ-STD-001, REQ-STD-002 renders the real unable-to-generate structured result instead of legacy progress', async () => {
     const wrapper = mount(TaskDetailView, {
       props: {
