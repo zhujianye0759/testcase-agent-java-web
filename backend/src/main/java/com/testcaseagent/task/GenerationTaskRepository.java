@@ -4415,7 +4415,7 @@ public final class GenerationTaskRepository {
                     artifact_id = NULL, artifact_sha256 = NULL, artifact_path = NULL,
                     validation_error_code = ?, validation_error_path = ?, validation_error_message = ?
                 WHERE id = ? AND status IN ('AUDITING','GENERATING','VALIDATING')
-                """, coverageStatus.name(), failure.code(), failure.path(), failure.message(), taskId);
+                """, coverageStatus.name(), failure.code(), failure.path(), failure.storageMessage(), taskId);
         if (changed != 1) throw new IllegalStateException("Structured planning failure did not update exactly one task");
     }
 
@@ -4526,12 +4526,11 @@ public final class GenerationTaskRepository {
                     }
                     StructuredValidationFailure safe;
                     try {
-                        safe = StructuredValidationFailure.of(StructuredValidationFailure.Code.valueOf(code), path);
+                        safe = StructuredValidationFailure.fromStored(
+                                StructuredValidationFailure.Code.valueOf(code), path, message);
                     } catch (IllegalArgumentException exception) {
-                        throw new IllegalStateException("Structured validation diagnostic is not recognized", exception);
-                    }
-                    if (!safe.message().equals(message)) {
-                        throw new IllegalStateException("Structured validation diagnostic message does not match its code");
+                        // Stored diagnostic text is untrusted at this boundary and must not survive in a loggable cause.
+                        throw new IllegalStateException("Structured validation diagnostic is not recognized");
                     }
                     return new StructuredGenerationTaskDetail.ValidationFailure(safe.code(), safe.path(), safe.message());
                 }, taskId);

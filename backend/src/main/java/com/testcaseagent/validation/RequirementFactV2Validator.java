@@ -9,6 +9,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.text.Normalizer;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -480,41 +481,62 @@ public final class RequirementFactV2Validator {
      * [Req-ID]: REQ-TGV2-012
      */
     private static void validateDirectEvidence(String statement, List<StructuredSourceQuoteV2> quotes, int index) {
-        boolean supported = quotes.stream().map(StructuredSourceQuoteV2::quote).distinct()
-                .anyMatch(quote -> quoteSupportsStatement(quote, statement));
-        if (!supported) {
-            throw failure(StructuredValidationFailure.Code.FACT_DIRECT_EVIDENCE_UNSUPPORTED,
-                    "$.requirement_facts[" + index + "].statement");
+        EnumSet<StructuredValidationFailure.DirectEvidenceReason> reasons =
+                EnumSet.noneOf(StructuredValidationFailure.DirectEvidenceReason.class);
+        for (String quote : quotes.stream().map(StructuredSourceQuoteV2::quote).distinct().toList()) {
+            DirectEvidenceAnalysis analysis = quoteSupportsStatement(quote, statement);
+            if (analysis.supported()) return;
+            reasons.addAll(analysis.reasons());
         }
+        throw new StructuredValidationException(StructuredValidationFailure.directEvidence(
+                "$.requirement_facts[" + index + "].statement", reasons));
     }
 
-    private static boolean quoteSupportsStatement(String quote, String statement) {
-        if (!quotedLiteralsSupported(statement, quote)) return false;
-        return statementVariants(statement, quote).stream()
-                .anyMatch(candidate -> quoteSupportsStatementVariant(quote, candidate));
+    private static DirectEvidenceAnalysis quoteSupportsStatement(String quote, String statement) {
+        if (!quotedLiteralsSupported(statement, quote)) {
+            return DirectEvidenceAnalysis.rejected(
+                    StructuredValidationFailure.DirectEvidenceReason.LITERAL_UNSUPPORTED);
+        }
+        EnumSet<StructuredValidationFailure.DirectEvidenceReason> reasons =
+                EnumSet.noneOf(StructuredValidationFailure.DirectEvidenceReason.class);
+        for (String candidate : statementVariants(statement, quote)) {
+            DirectEvidenceAnalysis analysis = quoteSupportsStatementVariant(quote, candidate);
+            if (analysis.supported()) return analysis;
+            reasons.addAll(analysis.reasons());
+        }
+        return DirectEvidenceAnalysis.rejected(reasons);
     }
 
-    private static boolean quoteSupportsStatementVariant(String quote, String statement) {
-        if (sameSemanticTokens(quote, statement)) return true;
-        if (differsOnlyByBindingClausePunctuation(quote, statement)) return true;
+    private static DirectEvidenceAnalysis quoteSupportsStatementVariant(String quote, String statement) {
+        if (sameSemanticTokens(quote, statement)) return DirectEvidenceAnalysis.accepted();
+        if (differsOnlyByBindingClausePunctuation(quote, statement)) return DirectEvidenceAnalysis.accepted();
         MatchingTextPair pair = reduceMatchingFieldCollection(quote, statement);
-        if (pair == null) return false;
-        if (sameSemanticTokens(pair.quote(), pair.statement())) return true;
+        if (pair == null) {
+            return DirectEvidenceAnalysis.rejected(
+                    StructuredValidationFailure.DirectEvidenceReason.TOKEN_ORDER_OR_ADDITION);
+        }
+        if (sameSemanticTokens(pair.quote(), pair.statement())) return DirectEvidenceAnalysis.accepted();
 
         List<String> quoteClauses = semanticClauses(pair.quote());
         List<String> statementClauses = semanticClauses(pair.statement());
         // A model-selected quote can be narrower than its parsed unit. Once selected, however, dropping a complete
         // quote clause is not a provable connector/subject omission because that clause may carry a condition or role.
         if (quoteClauses.isEmpty() || statementClauses.isEmpty()
-                || quoteClauses.size() != statementClauses.size()) return false;
+                || quoteClauses.size() != statementClauses.size()) {
+            return DirectEvidenceAnalysis.rejected(
+                    StructuredValidationFailure.DirectEvidenceReason.CLAUSE_COUNT_MISMATCH);
+        }
         if (statementClauses.size() > 1) {
             return clausesSupportedContiguously(quoteClauses, statementClauses);
         }
 
         String statementClause = statementClauses.get(0);
         String quoteClause = quoteClauses.get(0);
-        return !dropsBindingPrefix(quoteClause, statementClause)
-                && clauseSupportsStatement(quoteClause, statementClause);
+        if (dropsBindingPrefix(quoteClause, statementClause)) {
+            return DirectEvidenceAnalysis.rejected(
+                    StructuredValidationFailure.DirectEvidenceReason.BINDING_PREFIX_DROPPED);
+        }
+        return clauseSupportsStatement(quoteClause, statementClause);
     }
 
     private static List<String> semanticClauses(String value) {
@@ -522,29 +544,51 @@ public final class RequirementFactV2Validator {
                 .map(String::strip).filter(clause -> !clause.isEmpty()).toList();
     }
 
-    private static boolean clausesSupportedContiguously(List<String> quoteClauses, List<String> statementClauses) {
+    private static DirectEvidenceAnalysis clausesSupportedContiguously(
+            List<String> quoteClauses, List<String> statementClauses) {
         for (int index = 0; index < statementClauses.size(); index++) {
             String quoteClause = quoteClauses.get(index);
             String statementClause = statementClauses.get(index);
-            if (dropsBindingPrefix(quoteClause, statementClause)
-                    || !clauseSupportsStatement(quoteClause, statementClause)) return false;
+            if (dropsBindingPrefix(quoteClause, statementClause)) {
+                return DirectEvidenceAnalysis.rejected(
+                        StructuredValidationFailure.DirectEvidenceReason.BINDING_PREFIX_DROPPED);
+            }
+            DirectEvidenceAnalysis analysis = clauseSupportsStatement(quoteClause, statementClause);
+            if (!analysis.supported()) return analysis;
         }
-        return true;
+        return DirectEvidenceAnalysis.accepted();
     }
 
-    private static boolean clauseSupportsStatement(String quoteClause, String statementClause) {
+    private static DirectEvidenceAnalysis clauseSupportsStatement(String quoteClause, String statementClause) {
         return orderedClauseSupport(quoteClause, statementClause);
     }
 
-    private static boolean orderedClauseSupport(String quoteClause, String statementClause) {
+    private static DirectEvidenceAnalysis orderedClauseSupport(String quoteClause, String statementClause) {
         List<SemanticToken> quoteTokens = semanticTokens(quoteClause);
         List<SemanticToken> statementTokens = semanticTokens(statementClause);
-        if (statementTokens.isEmpty() || quoteTokens.isEmpty()) return false;
+        if (statementTokens.isEmpty() || quoteTokens.isEmpty()) {
+            return DirectEvidenceAnalysis.rejected(
+                    StructuredValidationFailure.DirectEvidenceReason.TOKEN_ORDER_OR_ADDITION);
+        }
+        if (!canonicalControls(statementClause).equals(canonicalControls(quoteClause))) {
+            return DirectEvidenceAnalysis.rejected(
+                    StructuredValidationFailure.DirectEvidenceReason.CONTROL_MISMATCH);
+        }
         List<SemanticToken> matched = orderedSuffixMatch(statementTokens, quoteTokens);
-        return !matched.isEmpty() && hasOnlyOmittableInternalGaps(quoteTokens, matched)
-                && !omitsConnectorBetweenRepeatedObligations(statementClause, quoteTokens, matched)
-                && hasSafeBoundaryOmissions(quoteClause, quoteTokens, matched)
-                && canonicalControls(statementClause).equals(canonicalControls(quoteClause));
+        if (matched.isEmpty()) {
+            return DirectEvidenceAnalysis.rejected(
+                    StructuredValidationFailure.DirectEvidenceReason.TOKEN_ORDER_OR_ADDITION);
+        }
+        if (!hasOnlyOmittableInternalGaps(quoteTokens, matched)
+                || omitsConnectorBetweenRepeatedObligations(statementClause, quoteTokens, matched)) {
+            return DirectEvidenceAnalysis.rejected(
+                    StructuredValidationFailure.DirectEvidenceReason.UNSAFE_INTERNAL_GAP);
+        }
+        if (!hasSafeBoundaryOmissions(quoteClause, quoteTokens, matched)) {
+            return DirectEvidenceAnalysis.rejected(
+                    StructuredValidationFailure.DirectEvidenceReason.UNSAFE_BOUNDARY_OMISSION);
+        }
+        return DirectEvidenceAnalysis.accepted();
     }
 
     private static boolean omitsConnectorBetweenRepeatedObligations(
@@ -704,12 +748,10 @@ public final class RequirementFactV2Validator {
         int quoteIndex = quote.size() - 1;
         for (int statementIndex = statement.size() - 1; statementIndex >= 0; statementIndex--) {
             SemanticToken expected = statement.get(statementIndex);
-            int gapEnd = quoteIndex + 1;
             while (quoteIndex >= 0 && !expected.value().equals(quote.get(quoteIndex).value())) {
                 quoteIndex--;
             }
             if (quoteIndex < 0) return List.of();
-            if (!isOmittableGap(quote.subList(quoteIndex + 1, gapEnd))) return List.of();
             reversed.add(quote.get(quoteIndex--));
         }
         java.util.Collections.reverse(reversed);
@@ -1181,6 +1223,32 @@ public final class RequirementFactV2Validator {
     private record FieldCollection(String baseClause, Set<String> members, FieldSyntax syntax) { }
 
     private record MatchingTextPair(String quote, String statement) { }
+
+    private record DirectEvidenceAnalysis(
+            boolean supported, Set<StructuredValidationFailure.DirectEvidenceReason> reasons) {
+        private DirectEvidenceAnalysis {
+            reasons = Set.copyOf(reasons);
+            if (supported == !reasons.isEmpty()) {
+                throw new IllegalArgumentException("Direct-evidence analysis must be either accepted or rejected");
+            }
+        }
+
+        private static DirectEvidenceAnalysis accepted() {
+            return new DirectEvidenceAnalysis(true, Set.of());
+        }
+
+        private static DirectEvidenceAnalysis rejected(StructuredValidationFailure.DirectEvidenceReason reason) {
+            return rejected(EnumSet.of(reason));
+        }
+
+        private static DirectEvidenceAnalysis rejected(
+                Set<StructuredValidationFailure.DirectEvidenceReason> reasons) {
+            if (reasons.isEmpty()) {
+                throw new IllegalArgumentException("Rejected direct evidence requires a safe reason");
+            }
+            return new DirectEvidenceAnalysis(false, reasons);
+        }
+    }
 
     private record NumericToken(String value, int end) { }
 

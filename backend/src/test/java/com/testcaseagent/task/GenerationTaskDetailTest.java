@@ -472,6 +472,49 @@ class GenerationTaskDetailTest {
         assertThat(response.toString()).doesNotContain("password=do-not-persist", "model response", "material content");
     }
 
+    /** [Req-ID]: REQ-TGV2-012 */
+    @Test
+    void hidesInternalDirectEvidenceReasonsFromTheTaskDetailApi() throws Exception {
+        String taskId = createV2Task();
+        jdbcTemplate.update("""
+                UPDATE generation_task
+                SET status = 'FAILED', structured_processing_status = 'FAILED', structured_coverage_status = 'PENDING',
+                    validation_error_code = 'FACT_DIRECT_EVIDENCE_UNSUPPORTED',
+                    validation_error_path = '$.requirement_facts[0].statement',
+                    validation_error_message = '需求事实正文未由任一引用材料单元直接支撑|direct_evidence_reasons=LITERAL_UNSUPPORTED,TOKEN_ORDER_OR_ADDITION'
+                WHERE id = ?
+                """, taskId);
+
+        JsonNode response = objectMapper.readTree(objectMapper.writeValueAsString(
+                GenerationTaskDetailResponse.from(repository.findDetail(taskId).orElseThrow())));
+
+        JsonNode failure = response.path("structuredResult").path("validationFailure");
+        assertThat(failure.path("code").asText()).isEqualTo("FACT_DIRECT_EVIDENCE_UNSUPPORTED");
+        assertThat(failure.path("message").asText()).isEqualTo("需求事实正文未由任一引用材料单元直接支撑");
+        assertThat(response.toString()).doesNotContain(
+                "direct_evidence_reasons", "LITERAL_UNSUPPORTED", "TOKEN_ORDER_OR_ADDITION");
+    }
+
+    /** [Req-ID]: REQ-TGV2-012 */
+    @Test
+    void rejectsCorruptedStoredDiagnosticsWithoutRetainingTheirValueInTheExceptionChain() {
+        String taskId = createV2Task();
+        String sensitiveMarker = "private-diagnostic-marker";
+        jdbcTemplate.update("""
+                UPDATE generation_task
+                SET status = 'FAILED', structured_processing_status = 'FAILED', structured_coverage_status = 'PENDING',
+                    validation_error_code = ?, validation_error_path = '$.requirement_facts[0].statement',
+                    validation_error_message = 'corrupted'
+                WHERE id = ?
+                """, sensitiveMarker, taskId);
+
+        assertThatThrownBy(() -> repository.findDetail(taskId))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Structured validation diagnostic is not recognized")
+                .hasNoCause()
+                .satisfies(rejected -> assertThat(rejected.toString()).doesNotContain(sensitiveMarker));
+    }
+
     /** [Req-ID]: REQ-ESR-006 */
     @Test
     void exposesOnlyFixedCoordinatorCategoryAndStageWithoutAStackOrArbitraryExceptionText() throws Exception {

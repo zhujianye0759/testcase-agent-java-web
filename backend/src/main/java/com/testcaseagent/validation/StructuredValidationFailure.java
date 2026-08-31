@@ -1,5 +1,9 @@
 package com.testcaseagent.validation;
 
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.EnumSet;
+import java.util.List;
 import java.util.Objects;
 import java.util.regex.Pattern;
 
@@ -10,22 +14,76 @@ import java.util.regex.Pattern;
  * derived from the enum rather than accepted from callers. [Req-ID]: REQ-FSC-007</p>
  */
 public final class StructuredValidationFailure {
+    private static final String DIRECT_EVIDENCE_REASON_PREFIX = "|direct_evidence_reasons=";
+    private static final int MAX_STORAGE_MESSAGE_LENGTH = 255;
     private static final Pattern SAFE_PATH = Pattern.compile(
             "\\$(?:(?:\\.[a-z][a-z0-9_]*)|(?:\\[[0-9]+]))*");
     private final Code type;
     private final String path;
+    private final List<DirectEvidenceReason> directEvidenceReasons;
 
-    private StructuredValidationFailure(Code type, String path) {
+    private StructuredValidationFailure(Code type, String path, Collection<DirectEvidenceReason> reasons) {
         this.type = Objects.requireNonNull(type, "type must not be null");
         if (!isSafePath(path)) {
             throw new IllegalArgumentException("Validation failure path is not safe");
         }
         this.path = path;
+        EnumSet<DirectEvidenceReason> ordered = reasons == null || reasons.isEmpty()
+                ? EnumSet.noneOf(DirectEvidenceReason.class)
+                : EnumSet.copyOf(reasons);
+        if (type != Code.FACT_DIRECT_EVIDENCE_UNSUPPORTED && !ordered.isEmpty()) {
+            throw new IllegalArgumentException("Direct-evidence reasons require the matching failure code");
+        }
+        this.directEvidenceReasons = List.copyOf(ordered);
+        if (storageMessage().length() > MAX_STORAGE_MESSAGE_LENGTH) {
+            throw new IllegalArgumentException("Validation failure storage message is too long");
+        }
     }
 
     /** Creates one diagnostic from the fixed code/message catalog and a bounded safe field path. */
     public static StructuredValidationFailure of(Code type, String path) {
-        return new StructuredValidationFailure(type, path);
+        return new StructuredValidationFailure(type, path, List.of());
+    }
+
+    /**
+     * Creates the bounded internal rule diagnosis for one unsupported V2 fact statement.
+     * Rejected text is deliberately not accepted by this API. [Req-ID]: REQ-TGV2-012
+     */
+    public static StructuredValidationFailure directEvidence(
+            String path, Collection<DirectEvidenceReason> reasons) {
+        if (reasons == null || reasons.isEmpty()) {
+            throw new IllegalArgumentException("Direct-evidence rejection requires at least one safe reason");
+        }
+        return new StructuredValidationFailure(Code.FACT_DIRECT_EVIDENCE_UNSUPPORTED, path, reasons);
+    }
+
+    /**
+     * Reconstructs only the strict legacy or reason-bearing storage form; arbitrary database text fails closed.
+     * [Req-ID]: REQ-TGV2-012
+     */
+    public static StructuredValidationFailure fromStored(Code type, String path, String storedMessage) {
+        StructuredValidationFailure legacy = of(type, path);
+        if (legacy.message().equals(storedMessage)) return legacy;
+        if (type != Code.FACT_DIRECT_EVIDENCE_UNSUPPORTED || storedMessage == null
+                || !storedMessage.startsWith(legacy.message() + DIRECT_EVIDENCE_REASON_PREFIX)) {
+            throw new IllegalArgumentException("Validation failure storage message does not match its code");
+        }
+        String encoded = storedMessage.substring((legacy.message() + DIRECT_EVIDENCE_REASON_PREFIX).length());
+        if (encoded.isEmpty()) throw new IllegalArgumentException("Direct-evidence reason set is empty");
+        List<DirectEvidenceReason> parsed = new ArrayList<>();
+        for (String token : encoded.split(",", -1)) {
+            try {
+                parsed.add(DirectEvidenceReason.valueOf(token));
+            } catch (IllegalArgumentException exception) {
+                // The database value is outside the trusted enum boundary; never retain it in a cause or log chain.
+                throw new IllegalArgumentException("Direct-evidence reason is not recognized");
+            }
+        }
+        StructuredValidationFailure decoded = directEvidence(path, parsed);
+        if (!decoded.storageMessage().equals(storedMessage)) {
+            throw new IllegalArgumentException("Direct-evidence reasons are not canonical");
+        }
+        return decoded;
     }
 
     /** Returns whether a stored path is a bounded JSON-style property/index path. */
@@ -46,6 +104,16 @@ public final class StructuredValidationFailure {
     /** Fixed reader-safe Chinese explanation. */
     public String message() {
         return type.message;
+    }
+
+    /**
+     * Internal bounded representation stored in the existing V14 diagnostic column.
+     * Public projections and ordinary logs must continue to use {@link #message()} only. [Req-ID]: REQ-TGV2-012
+     */
+    public String storageMessage() {
+        if (directEvidenceReasons.isEmpty()) return message();
+        return message() + DIRECT_EVIDENCE_REASON_PREFIX
+                + directEvidenceReasons.stream().map(Enum::name).collect(java.util.stream.Collectors.joining(","));
     }
 
     @Override
@@ -96,5 +164,16 @@ public final class StructuredValidationFailure {
         Code(String message) {
             this.message = message;
         }
+    }
+
+    /** Fixed, text-free rule categories for the internal direct-evidence rejection diagnosis. */
+    public enum DirectEvidenceReason {
+        LITERAL_UNSUPPORTED,
+        CLAUSE_COUNT_MISMATCH,
+        BINDING_PREFIX_DROPPED,
+        UNSAFE_INTERNAL_GAP,
+        UNSAFE_BOUNDARY_OMISSION,
+        CONTROL_MISMATCH,
+        TOKEN_ORDER_OR_ADDITION
     }
 }

@@ -928,7 +928,7 @@ public final class StructuredGenerationAcceptanceStore {
             verifyRunning(claim, frozen);
             String code = validationFailure == null ? null : validationFailure.code();
             String path = validationFailure == null ? null : validationFailure.path();
-            String message = validationFailure == null ? null : validationFailure.message();
+            String message = validationFailure == null ? null : validationFailure.storageMessage();
             int attemptChanged = jdbc.update("""
                     UPDATE structured_generation_attempt
                     SET status = 'FAILED', failure_type = ?, completed_at = ?,

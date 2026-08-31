@@ -89,9 +89,9 @@ class WorkflowDiagnosticsTest {
         logger.setLevel(ch.qos.logback.classic.Level.INFO);
         logger.addAppender(events);
         try {
-            StructuredValidationFailure failure = StructuredValidationFailure.of(
-                    StructuredValidationFailure.Code.REVIEW_FACT_DIRECT_EVIDENCE_UNSUPPORTED,
-                    "$.requirement_facts[0].business_rules[0]");
+            StructuredValidationFailure failure = StructuredValidationFailure.directEvidence(
+                    "$.requirement_facts[0].statement",
+                    java.util.List.of(StructuredValidationFailure.DirectEvidenceReason.LITERAL_UNSUPPORTED));
 
             WorkflowDiagnostics.structuredValidationFailure(
                     "task-1", "work-1", "attempt-1", 1, failure);
@@ -100,7 +100,8 @@ class WorkflowDiagnosticsTest {
             assertThat(events.list.get(0).getFormattedMessage())
                     .contains("taskId=task-1", "workId=work-1", "attemptId=attempt-1", "attempt=1",
                             failure.code(), failure.path(), failure.message())
-                    .doesNotContain("payload", "model response", "material content", "password=secret");
+                    .doesNotContain("payload", "model response", "material content", "password=secret",
+                            "direct_evidence_reasons", "LITERAL_UNSUPPORTED");
         } finally {
             logger.detachAppender(events);
             logger.setLevel(previousLevel);

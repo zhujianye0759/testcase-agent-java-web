@@ -111,6 +111,46 @@ class RequirementFactV2ValidatorTest {
 
     /** [Req-ID]: REQ-TGV2-012 */
     @Test
+    void classifiesEveryDirectEvidenceRejectionWithoutRetainingRejectedText() {
+        assertDirectEvidenceReason("状态“B”表示通过", "状态“A”表示通过", "LITERAL_UNSUPPORTED");
+        assertDirectEvidenceReason("管理员审核，发布结果", "管理员审核发布结果", "CLAUSE_COUNT_MISMATCH");
+        assertDirectEvidenceReason("Only administrators may delete records", "administrators may delete records",
+                "BINDING_PREFIX_DROPPED");
+        assertDirectEvidenceReason("系统按审核状态返回记录", "系统按状态返回记录", "UNSAFE_INTERNAL_GAP");
+        assertDirectEvidenceReason("Authorized administrators may delete records", "administrators may delete records",
+                "UNSAFE_BOUNDARY_OMISSION");
+        assertDirectEvidenceReason("系统不得删除订单", "系统删除订单", "CONTROL_MISMATCH");
+        assertDirectEvidenceReason("管理员向用户分配权限", "用户向管理员分配权限",
+                "TOKEN_ORDER_OR_ADDITION");
+    }
+
+    /** [Req-ID]: REQ-TGV2-012 */
+    @Test
+    void combinesFailedQuoteReasonsDeterministicallyButAcceptsWhenAnyQuoteSupportsTheStatement() {
+        var input = window("function-a", "window-a", List.of(
+                unit("u1", 1, "状态“B”发布"), unit("u2", 2, "状态“A”，发布"),
+                unit("u3", 3, "状态“A”发布")), List.of());
+        var failed = new RequirementFactExtractionV2Result.RequirementFact(FactType.OUTPUT, "状态“A”发布",
+                List.of(new StructuredSourceQuoteV2("u2", "状态“A”，发布"),
+                        new StructuredSourceQuoteV2("u1", "状态“B”发布")));
+
+        assertThatThrownBy(() -> validator.validate(input,
+                result("function-a", "window-a", List.of(failed))))
+                .isInstanceOfSatisfying(StructuredValidationException.class, failure -> {
+                    assertThat(failure.failure().storageMessage())
+                            .endsWith("|direct_evidence_reasons=LITERAL_UNSUPPORTED,CLAUSE_COUNT_MISMATCH");
+                    assertThat(failure.failure().message()).doesNotContain("LITERAL_UNSUPPORTED");
+                });
+
+        var supported = new RequirementFactExtractionV2Result.RequirementFact(FactType.OUTPUT, "状态“A”发布",
+                List.of(new StructuredSourceQuoteV2("u1", "状态“B”发布"),
+                        new StructuredSourceQuoteV2("u3", "状态“A”发布")));
+        assertThat(validator.validate(input, result("function-a", "window-a", List.of(supported))).facts())
+                .hasSize(1);
+    }
+
+    /** [Req-ID]: REQ-TGV2-012 */
+    @Test
     void rejectsAnObligationThatDropsItsInputTriggerCondition() {
         String source = "输入起止时间和批次号后，系统按检测时间倒序返回匹配记录";
         var input = window("function-a", "window-a", List.of(unit("u1", 1, source)), List.of());
@@ -1105,6 +1145,22 @@ class RequirementFactV2ValidatorTest {
             String evidenceKey, String quote) {
         return new RequirementFactExtractionV2Result.RequirementFact(type, statement,
                 List.of(new StructuredSourceQuoteV2(evidenceKey, quote)));
+    }
+
+    private void assertDirectEvidenceReason(String source, String statement, String expectedReason) {
+        var input = window("function-a", "window-a", List.of(unit("u1", 1, source)), List.of());
+        var unsupported = fact(FactType.OUTPUT, statement, "u1", source);
+
+        assertThatThrownBy(() -> validator.validate(input,
+                result("function-a", "window-a", List.of(unsupported))))
+                .isInstanceOfSatisfying(StructuredValidationException.class, failure -> {
+                    assertThat(failure.failure().code()).isEqualTo("FACT_DIRECT_EVIDENCE_UNSUPPORTED");
+                    assertThat(failure.failure().path()).isEqualTo("$.requirement_facts[0].statement");
+                    assertThat(failure.failure().storageMessage())
+                            .endsWith("|direct_evidence_reasons=" + expectedReason)
+                            .doesNotContain(source, statement);
+                    assertThat(failure.failure().message()).doesNotContain(expectedReason);
+                });
     }
 
     private void assertFactFailure(RequirementFactExtractionV2Input input,

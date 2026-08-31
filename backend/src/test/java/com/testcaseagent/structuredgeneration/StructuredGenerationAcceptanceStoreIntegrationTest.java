@@ -43,6 +43,7 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.TreeMap;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
@@ -5092,6 +5093,69 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
             softly.assertThat(jdbc.queryForObject("SELECT failure_type FROM structured_generation_attempt WHERE id = ?",
                     String.class, claim.attemptId())).isEqualTo("business_validation_failed");
         });
+    }
+
+    /** [Req-ID]: REQ-TGV2-012 */
+    @Test
+    void atomicallyPersistsInternalDirectEvidenceReasonsWithoutAcceptingBusinessRows() {
+        StructuredGenerationAcceptanceStore.WorkClaim claim = claimReviewWork();
+        StructuredValidationFailure failure = StructuredValidationFailure.directEvidence(
+                "$.requirement_facts[0].statement",
+                List.of(StructuredValidationFailure.DirectEvidenceReason.TOKEN_ORDER_OR_ADDITION,
+                        StructuredValidationFailure.DirectEvidenceReason.LITERAL_UNSUPPORTED));
+
+        store.fail(claim, "business_validation_failed", failure);
+
+        assertSoftly(softly -> {
+            for (String table : List.of("structured_generation_attempt", "structured_generation_work_item")) {
+                Map<String, Object> stored = jdbc.queryForMap("SELECT validation_error_code, validation_error_path, "
+                                + "validation_error_message FROM " + table + " WHERE id = ?",
+                        table.endsWith("attempt") ? claim.attemptId() : claim.workItemId());
+                softly.assertThat(stored).containsEntry("validation_error_code", failure.code())
+                        .containsEntry("validation_error_path", failure.path())
+                        .containsEntry("validation_error_message", failure.storageMessage());
+            }
+            softly.assertThat(jdbc.queryForMap("SELECT validation_error_code, validation_error_path, "
+                            + "validation_error_message FROM generation_task WHERE id = ?", claim.taskId()))
+                    .containsEntry("validation_error_code", failure.code())
+                    .containsEntry("validation_error_path", failure.path())
+                    .containsEntry("validation_error_message", failure.storageMessage());
+            softly.assertThat(jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM structured_requirement_fact WHERE work_item_id = ?",
+                    Integer.class, claim.workItemId())).isZero();
+        });
+    }
+
+    /** [Req-ID]: REQ-TGV2-012 */
+    @Test
+    void concurrentDirectEvidenceFailureFinalizationHasOneWinnerAndNoPartialAcceptance() throws Exception {
+        StructuredGenerationAcceptanceStore.WorkClaim claim = claimReviewWork();
+        StructuredValidationFailure failure = StructuredValidationFailure.directEvidence(
+                "$.requirement_facts[0].statement",
+                List.of(StructuredValidationFailure.DirectEvidenceReason.UNSAFE_INTERNAL_GAP));
+        ExecutorService workers = Executors.newFixedThreadPool(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            Callable<Throwable> finalizeFailure = () -> {
+                start.await();
+                return catchThrowable(() -> store.fail(claim, "business_validation_failed", failure));
+            };
+            Future<Throwable> first = workers.submit(finalizeFailure);
+            Future<Throwable> second = workers.submit(finalizeFailure);
+            start.countDown();
+
+            List<Throwable> results = java.util.Arrays.asList(first.get(), second.get());
+            assertThat(results.stream().filter(Objects::isNull).count()).isEqualTo(1);
+            assertThat(results.stream().filter(Objects::nonNull).count()).isEqualTo(1);
+        } finally {
+            workers.shutdownNow();
+        }
+        assertThat(jdbc.queryForObject(
+                "SELECT validation_error_message FROM generation_task WHERE id = ?",
+                String.class, claim.taskId())).isEqualTo(failure.storageMessage());
+        assertThat(jdbc.queryForObject(
+                "SELECT COUNT(*) FROM structured_requirement_fact WHERE work_item_id = ?",
+                Integer.class, claim.workItemId())).isZero();
     }
 
     /** [Req-ID]: REQ-FSC-007 */
