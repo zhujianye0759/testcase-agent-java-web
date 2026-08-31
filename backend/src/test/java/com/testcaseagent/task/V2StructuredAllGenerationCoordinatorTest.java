@@ -321,6 +321,61 @@ class V2StructuredAllGenerationCoordinatorTest {
                 StructuredProcessingStatus.COMPLETED, StructuredCoverageStatus.UNABLE_TO_GENERATE);
     }
 
+    /** [Req-ID]: REQ-TGV2-014 */
+    @Test
+    void expectedResultsRecoverySkipsCompletedFactsAndCallsOnlyTheRequeuedDesignWork() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        RequirementMaterialTraversalService traversal = mock(RequirementMaterialTraversalService.class);
+        StructuredSkillExecutionPort skills = mock(StructuredSkillExecutionPort.class);
+        StructuredSkillSessionPort sessions = mock(StructuredSkillSessionPort.class);
+        StructuredGenerationAcceptanceStore store = mock(StructuredGenerationAcceptanceStore.class);
+        WorkbookExporter exporter = mock(WorkbookExporter.class);
+        CreateGenerationTaskRequest request = request();
+        var function = request.approvedFunctionScope().functions().get(0);
+        var fact = persistedFact("fact-retry");
+        when(repository.approvedFunctions("task-v2")).thenReturn(List.of(function));
+        when(repository.hasCompleteMaterialInventory("task-v2", request.requirementScope())).thenReturn(true);
+        stubBoundedInventory(repository, material());
+        when(sessions.openStructuredSession()).thenReturn("session-v2");
+        when(store.register(any())).thenAnswer(invocation -> {
+            StructuredGenerationAcceptanceStore.WorkRegistration registration = invocation.getArgument(0);
+            return "requirement-fact-extraction".equals(registration.skillName())
+                    ? "fact-completed" : "design-retry";
+        });
+        when(store.isCompleted("fact-completed")).thenReturn(true);
+        when(store.isCompleted("design-retry")).thenReturn(false);
+        when(store.acceptedRequirementFactsV2Page("task-v2", "function-a", "", 100))
+                .thenReturn(List.of(fact));
+        when(store.acceptedRequirementFactsV2Page("task-v2", "function-a", "fact-retry", 100))
+                .thenReturn(List.of());
+        when(store.claimRegistered("task-v2", "design-retry", "structured-v2-worker"))
+                .thenReturn(java.util.Optional.of(claim("design-retry", "task-v2", 2)));
+        when(skills.designFunctionalTestcasesV2(any())).thenAnswer(invocation -> {
+            var call = (com.testcaseagent.knowledgeagent.FunctionalTestcaseDesignV2Invocation)
+                    invocation.getArgument(0);
+            return success("functional-testcase-design", new FunctionalTestcaseDesignV2Result(
+                    call.input().functionKey(), call.input().testPoint().testPointKey(),
+                    FunctionalTestcaseDesignV2Result.GenerationOutcome.UNABLE_TO_GENERATE,
+                    List.of("缺少可确认的测试环境"), List.of()));
+        });
+        when(store.v2AggregateState("task-v2")).thenReturn(
+                new StructuredGenerationAcceptanceStore.V2AggregateState(2, 2, 0, 0, 1, 0, 0, 0, 1));
+        StructuredWorkbookRowSource rowSource = StructuredWorkbookRowSource.from(
+                new StructuredWorkbookExportRequest("task-v2", List.of(), List.of()));
+        when(repository.structuredWorkbookRows("task-v2")).thenReturn(rowSource);
+        WorkbookArtifact artifact = new WorkbookArtifact("artifact-v2", "a".repeat(64), Path.of("artifact.xlsx"));
+        when(exporter.exportV2StructuredRows(rowSource)).thenReturn(artifact);
+
+        new V2StructuredAllGenerationCoordinator(repository, traversal, skills, sessions, store, exporter,
+                new ObjectMapper(), noOpHeartbeat()).execute("task-v2", request);
+
+        verify(skills, never()).extractRequirementFactsV2(any());
+        verify(skills).designFunctionalTestcasesV2(any());
+        verify(store, never()).claimRegistered("task-v2", "fact-completed", "structured-v2-worker");
+        verify(store).claimRegistered("task-v2", "design-retry", "structured-v2-worker");
+        verify(store).acceptTestcasesV2(eq(claim("design-retry", "task-v2", 2)), any(), any(), any());
+    }
+
     @Test
     void restartPlansPersistedFactsInBoundedPagesAndNeverLoadsEveryMaterialTogether() {
         GenerationTaskRepository repository = mock(GenerationTaskRepository.class);

@@ -22,7 +22,7 @@ import java.util.regex.Pattern;
  * Validates V2 generation outcomes and evidence closure before Java assigns durable case identities.
  * Pending and unable outcomes are accepted as explicit non-formal results rather than task failures.
  *
- * [Req-ID]: REQ-TGV2-005, REQ-TGV2-006, REQ-TGV2-008
+ * [Req-ID]: REQ-TGV2-005, REQ-TGV2-006, REQ-TGV2-008, REQ-TGV2-014
  */
 public final class FunctionalTestcaseV2Validator {
 
@@ -130,7 +130,6 @@ public final class FunctionalTestcaseV2Validator {
     }
 
     private static void validateReaderShape(FunctionalTestcaseDesignV2Result.Testcase candidate, int index) {
-        String prefix = "$.testcases[" + index + "]";
         ReaderFacingTextPolicy.requireSafe(candidate.name(), "case name");
         ReaderFacingTextPolicy.requireSafe(candidate.title(), "case title");
         ReaderFacingTextPolicy.requireSafeItems(candidate.preconditions(), "case precondition");
@@ -147,11 +146,7 @@ public final class FunctionalTestcaseV2Validator {
             }
             ReaderFacingTextPolicy.requireSafe(value.resultCollection(), "step resultCollection");
         });
-        if (!candidate.expectedResults().equals(candidate.steps().stream()
-                .map(FunctionalTestcaseDesignV2Result.Step::expected).toList())) {
-            throw failure(StructuredValidationFailure.Code.TESTCASE_EXPECTED_ORDER_INVALID,
-                    prefix + ".expected_results");
-        }
+        // Overall expectations summarize the case outcome; step expectations remain independently ordered by step_no.
         ReaderFacingTextPolicy.requireSafeItems(candidate.expectedResults(), "expected result");
         ReaderFacingTextPolicy.requireSafe(candidate.evaluationCriteria(), "evaluationCriteria");
         ReaderFacingTextPolicy.requireSafe(candidate.resultEvaluationCriteria(), "resultEvaluationCriteria");
@@ -220,6 +215,12 @@ public final class FunctionalTestcaseV2Validator {
             requireSupported(step.evaluationCriteria(), stepPath + ".evaluation_criteria", support, false);
             requireSupported(step.terminationOrError(), stepPath + ".termination_or_error", support, false);
             requireSupported(step.resultCollection(), stepPath + ".result_collection", support, false);
+        }
+        // Overall expectations are testcase-level conclusions, not step aliases. They remain independently grounded
+        // so separating both layers cannot admit a state, threshold, role or result absent from the cited facts.
+        for (int item = 0; item < candidate.expectedResults().size(); item++) {
+            requireSupported(candidate.expectedResults().get(item),
+                    prefix + ".expected_results[" + item + "]", support, false);
         }
         for (int item = 0; item < candidate.terminationConditions().size(); item++) {
             requireSupported(candidate.terminationConditions().get(item),

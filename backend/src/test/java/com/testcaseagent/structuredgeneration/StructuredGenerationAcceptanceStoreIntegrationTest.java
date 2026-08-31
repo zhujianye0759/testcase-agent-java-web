@@ -315,6 +315,82 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
         });
     }
 
+    /** [Req-ID]: REQ-TGV2-014 */
+    @Test
+    void persistsOverallExpectedResultsIndependentlyFromStepExpectations() {
+        FunctionalTestcaseDesignV2Input input = new FunctionalTestcaseDesignV2Input(
+                "function-1", "订单提交", "业务/订单提交", "",
+                new FunctionalTestcaseDesignV2Input.TestPoint("point-1",
+                        FunctionalTestcaseDesignV2Input.TestPointType.NORMAL_BEHAVIOR,
+                        FunctionalTestcaseDesignV2Input.Basis.FORMAL_REQUIREMENT, "提交订单", List.of()),
+                List.of(new FunctionalTestcaseDesignV2Input.RequirementFact("fact-1",
+                        RequirementFactExtractionV2Result.FactType.BUSINESS_RULE,
+                        "提交订单后订单提交完成",
+                        List.of(new StructuredSourceQuoteV2("evidence-1", "提交订单后订单提交完成")))));
+        var base = v2Testcase(FunctionalTestcaseDesignV2Result.CaseStatus.FORMAL, List.of());
+        var candidate = new FunctionalTestcaseDesignV2Result.Testcase(
+                base.name(), base.title(), base.priority(), base.preconditions(), base.initialization(), base.inputs(),
+                base.steps(), List.of("订单提交完成"), base.evaluationCriteria(), base.resultEvaluationCriteria(),
+                base.terminationConditions(), base.resultCollection(), base.requirementFactKeys(), base.evidenceKeys(),
+                base.caseStatus(), base.missingInformation());
+        String workId = store.register(new StructuredGenerationAcceptanceStore.WorkRegistration(
+                "task-1", "7".repeat(64), "functional-testcase-design", "FUNCTIONAL_TESTCASE_DESIGN_V2",
+                null, null, null, null, List.of(), "function-1", "point-1"));
+        var claim = store.claimRegistered("task-1", workId, "v2-overall-expectation-worker").orElseThrow();
+
+        store.acceptTestcasesV2(claim, new FunctionalTestcaseV2Validator(), input,
+                new FunctionalTestcaseDesignV2Result("function-1", "point-1",
+                        FunctionalTestcaseDesignV2Result.GenerationOutcome.GENERATED, List.of(), List.of(candidate)));
+
+        assertSoftly(softly -> {
+            softly.assertThat(jdbc.queryForObject("""
+                    SELECT expected_results_json FROM structured_test_case WHERE work_item_id=?
+                    """, String.class, workId)).isEqualTo("[\"订单提交完成\"]");
+            softly.assertThat(jdbc.queryForObject("""
+                    SELECT expected_text FROM structured_test_case_step WHERE work_item_id=? AND step_no=1
+                    """, String.class, workId)).isEqualTo("提交订单");
+            softly.assertThat(jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM v2_work_publication
+                    WHERE work_item_id=? AND publication_type='testcase_design'
+                    """, Integer.class, workId)).isEqualTo(1);
+        });
+    }
+
+    /** [Req-ID]: REQ-TGV2-014 */
+    @Test
+    void unsupportedOverallExpectedResultRejectsTheWholeV2DesignBatchWithoutPublishingRows() {
+        var input = v2TestcaseInput();
+        var base = v2Testcase(FunctionalTestcaseDesignV2Result.CaseStatus.FORMAL, List.of());
+        var candidate = new FunctionalTestcaseDesignV2Result.Testcase(
+                base.name(), base.title(), base.priority(), base.preconditions(), base.initialization(), base.inputs(),
+                base.steps(), List.of("订单自动进入已审核状态"), base.evaluationCriteria(),
+                base.resultEvaluationCriteria(), base.terminationConditions(), base.resultCollection(),
+                base.requirementFactKeys(), base.evidenceKeys(), base.caseStatus(), base.missingInformation());
+        String workId = store.register(new StructuredGenerationAcceptanceStore.WorkRegistration(
+                "task-1", "5".repeat(64), "functional-testcase-design", "FUNCTIONAL_TESTCASE_DESIGN_V2",
+                null, null, null, null, List.of(), "function-1", "point-1"));
+        var claim = store.claimRegistered("task-1", workId, "v2-unsupported-overall-worker").orElseThrow();
+
+        assertThatThrownBy(() -> store.acceptTestcasesV2(claim, new FunctionalTestcaseV2Validator(), input,
+                new FunctionalTestcaseDesignV2Result("function-1", "point-1",
+                        FunctionalTestcaseDesignV2Result.GenerationOutcome.GENERATED,
+                        List.of(), List.of(candidate))))
+                .isInstanceOfSatisfying(StructuredValidationException.class, failure ->
+                        assertThat(failure.failure().path())
+                                .isEqualTo("$.testcases[0].expected_results[0]"));
+
+        assertSoftly(softly -> {
+            softly.assertThat(jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM structured_test_point WHERE task_id='task-1'", Integer.class)).isZero();
+            softly.assertThat(jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM v2_generation_outcome WHERE task_id='task-1'", Integer.class)).isZero();
+            softly.assertThat(jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM structured_test_case WHERE task_id='task-1'", Integer.class)).isZero();
+            softly.assertThat(jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM v2_work_publication WHERE task_id='task-1'", Integer.class)).isZero();
+        });
+    }
+
     /** [Req-ID]: REQ-TGV2-013 */
     @Test
     void allowsExplicitRetryForACompleteV2FailureArtifactWithOnlyZeroWriteTechnicalFailures() {
@@ -862,6 +938,198 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
                     WHERE work_item_id=? AND attempt_number=2
                     """, Integer.class, changedWorkId)).isEqualTo(1);
         });
+    }
+
+    /** [Req-ID]: REQ-TGV2-014 */
+    @Test
+    void recoversOnlyZeroWriteExpectedResultRejectionsAndRetiresTheirStaleNoFactFallback() {
+        V2ExpectedResultsRecoveryFixture fixture = v2ExpectedResultsRecoveryFixture();
+        Map<String, Object> factBefore = v2ExpectedResultsPublishedFactSnapshot(fixture);
+        int attemptsBefore = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM structured_generation_attempt WHERE work_item_id IN (?, ?, ?)",
+                Integer.class, fixture.factWorkId(), fixture.designWorkIds().get(0), fixture.designWorkIds().get(1));
+
+        assertThat(taskRepository.structuredRetryEligibility("task-1").canRetry()).isTrue();
+        assertThat(taskRepository.retryFailedBatches("task-1")).isEqualTo(1);
+
+        assertSoftly(softly -> {
+            softly.assertThat(taskRepository.taskStatus("task-1")).isEqualTo(GenerationTaskStatus.QUEUED);
+            softly.assertThat(jdbc.queryForList("""
+                    SELECT status FROM structured_generation_work_item
+                    WHERE id IN (?, ?) ORDER BY id
+                    """, String.class, fixture.designWorkIds().get(0), fixture.designWorkIds().get(1)))
+                    .containsOnly("QUEUED");
+            softly.assertThat(jdbc.queryForObject(
+                    "SELECT status FROM structured_generation_work_item WHERE id=?", String.class,
+                    fixture.fallbackWorkId())).isEqualTo("SUPERSEDED");
+            softly.assertThat(jdbc.queryForObject(
+                    "SELECT status FROM structured_generation_work_item WHERE id=?", String.class,
+                    fixture.factWorkId())).isEqualTo("COMPLETED");
+            softly.assertThat(jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM structured_generation_attempt WHERE work_item_id IN (?, ?, ?)",
+                    Integer.class, fixture.factWorkId(), fixture.designWorkIds().get(0),
+                    fixture.designWorkIds().get(1))).isEqualTo(attemptsBefore);
+            softly.assertThat(v2ExpectedResultsPublishedFactSnapshot(fixture)).isEqualTo(factBefore);
+            softly.assertThat(jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM structured_test_case WHERE task_id='task-1'", Integer.class)).isZero();
+            softly.assertThat(jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM v2_generation_outcome WHERE task_id='task-1'", Integer.class)).isZero();
+        });
+    }
+
+    /** [Req-ID]: REQ-TGV2-014 */
+    @ParameterizedTest
+    @ValueSource(strings = {"accepted-hash", "lease", "running-attempt", "wrong-code", "wrong-path",
+            "wrong-failure-type", "wrong-operation", "artifact", "test-point", "generation-outcome",
+            "test-case", "publication", "result-snapshot", "invalid-fallback", "missing-fallback",
+            "fallback-identity", "extra-unfinished", "v1-contract"})
+    void expectedResultsRecoveryRejectsEveryNearStateWithoutMutation(String mutation) {
+        V2ExpectedResultsRecoveryFixture fixture = v2ExpectedResultsRecoveryFixture();
+        String designWork = fixture.designWorkIds().get(0);
+        switch (mutation) {
+            case "accepted-hash" -> jdbc.update(
+                    "UPDATE structured_generation_work_item SET accepted_result_sha256=? WHERE id=?",
+                    "a".repeat(64), designWork);
+            case "lease" -> jdbc.update("""
+                    UPDATE structured_generation_work_item
+                    SET lease_owner='other-worker', lease_expires_at=DATE_ADD(CURRENT_TIMESTAMP(6), INTERVAL 5 MINUTE)
+                    WHERE id=?
+                    """, designWork);
+            case "running-attempt" -> jdbc.update("""
+                    UPDATE structured_generation_attempt SET status='RUNNING', completed_at=NULL
+                    WHERE work_item_id=? AND attempt_number=1
+                    """, designWork);
+            case "wrong-code" -> jdbc.update("""
+                    UPDATE structured_generation_work_item
+                    SET validation_error_code='FACT_ATOMICITY_INVALID'
+                    WHERE id=?
+                    """, designWork);
+            case "wrong-path" -> jdbc.update("""
+                    UPDATE structured_generation_work_item
+                    SET validation_error_path='$.testcases[0].steps'
+                    WHERE id=?
+                    """, designWork);
+            case "wrong-failure-type" -> jdbc.update("""
+                    UPDATE structured_generation_attempt
+                    SET failure_type='structured_output_invalid'
+                    WHERE work_item_id=? AND attempt_number=1
+                    """, designWork);
+            case "wrong-operation" -> jdbc.update("""
+                    UPDATE structured_generation_work_item
+                    SET skill_name='requirement-fact-extraction', operation_name='REQUIREMENT_FACT_EXTRACTION_V2'
+                    WHERE id=?
+                    """, designWork);
+            case "artifact" -> jdbc.update("""
+                    UPDATE generation_task
+                    SET artifact_id='unexpected-artifact', artifact_sha256=?, artifact_path='unexpected.xlsx'
+                    WHERE id='task-1'
+                    """, "b".repeat(64));
+            case "test-point" -> jdbc.update("""
+                    INSERT INTO structured_test_point
+                    (work_item_id, task_id, test_point_key, function_key, function_name, test_point_type,
+                     basis, description, missing_information_json, formal_coverage_satisfied)
+                    VALUES (?, 'task-1', 'unexpected-point', 'function-1', 'fixture', 'normal_behavior',
+                            'requirement_fact', 'unexpected', JSON_ARRAY(), FALSE)
+                    """, designWork);
+            case "generation-outcome" -> jdbc.update("""
+                    INSERT INTO v2_generation_outcome
+                    (work_item_id, task_id, test_point_key, function_key, generation_outcome,
+                     missing_information_json, formal_coverage_satisfied)
+                    VALUES (?, 'task-1', 'unexpected-point', 'function-1', 'unable_to_generate',
+                            JSON_ARRAY('missing'), FALSE)
+                    """, designWork);
+            case "test-case" -> jdbc.update("""
+                    INSERT INTO structured_test_case
+                    (work_item_id, task_id, case_key, title, preconditions_json, case_status, missing_information_json)
+                    VALUES (?, 'task-1', 'unexpected-case', 'fixture', JSON_ARRAY(),
+                            'PENDING_CONFIRMATION', JSON_ARRAY('missing'))
+                    """, designWork);
+            case "publication" -> jdbc.update("""
+                    INSERT INTO v2_work_publication
+                    (work_item_id, task_id, publication_type, input_sha256, result_sha256, published_at)
+                    VALUES (?, 'task-1', 'testcase_design', ?, ?, CURRENT_TIMESTAMP(6))
+                    """, designWork, "c".repeat(64), "d".repeat(64));
+            case "result-snapshot" -> jdbc.update(
+                    "UPDATE generation_task SET result_snapshot=JSON_OBJECT('unexpected', true) WHERE id='task-1'");
+            case "invalid-fallback" -> jdbc.update("""
+                    UPDATE structured_generation_attempt SET failure_type='business_validation_failed'
+                    WHERE work_item_id=? AND attempt_number=1
+                    """, fixture.fallbackWorkId());
+            case "missing-fallback" -> {
+                jdbc.update("DELETE FROM structured_generation_attempt WHERE work_item_id=?", fixture.fallbackWorkId());
+                jdbc.update("DELETE FROM structured_generation_work_item WHERE id=?", fixture.fallbackWorkId());
+            }
+            case "fallback-identity" -> jdbc.update("""
+                    UPDATE structured_generation_work_item SET identity_key=? WHERE id=?
+                    """, "f".repeat(64), fixture.fallbackWorkId());
+            case "extra-unfinished" -> jdbc.update("""
+                    UPDATE structured_generation_work_item
+                    SET status='FAILED', accepted_result_sha256=NULL
+                    WHERE id=?
+                    """, fixture.factWorkId());
+            case "v1-contract" -> jdbc.update(
+                    "UPDATE generation_task SET workflow_version='1.0' WHERE id='task-1'");
+            default -> throw new IllegalArgumentException("unknown mutation");
+        }
+        Map<String, Object> before = v2ExpectedResultsRecoveryFullSnapshot();
+
+        assertThat(taskRepository.structuredRetryEligibility("task-1").canRetry()).isFalse();
+        assertThat(taskRepository.retryFailedBatches("task-1")).isZero();
+        assertThat(v2ExpectedResultsRecoveryFullSnapshot()).isEqualTo(before);
+    }
+
+    /** [Req-ID]: REQ-TGV2-014 */
+    @Test
+    void concurrentExpectedResultsRecoveriesHaveOneWinnerAndDoNotPrecreateAttempts() throws Exception {
+        V2ExpectedResultsRecoveryFixture fixture = v2ExpectedResultsRecoveryFixture();
+        int attemptsBefore = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM structured_generation_attempt WHERE work_item_id IN (?, ?)",
+                Integer.class, fixture.designWorkIds().get(0), fixture.designWorkIds().get(1));
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            Callable<Integer> retry = () -> {
+                ready.countDown();
+                assertThat(start.await(10, TimeUnit.SECONDS)).isTrue();
+                return taskRepository.retryFailedBatches("task-1");
+            };
+            Future<Integer> first = executor.submit(retry);
+            Future<Integer> second = executor.submit(retry);
+            assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            assertThat(List.of(first.get(30, TimeUnit.SECONDS), second.get(30, TimeUnit.SECONDS)))
+                    .containsExactlyInAnyOrder(0, 1);
+            assertThat(jdbc.queryForList("""
+                    SELECT status FROM structured_generation_work_item
+                    WHERE id IN (?, ?) ORDER BY id
+                    """, String.class, fixture.designWorkIds().get(0), fixture.designWorkIds().get(1)))
+                    .containsOnly("QUEUED");
+            assertThat(jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM structured_generation_attempt WHERE work_item_id IN (?, ?)",
+                    Integer.class, fixture.designWorkIds().get(0), fixture.designWorkIds().get(1)))
+                    .isEqualTo(attemptsBefore);
+        } finally {
+            start.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    /** [Req-ID]: REQ-TGV2-014 */
+    @Test
+    void expectedResultsRecoveryRollsBackWithItsOuterTransaction() {
+        v2ExpectedResultsRecoveryFixture();
+        Map<String, Object> before = v2ExpectedResultsRecoveryFullSnapshot();
+        TransactionTemplate readCommitted = new TransactionTemplate(transactionManager);
+        readCommitted.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
+
+        assertThatThrownBy(() -> readCommitted.executeWithoutResult(ignored -> {
+            assertThat(taskRepository.retryFailedBatches("task-1")).isEqualTo(1);
+            throw new IllegalStateException("force-test-rollback");
+        })).isInstanceOf(IllegalStateException.class);
+
+        assertThat(v2ExpectedResultsRecoveryFullSnapshot()).isEqualTo(before);
     }
 
     /** [Req-ID]: REQ-TGV2-011 */
@@ -6722,6 +6990,149 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
                 List.of(V2GenerationPlanner.missingFormalFactInformation()));
     }
 
+    private V2ExpectedResultsRecoveryFixture v2ExpectedResultsRecoveryFixture() {
+        jdbc.update("""
+                UPDATE generation_task
+                SET task_mode='ALL', status='GENERATING', structured_processing_status='RUNNING',
+                    structured_coverage_status='PENDING', request_snapshot=JSON_OBJECT('scope', 'frozen-v2'),
+                    workflow_version='2.0', input_version='2.0', artifact_version='2.0',
+                    approved_scope_version='scope-v2'
+                WHERE id='task-1'
+                """);
+        V2GenerationPlanner planner = new V2GenerationPlanner();
+        ApprovedFunctionScope.ApprovedFunction function = new ApprovedFunctionScope.ApprovedFunction(
+                "function-1", "订单提交", "业务/订单提交", "");
+        V2GenerationPlanner.TestPointPlan fallback = planner.missingFormalFactTestPoint("task-1", function);
+        String fallbackWorkId = store.registerMissingFactFallback(fallback);
+        StructuredGenerationAcceptanceStore.WorkClaim fallbackClaim = store.claimRegistered(
+                "task-1", fallbackWorkId, "historical-fallback-worker").orElseThrow();
+        store.fail(fallbackClaim, "request_too_large");
+        jdbc.update("""
+                UPDATE structured_generation_work_item
+                SET status='QUEUED', validation_error_code=NULL,
+                    validation_error_path=NULL, validation_error_message=NULL
+                WHERE id=? AND status='FAILED'
+                """, fallbackWorkId);
+
+        String factWindow = "6".repeat(64);
+        String factWorkId = store.register(new StructuredGenerationAcceptanceStore.WorkRegistration(
+                "task-1", factWindow, "requirement-fact-extraction", "REQUIREMENT_FACT_EXTRACTION_V2",
+                1, 1, "document-1", "需求材料", List.of("evidence-1"), "function-1", null,
+                "document-1", List.of(), null, 0));
+        StructuredGenerationAcceptanceStore.WorkClaim factClaim = store.claimRegistered(
+                "task-1", factWorkId, "fact-worker").orElseThrow();
+        RequirementFactExtractionV2Input factInput = v2FactInput(factWindow, "evidence-1", 1,
+                "已注册且状态正常的用户在登录页提交账号和正确密码后，系统进入首页并显示当前用户名称");
+        RequirementFactExtractionV2Result factResult = new RequirementFactExtractionV2Result(
+                "function-1", factWindow, List.of(
+                new RequirementFactExtractionV2Result.RequirementFact(
+                        RequirementFactExtractionV2Result.FactType.OUTPUT, "系统进入首页",
+                        List.of(new StructuredSourceQuoteV2("evidence-1", "系统进入首页"))),
+                new RequirementFactExtractionV2Result.RequirementFact(
+                        RequirementFactExtractionV2Result.FactType.OUTPUT, "显示当前用户名称",
+                        List.of(new StructuredSourceQuoteV2("evidence-1", "显示当前用户名称")))), List.of());
+        store.acceptRequirementFactsV2(factClaim, new RequirementFactV2Validator(), factInput, factResult);
+
+        List<String> designWorkIds = new java.util.ArrayList<>();
+        for (V2GenerationPlanner.PersistedFact fact : store.acceptedRequirementFactsV2("task-1", "function-1")) {
+            V2GenerationPlanner.TestPointPlan point = planner.testPoint("task-1", function, fact);
+            String workId = store.register(point.registration());
+            StructuredGenerationAcceptanceStore.WorkClaim claim = store.claimRegistered(
+                    "task-1", workId, "design-worker-" + designWorkIds.size()).orElseThrow();
+            store.fail(claim, "business_validation_failed", StructuredValidationFailure.of(
+                    StructuredValidationFailure.Code.TESTCASE_EXPECTED_ORDER_INVALID,
+                    "$.testcases[0].expected_results"));
+            designWorkIds.add(workId);
+        }
+        StructuredValidationFailure taskFailure = StructuredValidationFailure.of(
+                StructuredValidationFailure.Code.STRUCTURED_COORDINATOR_STATE_FAILURE, "$.artifact_export");
+        jdbc.update("""
+                UPDATE generation_task
+                SET status='FAILED', structured_processing_status='FAILED', structured_coverage_status='PENDING',
+                    validation_error_code=?, validation_error_path=?, validation_error_message=?,
+                    result_snapshot=NULL, artifact_id=NULL, artifact_sha256=NULL, artifact_path=NULL
+                WHERE id='task-1'
+                """, taskFailure.code(), taskFailure.path(), taskFailure.storageMessage());
+        return new V2ExpectedResultsRecoveryFixture(factClaim.workItemId(), fallbackWorkId,
+                List.copyOf(designWorkIds));
+    }
+
+    private Map<String, Object> v2ExpectedResultsPublishedFactSnapshot(V2ExpectedResultsRecoveryFixture fixture) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("fact-work", jdbc.queryForList("""
+                SELECT id, status, accepted_result_sha256 FROM structured_generation_work_item WHERE id=?
+                """, fixture.factWorkId()));
+        snapshot.put("facts", jdbc.queryForList("""
+                SELECT fact_key, first_work_item_id, function_key, fact_type, statement_text
+                FROM v2_requirement_fact WHERE task_id='task-1' ORDER BY fact_key
+                """));
+        snapshot.put("quotes", jdbc.queryForList("""
+                SELECT fact_key, evidence_key, quote_sha256
+                FROM v2_requirement_fact_quote WHERE task_id='task-1' ORDER BY fact_key, evidence_key
+                """));
+        snapshot.put("publications", jdbc.queryForList("""
+                SELECT work_item_id, publication_type, input_sha256, result_sha256
+                FROM v2_work_publication WHERE task_id='task-1' ORDER BY work_item_id
+                """));
+        return Map.copyOf(snapshot);
+    }
+
+    /** Captures every mutable coordinate guarded by the expected-results recovery transaction. */
+    private Map<String, Object> v2ExpectedResultsRecoveryFullSnapshot() {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("task", jdbc.queryForList("""
+                SELECT status, structured_processing_status, structured_coverage_status, result_snapshot,
+                       artifact_id, artifact_sha256, artifact_path,
+                       validation_error_code, validation_error_path, validation_error_message
+                FROM generation_task WHERE id='task-1'
+                """));
+        snapshot.put("works", structuredWorkSnapshot("task-1"));
+        snapshot.put("attempts", taskAttemptSnapshot("task-1"));
+        snapshot.put("facts", jdbc.queryForList("""
+                SELECT fact_key, first_work_item_id, function_key, fact_type, statement_text
+                FROM v2_requirement_fact WHERE task_id='task-1' ORDER BY fact_key
+                """));
+        snapshot.put("quotes", jdbc.queryForList("""
+                SELECT fact_key, evidence_key, quote_sha256
+                FROM v2_requirement_fact_quote WHERE task_id='task-1' ORDER BY fact_key, evidence_key
+                """));
+        snapshot.put("feedback", jdbc.queryForList("""
+                SELECT feedback_key, work_item_id, function_key, observation_type
+                FROM v2_testability_feedback WHERE task_id='task-1' ORDER BY feedback_key
+                """));
+        snapshot.put("points", jdbc.queryForList("""
+                SELECT work_item_id, test_point_key, function_key
+                FROM structured_test_point WHERE task_id='task-1' ORDER BY work_item_id, test_point_key
+                """));
+        snapshot.put("outcomes", jdbc.queryForList("""
+                SELECT work_item_id, test_point_key, generation_outcome
+                FROM v2_generation_outcome WHERE task_id='task-1' ORDER BY work_item_id, test_point_key
+                """));
+        snapshot.put("cases", jdbc.queryForList("""
+                SELECT work_item_id, case_key, case_status
+                FROM structured_test_case WHERE task_id='task-1' ORDER BY work_item_id, case_key
+                """));
+        snapshot.put("steps", jdbc.queryForList("""
+                SELECT step.work_item_id, step.case_key, step.step_no
+                FROM structured_test_case_step step
+                JOIN structured_generation_work_item work ON work.id=step.work_item_id
+                WHERE work.task_id='task-1' ORDER BY step.work_item_id, step.case_key, step.step_no
+                """));
+        snapshot.put("bindings", jdbc.queryForList("""
+                SELECT binding.work_item_id, binding.subject_key, binding.subject_type,
+                       binding.reference_type, binding.reference_key
+                FROM structured_reference_binding binding
+                JOIN structured_generation_work_item work ON work.id=binding.work_item_id
+                WHERE work.task_id='task-1'
+                ORDER BY binding.work_item_id, binding.subject_key, binding.reference_type, binding.reference_key
+                """));
+        snapshot.put("publications", jdbc.queryForList("""
+                SELECT work_item_id, publication_type, input_sha256, result_sha256
+                FROM v2_work_publication WHERE task_id='task-1' ORDER BY work_item_id, publication_type
+                """));
+        return Map.copyOf(snapshot);
+    }
+
     /** Builds the same shape with an already-validated, reader-safe unable-to-generate explanation. */
     private V2AtomicityRecoveryFixture v2AtomicityRecoveryFixture(List<String> fallbackMissingInformation) {
         return v2FactRecoveryFixture(StructuredValidationFailure.Code.FACT_ATOMICITY_INVALID,
@@ -6955,6 +7366,9 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
     private ExplicitRetryFixture explicitRetryFixture(String failureType) {
         return explicitRetryFixture(failureType, null);
     }
+
+    private record V2ExpectedResultsRecoveryFixture(
+            String factWorkId, String fallbackWorkId, List<String> designWorkIds) { }
 
     private record V2AtomicityRecoveryFixture(List<String> factWorkIds, List<String> fallbackWorkIds) { }
 

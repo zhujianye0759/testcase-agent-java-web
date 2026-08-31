@@ -116,6 +116,7 @@ class StructuredWorkbookExporterTest {
         }
     }
 
+    /** [Req-ID]: REQ-TGV2-014 */
     @Test
     void exportsFrozenHighGranularityFieldsWithChineseBusinessLabelsAndNoMachineEnums() throws Exception {
         StructuredReviewRow review = new StructuredReviewRow("internal-review-id", 1,
@@ -133,7 +134,7 @@ class StructuredWorkbookExporterTest {
                         StructuredTestCaseRow.Authenticity.SIMULATED, "先账号后密码")),
                 List.of(new StructuredTestStep(1, "提交账号和正确密码", "系统进入首页并显示当前用户名称",
                         "实际结果满足本步骤预期结果。", "", "记录实际结果、提示信息及必要证据。")),
-                List.of("系统进入首页并显示当前用户名称"), "满足前提和约束且未触发终止条件，逐步执行并记录结果。",
+                List.of("登录流程整体完成并进入可继续操作状态"), "满足前提和约束且未触发终止条件，逐步执行并记录结果。",
                 "全部预期结果满足则通过，任一不满足则不通过。", List.of("系统服务终止，或执行过程中无法执行下一步操作。"),
                 "记录实际结果、提示信息及必要证据。", new StructuredTestCaseRow.AuthoringInformation("测试人员", "2026-08-22"),
                 List.of("账号登录需求"), List.of(), true);
@@ -157,6 +158,10 @@ class StructuredWorkbookExporterTest {
             assertThat(caseRow).contains("高", "正式依据", "有效", "人工输入", "等价类划分", "模拟数据")
                     .doesNotContain("HIGH", "FORMAL", "VALID", "MANUAL", "EQUIVALENCE_PARTITIONING", "SIMULATED")
                     .doesNotContain("internal-case-id");
+            assertThat(workbook.getSheetAt(1).getRow(1).getCell(12).getStringCellValue())
+                    .isEqualTo("1. 系统进入首页并显示当前用户名称");
+            assertThat(workbook.getSheetAt(1).getRow(1).getCell(16).getStringCellValue())
+                    .isEqualTo("登录流程整体完成并进入可继续操作状态");
             assertThat(auditRow).doesNotContain("internal-review-id");
         }
     }

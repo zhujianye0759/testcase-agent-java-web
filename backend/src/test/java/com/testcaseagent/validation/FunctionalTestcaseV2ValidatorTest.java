@@ -13,7 +13,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
-/** V2 outcome/business-closure acceptance tests. [Req-ID]: REQ-TGV2-005, REQ-TGV2-006 */
+/** V2 outcome/business-closure acceptance tests. [Req-ID]: REQ-TGV2-005, REQ-TGV2-006, REQ-TGV2-014 */
 class FunctionalTestcaseV2ValidatorTest {
     private final FunctionalTestcaseV2Validator validator = new FunctionalTestcaseV2Validator();
 
@@ -178,18 +178,52 @@ class FunctionalTestcaseV2ValidatorTest {
     }
 
     @Test
-    void expectedResultsMustFollowTheOrderedStepExpectations() {
+    void acceptsOverallExpectedResultWhoseTextDiffersFromStepExpectation() {
         var base = testcase(CaseStatus.FORMAL, List.of());
+        var supportedInput = inputSupporting("提交订单", "订单提交完成");
         var candidate = new FunctionalTestcaseDesignV2Result.Testcase(base.name(), base.title(), base.priority(),
                 base.preconditions(), base.initialization(), base.inputs(), base.steps(),
-                List.of("不同预期"), base.evaluationCriteria(), base.resultEvaluationCriteria(),
+                List.of("订单提交完成"), base.evaluationCriteria(), base.resultEvaluationCriteria(),
                 base.terminationConditions(), base.resultCollection(), base.requirementFactKeys(),
                 base.evidenceKeys(), base.caseStatus(), base.missingInformation());
 
-        assertThatThrownBy(() -> validator.validate(input(FunctionalTestcaseDesignV2Input.Basis.FORMAL_REQUIREMENT),
-                result(GenerationOutcome.GENERATED, List.of(), List.of(candidate))))
-                .isInstanceOfSatisfying(StructuredValidationException.class, failure ->
-                        assertThat(failure.failure().code()).isEqualTo("TESTCASE_EXPECTED_ORDER_INVALID"));
+        assertThat(validator.validate(supportedInput,
+                result(GenerationOutcome.GENERATED, List.of(), List.of(candidate))).formalCoverageSatisfied())
+                .isTrue();
+    }
+
+    @Test
+    void acceptsOneOverallExpectedResultForMultipleConsecutiveSteps() {
+        var base = testcase(CaseStatus.FORMAL, List.of());
+        var supportedInput = inputSupporting("准备提交订单", "提交订单", "订单提交完成");
+        var steps = List.of(
+                new FunctionalTestcaseDesignV2Result.Step(1, "准备提交订单", "准备提交订单",
+                        "实际结果符合预期", "", "记录结果"),
+                new FunctionalTestcaseDesignV2Result.Step(2, "提交订单", "提交订单",
+                        "实际结果符合预期", "", "记录结果"));
+        var candidate = new FunctionalTestcaseDesignV2Result.Testcase(base.name(), base.title(), base.priority(),
+                base.preconditions(), base.initialization(), base.inputs(), steps, List.of("订单提交完成"),
+                base.evaluationCriteria(), base.resultEvaluationCriteria(), base.terminationConditions(),
+                base.resultCollection(), base.requirementFactKeys(), base.evidenceKeys(), base.caseStatus(),
+                base.missingInformation());
+
+        assertThat(validator.validate(supportedInput,
+                result(GenerationOutcome.GENERATED, List.of(), List.of(candidate))).formalCoverageSatisfied())
+                .isTrue();
+    }
+
+    /** [Req-ID]: REQ-TGV2-014 */
+    @Test
+    void rejectsUnsupportedOverallExpectedResultFromAFormalCase() {
+        assertUnsupportedOverallExpectedResult(
+                CaseStatus.FORMAL, GenerationOutcome.GENERATED, List.of());
+    }
+
+    /** [Req-ID]: REQ-TGV2-014 */
+    @Test
+    void rejectsUnsupportedOverallExpectedResultFromAPendingCase() {
+        assertUnsupportedOverallExpectedResult(
+                CaseStatus.PENDING_CONFIRMATION, GenerationOutcome.PENDING_ONLY, List.of("缺少审核状态依据"));
     }
 
     @Test
@@ -294,6 +328,24 @@ class FunctionalTestcaseV2ValidatorTest {
                 });
     }
 
+    private void assertUnsupportedOverallExpectedResult(
+            CaseStatus status, GenerationOutcome outcome, List<String> missingInformation) {
+        var base = testcase(status, missingInformation);
+        var candidate = new FunctionalTestcaseDesignV2Result.Testcase(
+                base.name(), base.title(), base.priority(), base.preconditions(), base.initialization(), base.inputs(),
+                base.steps(), List.of("订单自动进入已审核状态"), base.evaluationCriteria(),
+                base.resultEvaluationCriteria(), base.terminationConditions(), base.resultCollection(),
+                base.requirementFactKeys(), base.evidenceKeys(), base.caseStatus(), base.missingInformation());
+
+        assertThatThrownBy(() -> validator.validate(
+                input(FunctionalTestcaseDesignV2Input.Basis.FORMAL_REQUIREMENT),
+                result(outcome, missingInformation, List.of(candidate))))
+                .isInstanceOfSatisfying(StructuredValidationException.class, failure -> {
+                    assertThat(failure.failure().code()).isEqualTo("TESTCASE_UNSUPPORTED_BUSINESS_DETAIL");
+                    assertThat(failure.failure().path()).isEqualTo("$.testcases[0].expected_results[0]");
+                });
+    }
+
     private static FunctionalTestcaseDesignV2Result.Testcase testcaseWithStep(
             String action, String expected, String evaluationCriteria) {
         var base = testcase(CaseStatus.FORMAL, List.of());
@@ -356,6 +408,16 @@ class FunctionalTestcaseV2ValidatorTest {
                                 "提交订单", List.of(new StructuredSourceQuoteV2("unit-1", "提交订单"))),
                         new FunctionalTestcaseDesignV2Input.RequirementFact("fact-2", FactType.OUTPUT,
                                 "提交订单", List.of(new StructuredSourceQuoteV2("unit-2", "提交订单")))));
+    }
+
+    private static FunctionalTestcaseDesignV2Input inputSupporting(String... phrases) {
+        String support = String.join(" ", phrases);
+        return new FunctionalTestcaseDesignV2Input("function-1", "提交订单", "订单/提交", "",
+                new FunctionalTestcaseDesignV2Input.TestPoint("point-1",
+                        FunctionalTestcaseDesignV2Input.TestPointType.NORMAL_BEHAVIOR,
+                        FunctionalTestcaseDesignV2Input.Basis.FORMAL_REQUIREMENT, "提交订单", List.of()),
+                List.of(new FunctionalTestcaseDesignV2Input.RequirementFact("fact-1", FactType.BUSINESS_RULE,
+                        support, List.of(new StructuredSourceQuoteV2("unit-1", support)))));
     }
 
     private static FunctionalTestcaseDesignV2Result.Testcase identityVariant(
