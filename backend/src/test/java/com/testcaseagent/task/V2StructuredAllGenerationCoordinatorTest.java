@@ -41,7 +41,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
-/** [Req-ID]: REQ-TGV2-002, REQ-TGV2-003, REQ-TGV2-005~REQ-TGV2-008 */
+/** [Req-ID]: REQ-TGV2-002, REQ-TGV2-003, REQ-TGV2-005~REQ-TGV2-010 */
 class V2StructuredAllGenerationCoordinatorTest {
 
     @Test
@@ -112,7 +112,7 @@ class V2StructuredAllGenerationCoordinatorTest {
         StructuredWorkbookRowSource rowSource = StructuredWorkbookRowSource.from(rows);
         when(repository.structuredWorkbookRows("task-v2")).thenReturn(rowSource);
         WorkbookArtifact artifact = new WorkbookArtifact("artifact-v2", "a".repeat(64), Path.of("artifact.xlsx"));
-        when(exporter.exportStructuredRows(rowSource)).thenReturn(artifact);
+        when(exporter.exportV2StructuredRows(rowSource)).thenReturn(artifact);
 
         new V2StructuredAllGenerationCoordinator(repository, traversal, skills, sessions, store, exporter,
                 new ObjectMapper(), heartbeat).execute("task-v2", request);
@@ -180,7 +180,7 @@ class V2StructuredAllGenerationCoordinatorTest {
         StructuredWorkbookRowSource rowSource = StructuredWorkbookRowSource.from(rows);
         when(repository.structuredWorkbookRows("task-v2")).thenReturn(rowSource);
         WorkbookArtifact artifact = new WorkbookArtifact("artifact-v2", "a".repeat(64), Path.of("artifact.xlsx"));
-        when(exporter.exportStructuredRows(rowSource)).thenReturn(artifact);
+        when(exporter.exportV2StructuredRows(rowSource)).thenReturn(artifact);
 
         new V2StructuredAllGenerationCoordinator(repository, traversal, skills, sessions, store, exporter,
                 new ObjectMapper(), noOpHeartbeat()).execute("task-v2", request);
@@ -231,7 +231,7 @@ class V2StructuredAllGenerationCoordinatorTest {
         StructuredWorkbookRowSource rowSource = StructuredWorkbookRowSource.from(rows);
         when(repository.structuredWorkbookRows("task-v2")).thenReturn(rowSource);
         WorkbookArtifact artifact = new WorkbookArtifact("artifact-v2", "a".repeat(64), Path.of("artifact.xlsx"));
-        when(exporter.exportStructuredRows(rowSource)).thenReturn(artifact);
+        when(exporter.exportV2StructuredRows(rowSource)).thenReturn(artifact);
 
         new V2StructuredAllGenerationCoordinator(repository, traversal, skills, sessions, store, exporter,
                 new ObjectMapper(), noOpHeartbeat()).execute("task-v2", request);
@@ -308,7 +308,7 @@ class V2StructuredAllGenerationCoordinatorTest {
         StructuredWorkbookRowSource rowSource = StructuredWorkbookRowSource.from(rows);
         when(repository.structuredWorkbookRows("task-v2")).thenReturn(rowSource);
         WorkbookArtifact artifact = new WorkbookArtifact("artifact-v2", "a".repeat(64), Path.of("artifact.xlsx"));
-        when(exporter.exportStructuredRows(rowSource)).thenReturn(artifact);
+        when(exporter.exportV2StructuredRows(rowSource)).thenReturn(artifact);
 
         new V2StructuredAllGenerationCoordinator(repository, traversal, skills, sessions, store, exporter,
                 new ObjectMapper(), noOpHeartbeat()).execute("task-v2", request);
@@ -353,7 +353,7 @@ class V2StructuredAllGenerationCoordinatorTest {
         StructuredWorkbookRowSource rowSource = StructuredWorkbookRowSource.from(rows);
         when(repository.structuredWorkbookRows("task-v2")).thenReturn(rowSource);
         WorkbookArtifact artifact = new WorkbookArtifact("artifact-v2", "a".repeat(64), Path.of("artifact.xlsx"));
-        when(exporter.exportStructuredRows(rowSource)).thenReturn(artifact);
+        when(exporter.exportV2StructuredRows(rowSource)).thenReturn(artifact);
 
         new V2StructuredAllGenerationCoordinator(repository, traversal, skills, sessions, store, exporter,
                 new ObjectMapper(), noOpHeartbeat()).execute("task-v2", request);

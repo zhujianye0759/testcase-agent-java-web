@@ -48,7 +48,7 @@ import org.slf4j.LoggerFactory;
 /**
  * Exercises the ALL-mode orchestration seam before any single-feature generation is attempted.
  *
- * [Req-ID]: REQ-CAG-001, REQ-BFA-005
+ * [Req-ID]: REQ-CAG-001, REQ-BFA-005, REQ-TGV2-009, REQ-TGV2-010
  */
 class GenerationWorkflowAllModeTest {
 
@@ -85,14 +85,14 @@ class GenerationWorkflowAllModeTest {
         when(repository.isV2Task(TASK_ID)).thenReturn(true);
         when(repository.structuredArtifactRegenerationBaseline(TASK_ID)).thenReturn("artifact-old");
         when(repository.structuredWorkbookRows(TASK_ID)).thenReturn(rowSource);
-        when(workbookExporter.exportStructuredRows(rowSource)).thenReturn(artifact);
+        when(workbookExporter.exportV2StructuredRows(rowSource)).thenReturn(artifact);
 
         assertThat(workflow.regenerateStructuredArtifact(TASK_ID)).isEqualTo(artifact);
 
         InOrder order = inOrder(repository, workbookExporter);
         order.verify(repository).structuredArtifactRegenerationBaseline(TASK_ID);
         order.verify(repository).structuredWorkbookRows(TASK_ID);
-        order.verify(workbookExporter).exportStructuredRows(rowSource);
+        order.verify(workbookExporter).exportV2StructuredRows(rowSource);
         order.verify(repository).replaceStructuredArtifact(TASK_ID, "artifact-old", artifact);
         verify(knowledgeAgentPort, never()).invoke(any());
     }

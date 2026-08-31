@@ -31,9 +31,10 @@ import org.apache.poi.ss.usermodel.VerticalAlignment;
 import org.apache.poi.xssf.streaming.SXSSFWorkbook;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 
-/** Deterministic two-sheet Markdown and validated-structured workbook writer. [Req-ID]: REQ-EXP-001, REQ-EXP-002, REQ-EXP-003, REQ-EXP-004, REQ-EXP-005, REQ-EXP-007, REQ-CWR-003, REQ-FTG-009 */
+/** Deterministic two-sheet Markdown and validated-structured workbook writer. [Req-ID]: REQ-EXP-001, REQ-EXP-002, REQ-EXP-003, REQ-EXP-004, REQ-EXP-005, REQ-EXP-007, REQ-CWR-003, REQ-FTG-009, REQ-TGV2-009, REQ-TGV2-010 */
 public final class ApachePoiWorkbookExporter implements WorkbookExporter {
-    private static final List<String> SHEETS = List.of("需求与功能清单审查发现", "测试用例");
+    private static final List<String> LEGACY_SHEETS = List.of("需求与功能清单审查发现", "测试用例");
+    private static final List<String> V2_SHEETS = List.of("需求可测性反馈", "测试用例");
     private static final List<String> AUDIT_HEADERS = List.of("序号", "对象/功能点", "问题分类", "证据对照");
     private static final List<String> CASE_HEADERS = List.of("用例名称", "功能模块", "前提约束", "执行步骤", "预期结果", "对应需求内容");
     private static final int[] AUDIT_COLUMN_WIDTHS = {8, 24, 18, 52};
@@ -67,8 +68,8 @@ public final class ApachePoiWorkbookExporter implements WorkbookExporter {
             Path file = artifactRoot.resolve(id + ".xlsx").normalize();
             if (!file.startsWith(artifactRoot)) throw new WorkbookExportException("Artifact path escapes root");
             try (XSSFWorkbook book = new XSSFWorkbook(); OutputStream output = Files.newOutputStream(file)) {
-                write(book.createSheet(SHEETS.get(0)), AUDIT_HEADERS, request.auditRows().stream().map(this::audit).toList(), AUDIT_COLUMN_WIDTHS);
-                write(book.createSheet(SHEETS.get(1)), CASE_HEADERS, request.testCaseRows().stream().map(this::testCase).toList(), CASE_COLUMN_WIDTHS);
+                write(book.createSheet(LEGACY_SHEETS.get(0)), AUDIT_HEADERS, request.auditRows().stream().map(this::audit).toList(), AUDIT_COLUMN_WIDTHS);
+                write(book.createSheet(LEGACY_SHEETS.get(1)), CASE_HEADERS, request.testCaseRows().stream().map(this::testCase).toList(), CASE_COLUMN_WIDTHS);
                 book.write(output);
             }
             verify(file);
@@ -88,16 +89,21 @@ public final class ApachePoiWorkbookExporter implements WorkbookExporter {
         List<StructuredReviewRow> reviews = distinctReviews(request.reviewRows());
         List<StructuredTestCaseRow> testcases = distinctTestcases(request.testCaseRows());
         return exportStructuredRows(StructuredWorkbookRowSource.from(
-                new StructuredWorkbookExportRequest(request.taskId(), reviews, testcases)), false);
+                new StructuredWorkbookExportRequest(request.taskId(), reviews, testcases)), false, LEGACY_SHEETS, false);
     }
 
     /** Writes a task-sized export through a bounded row source and publishes only a verified complete file. */
     @Override public WorkbookArtifact exportStructuredRows(StructuredWorkbookRowSource source) {
-        return exportStructuredRows(source, true);
+        return exportStructuredRows(source, true, LEGACY_SHEETS, false);
+    }
+
+    /** Writes V2 rows without changing the historical V1 workbook contract. [Req-ID]: REQ-TGV2-009, REQ-TGV2-010 */
+    @Override public WorkbookArtifact exportV2StructuredRows(StructuredWorkbookRowSource source) {
+        return exportStructuredRows(source, true, V2_SHEETS, true);
     }
 
     private WorkbookArtifact exportStructuredRows(StructuredWorkbookRowSource source,
-            boolean requireSourceIdentityOrder) {
+            boolean requireSourceIdentityOrder, List<String> sheetNames, boolean v2Projection) {
         if (source == null || source.taskId() == null || source.taskId().isBlank()) {
             throw new WorkbookExportException("Structured export source is required");
         }
@@ -117,16 +123,18 @@ public final class ApachePoiWorkbookExporter implements WorkbookExporter {
             SXSSFWorkbook book = new SXSSFWorkbook(1);
             book.setCompressTempFiles(true);
             try (book; OutputStream output = new DigestOutputStream(Files.newOutputStream(part), digest)) {
-                writeStreaming(book.createSheet(SHEETS.get(0)), STRUCTURED_AUDIT_HEADERS,
-                        source.reviewRowCount(), source::forEachReview, this::requireSafeReview,
+                writeStreaming(book.createSheet(sheetNames.get(0)), STRUCTURED_AUDIT_HEADERS,
+                        source.reviewRowCount(), source::forEachReview,
+                        row -> requireSafeReview(row, v2Projection),
                         StructuredReviewRow::sourceId,
                         requireSourceIdentityOrder ? Comparator.comparing(StructuredReviewRow::sourceId)
                                 : Comparator.comparingInt(StructuredReviewRow::sequence)
                                         .thenComparing(row -> row.source().name())
                                         .thenComparing(StructuredReviewRow::sourceId),
                         this::structuredAudit, STRUCTURED_AUDIT_COLUMN_WIDTHS);
-                writeStreaming(book.createSheet(SHEETS.get(1)), STRUCTURED_CASE_HEADERS,
-                        source.testCaseRowCount(), source::forEachTestCase, this::requireSafeTestcase,
+                writeStreaming(book.createSheet(sheetNames.get(1)), STRUCTURED_CASE_HEADERS,
+                        source.testCaseRowCount(), source::forEachTestCase,
+                        row -> requireSafeTestcase(row, v2Projection),
                         StructuredTestCaseRow::sourceId,
                         requireSourceIdentityOrder ? Comparator.comparing(StructuredTestCaseRow::sourceId) : null,
                         this::structuredTestcase, STRUCTURED_CASE_COLUMN_WIDTHS);
@@ -135,7 +143,7 @@ public final class ApachePoiWorkbookExporter implements WorkbookExporter {
                 // close() does not promise deletion of every SXSSF temporary part on all POI versions.
                 book.dispose();
             }
-            verifyStructuredStreaming(part);
+            verifyStructuredStreaming(part, sheetNames);
             atomicPublisher.publish(part, file);
             return new WorkbookArtifact(id, java.util.HexFormat.of().formatHex(digest.digest()), file);
         } catch (WorkbookExportException exception) { throw exception; }
@@ -170,18 +178,25 @@ public final class ApachePoiWorkbookExporter implements WorkbookExporter {
                 .thenComparing(StructuredTestCaseRow::sourceId)).toList();
     }
 
-    private void requireSafeReview(StructuredReviewRow row) {
+    private void requireSafeReview(StructuredReviewRow row, boolean v2Projection) {
         if (row == null || !row.validated() || row.sequence() < 1 || row.source() == null) {
             throw new WorkbookExportException("Validated structured review rows are required");
+        }
+        if (v2Projection && row.source() != StructuredReviewRow.Source.TESTABILITY_FEEDBACK
+                && row.source() != StructuredReviewRow.Source.GENERATION_OUTCOME) {
+            throw new WorkbookExportException("V2 workbook feedback rows must use the V2 feedback projection");
         }
         rejectStructured(row.subject(), row.classification(), row.affectedScope(), row.summary(), row.badSourceExample(),
                 row.proposedGoodExample(), row.testDesignImpact(), row.currentProjectRecommendation(),
                 row.designCenterGuidelineRecommendation(), row.severity(), row.evidenceSource());
     }
 
-    private void requireSafeTestcase(StructuredTestCaseRow row) {
+    private void requireSafeTestcase(StructuredTestCaseRow row, boolean v2Projection) {
         if (row == null || !row.validated() || row.status() == null || row.steps().isEmpty()) {
             throw new WorkbookExportException("Validated structured test-case rows are required");
+        }
+        if (v2Projection && row.status() != StructuredTestCaseRow.Status.FORMAL) {
+            throw new WorkbookExportException("V2 workbook testcase rows must contain formal cases only");
         }
         if (row.priority() == null) throw new WorkbookExportException("Structured testcase priority is required");
         rejectStructured(row.name(), row.title(), row.functionName(), row.evaluationCriteria(),
@@ -407,21 +422,21 @@ public final class ApachePoiWorkbookExporter implements WorkbookExporter {
         return value;
     }
     private void verify(Path file) throws Exception { try (XSSFWorkbook book = new XSSFWorkbook(file.toFile())) {
-        if (book.getNumberOfSheets() != SHEETS.size()) throw new WorkbookExportException("Markdown workbook structure is invalid");
-        for (int index = 0; index < SHEETS.size(); index++) if (!SHEETS.get(index).equals(book.getSheetName(index))) throw new WorkbookExportException("Markdown workbook structure is invalid");
+        if (book.getNumberOfSheets() != LEGACY_SHEETS.size()) throw new WorkbookExportException("Markdown workbook structure is invalid");
+        for (int index = 0; index < LEGACY_SHEETS.size(); index++) if (!LEGACY_SHEETS.get(index).equals(book.getSheetName(index))) throw new WorkbookExportException("Markdown workbook structure is invalid");
         headers(book.getSheetAt(0), AUDIT_HEADERS); headers(book.getSheetAt(1), CASE_HEADERS);
     }}
     /** Verifies the OOXML envelope and header rows with streaming XML reads, avoiding a second full workbook load. */
-    private void verifyStructuredStreaming(Path file) throws Exception {
+    private void verifyStructuredStreaming(Path file, List<String> sheetNames) throws Exception {
         try (ZipFile zip = new ZipFile(file.toFile())) {
             List<WorkbookSheet> sheets = workbookSheets(zip);
-            if (sheets.size() != SHEETS.size()) {
+            if (sheets.size() != sheetNames.size()) {
                 throw new WorkbookExportException("Structured workbook structure is invalid");
             }
             Map<String, String> relationships = workbookRelationships(zip);
-            for (int index = 0; index < SHEETS.size(); index++) {
+            for (int index = 0; index < sheetNames.size(); index++) {
                 WorkbookSheet sheet = sheets.get(index);
-                if (!SHEETS.get(index).equals(sheet.name())) {
+                if (!sheetNames.get(index).equals(sheet.name())) {
                     throw new WorkbookExportException("Structured workbook structure is invalid");
                 }
                 String target = relationships.get(sheet.relationshipId());

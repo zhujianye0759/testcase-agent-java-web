@@ -34,7 +34,7 @@ import java.util.concurrent.CancellationException;
  * Each window/test point is an independent transaction; a weak or failed scope becomes auditable pending coverage
  * while unrelated scopes continue.
  *
- * [Req-ID]: REQ-TGV2-002, REQ-TGV2-003, REQ-TGV2-005~REQ-TGV2-008
+ * [Req-ID]: REQ-TGV2-002, REQ-TGV2-003, REQ-TGV2-005~REQ-TGV2-010
  */
 public final class V2StructuredAllGenerationCoordinator implements StructuredAllGenerationCoordinator {
     private static final String OWNER = "structured-v2-worker";
@@ -283,7 +283,7 @@ public final class V2StructuredAllGenerationCoordinator implements StructuredAll
                 ? StructuredProcessingStatus.FAILED : StructuredProcessingStatus.COMPLETED;
         StructuredCoverageStatus coverage = coverage(aggregate);
         StructuredWorkbookRowSource rows = repository.structuredWorkbookRows(taskId);
-        WorkbookArtifact artifact = exporter.exportStructuredRows(rows);
+        WorkbookArtifact artifact = exporter.exportV2StructuredRows(rows);
         // Task axes and artifact identity must become visible together; the repository owns that single transaction.
         repository.completeV2StructuredTask(taskId, artifact, processing, coverage);
     }

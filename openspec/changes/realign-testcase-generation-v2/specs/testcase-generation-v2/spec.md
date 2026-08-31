@@ -80,7 +80,7 @@ Java MUST 按一个持久化测试点调用 `functional-testcase-design`，并�
 - **THEN** 前者用于验证 KEE 实际选择的 `pending_only` 或 `unable_to_generate` 是否符合冻结三态矩阵，并仅在实际得到 `pending_only` 时证明待确认链路且不计入正式覆盖；不得把缺少量化条件硬编码成唯一结果
 - **AND** 后者 MUST 形成 `unable_to_generate`、零用例和非空缺失信息
 - **AND** 测试点身份和预期来源 MUST 是 Java 已冻结的已审核范围，不得临时修改 KEE JSON、让 KEE 猜测章节、按任务或材料名称特判
-- **AND** 数据库、页面、第一张固定 Sheet“需求与功能清单审查发现”中的“需求可测性反馈”行和第二张“测试用例” MUST 使用同一已提交投影；`unable_to_generate` 不得伪造用例行，任何界面或导出不得泄露事实键、证据键、原始 KEE JSON、提示词或凭据
+- **AND** 数据库、页面、第一张固定 Sheet“需求可测性反馈”和第二张“测试用例” MUST 使用同一已提交投影；`unable_to_generate` 不得伪造用例行，任何界面或导出不得泄露事实键、证据键、原始 KEE JSON、提示词或凭据
 
 #### Scenario: 同名用例具有不同执行内容
 - **WHEN** 两个候选名称、标题和引用相同，但初始化、输入、步骤、预期、评价、终止或采集内容不同
@@ -124,7 +124,7 @@ Java MUST 按一个持久化测试点调用 `functional-testcase-design`，并�
 - **THEN** 已完成工作不重调 KEE，未完成工作使用原范围和身份继续
 
 ### Requirement: REQ-TGV2-009 同源安全详情和双 Sheet Excel
-详情 API、页面和 Excel MUST 从同一 task/artifact 的已提交结构化数据投影。页面使用中文读者安全字段，不显示原始 JSON、Markdown、内部枚举/键或凭据。Excel MUST 恰好包含 `需求与功能清单审查发现` 与 `测试用例` 两张 Sheet，第二张只含正式用例，并防止公式注入。
+详情 API、页面和 Excel MUST 从同一 task/artifact 的已提交结构化数据投影。页面使用中文读者安全字段，不显示原始 JSON、Markdown、内部枚举/键或凭据。V2 Excel MUST 恰好包含 `需求可测性反馈` 与 `测试用例` 两张 Sheet，第二张只含正式用例，并防止公式注入。V1 历史任务与历史制品 MUST 继续保留旧 Sheet `需求与功能清单审查发现`，不得静默重建或改名。
 
 V2 详情中的可测性反馈、测试点和测试用例 MUST 使用独立的服务端显式分页；单页大小 MUST 有固定上限，单条用例的步骤和需求摘要 MUST 随该用例页一次读取，不得先加载全任务集合或按行执行级联查询；存在当前页结果时不得同时投影空状态。V1 历史详情 MUST 保持原有 JSON 形状。
 

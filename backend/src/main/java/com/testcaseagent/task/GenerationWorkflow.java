@@ -357,11 +357,14 @@ public final class GenerationWorkflow {
         if (repository.retryFailedBatches(taskId) <= 0) throw new GenerationTaskRetryConflictException();
         scheduleNext();
     }
-    /** Regenerates only the workbook projection for one completed structured ALL task. [Req-ID]: REQ-SGD-005 */
+    /**
+     * Regenerates only the V2 workbook projection for one completed structured ALL task while historical
+     * workbooks remain read-only. [Req-ID]: REQ-SGD-005, REQ-TGV2-009, REQ-TGV2-010
+     */
     public WorkbookArtifact regenerateStructuredArtifact(String taskId) {
         if (!repository.isV2Task(taskId)) throw new IllegalStateException("Historical task is read-only");
         String expectedArtifactId = repository.structuredArtifactRegenerationBaseline(taskId);
-        WorkbookArtifact artifact = workbookExporter.exportStructuredRows(repository.structuredWorkbookRows(taskId));
+        WorkbookArtifact artifact = workbookExporter.exportV2StructuredRows(repository.structuredWorkbookRows(taskId));
         repository.replaceStructuredArtifact(taskId, expectedArtifactId, artifact);
         return artifact;
     }

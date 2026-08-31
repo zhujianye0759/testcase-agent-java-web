@@ -37,14 +37,16 @@ class StructuredWorkbookExporterTest {
         StructuredTestCaseRow formal = testcase("formal-internal", "订单提交正式用例",
                 StructuredTestCaseRow.Status.FORMAL);
 
-        WorkbookArtifact artifact = new ApachePoiWorkbookExporter(artifactRoot).exportStructured(
-                new StructuredWorkbookExportRequest("task-v2", List.of(feedback, pending, unable), List.of(formal)));
+        StructuredWorkbookExportRequest request =
+                new StructuredWorkbookExportRequest("task-v2", List.of(feedback, pending, unable), List.of(formal));
+        WorkbookArtifact artifact = new ApachePoiWorkbookExporter(artifactRoot)
+                .exportV2StructuredRows(StructuredWorkbookRowSource.from(request));
 
         try (XSSFWorkbook workbook = new XSSFWorkbook(artifact.path().toFile())) {
             assertThat(workbook.getNumberOfSheets()).isEqualTo(2);
             assertThat(java.util.stream.IntStream.range(0, workbook.getNumberOfSheets())
                     .mapToObj(workbook::getSheetName).toList())
-                    .containsExactly("需求与功能清单审查发现", "测试用例");
+                    .containsExactly("需求可测性反馈", "测试用例");
             assertThat(workbook.getSheetAt(0).getRow(1).getCell(1).getStringCellValue())
                     .isEqualTo("需求可测性反馈");
             assertThat(workbook.getSheetAt(0).getRow(1).getCell(5).getStringCellValue())
@@ -156,6 +158,38 @@ class StructuredWorkbookExporterTest {
                     .doesNotContain("HIGH", "FORMAL", "VALID", "MANUAL", "EQUIVALENCE_PARTITIONING", "SIMULATED")
                     .doesNotContain("internal-case-id");
             assertThat(auditRow).doesNotContain("internal-review-id");
+        }
+    }
+
+    /** [Req-ID]: REQ-TGV2-009 */
+    @Test
+    void rejectsLegacyReviewRowsFromTheV2FeedbackSheet() throws Exception {
+        StructuredReviewRow legacyReview = new StructuredReviewRow("legacy-review", 1,
+                StructuredReviewRow.Source.REQUIREMENT_MATERIAL_REVIEW,
+                "订单提交", "需求问题", "旧材料评审不属于 V2 可测性反馈", true);
+        StructuredWorkbookRowSource source = StructuredWorkbookRowSource.from(
+                new StructuredWorkbookExportRequest("task-v2", List.of(legacyReview), List.of()));
+
+        assertThatThrownBy(() -> new ApachePoiWorkbookExporter(artifactRoot).exportV2StructuredRows(source))
+                .isInstanceOf(WorkbookExportException.class)
+                .hasMessageContaining("V2 workbook feedback rows");
+        try (var files = Files.list(artifactRoot)) {
+            assertThat(files).isEmpty();
+        }
+    }
+
+    /** [Req-ID]: REQ-TGV2-009 */
+    @Test
+    void rejectsPendingCasesFromTheV2FormalCaseSheet() throws Exception {
+        StructuredWorkbookRowSource source = StructuredWorkbookRowSource.from(
+                new StructuredWorkbookExportRequest("task-v2", List.of(), List.of(
+                        testcase("pending-internal", "待确认候选", StructuredTestCaseRow.Status.PENDING_CONFIRMATION))));
+
+        assertThatThrownBy(() -> new ApachePoiWorkbookExporter(artifactRoot).exportV2StructuredRows(source))
+                .isInstanceOf(WorkbookExportException.class)
+                .hasMessageContaining("V2 workbook testcase rows");
+        try (var files = Files.list(artifactRoot)) {
+            assertThat(files).isEmpty();
         }
     }
 
