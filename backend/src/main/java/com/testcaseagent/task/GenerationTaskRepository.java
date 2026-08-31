@@ -66,6 +66,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
@@ -104,6 +105,23 @@ public final class GenerationTaskRepository {
             "structured_reconciliation_relation_stage",
             "structured_reconciliation_relation_stage_binding",
             "structured_reconciliation_source_terminal");
+    /**
+     * Technical terminal types that may be repaired outside the task and then resumed by an explicit user action.
+     * Contract, authorization, structured-output and business-validation failures are intentionally absent.
+     * [Req-ID]: REQ-TGV2-013
+     */
+    private static final Set<String> V2_ZERO_WRITE_TECHNICAL_FAILURES = Set.of(
+            "request_too_large", "session_not_found", "skill_unavailable",
+            "model_unavailable", "model_execution_failed", "worker_interrupted");
+    /** Tables whose task-owned rows prove that the failure artifact is no longer a zero-write projection. */
+    private static final List<String> V2_TECHNICAL_RECOVERY_BUSINESS_TABLES = List.of(
+            "v2_requirement_fact", "v2_testability_feedback", "structured_test_point",
+            "v2_generation_outcome", "structured_test_case", "v2_work_publication",
+            "structured_requirement_fact", "structured_review_finding", "structured_function_list_item",
+            "structured_feature_reconciliation", "structured_function_source_outcome",
+            "structured_function_candidate", "structured_reconciliation_source_terminal",
+            "material_audit_work", "feature_source_candidate", "feature_review_conclusion",
+            "frozen_feature_target", "requirement_issue_candidate", "generation_batch");
     private static final Pattern STACK_EXCEPTION = Pattern.compile("(?m)^[\\w.$]+(?:Exception|Error)(?::[^\\r\\n]*)?$");
     private static final Pattern STACK_FRAME = Pattern.compile("(?m)^\\s*at\\s+[\\w.$]+\\([^\\r\\n]*\\)\\s*$");
     private static final Pattern V2_FACT_STATEMENT_PATH = Pattern.compile(
@@ -112,6 +130,7 @@ public final class GenerationTaskRepository {
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
+    private final TransactionTemplate retryTransactionTemplate;
     private final TransactionTemplate detailSnapshotTemplate;
 
     public GenerationTaskRepository(
@@ -119,6 +138,8 @@ public final class GenerationTaskRepository {
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
+        this.retryTransactionTemplate = new TransactionTemplate(transactionManager);
+        this.retryTransactionTemplate.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
         this.detailSnapshotTemplate = new TransactionTemplate(transactionManager);
         this.detailSnapshotTemplate.setReadOnly(true);
         this.detailSnapshotTemplate.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
@@ -1000,11 +1021,20 @@ public final class GenerationTaskRepository {
      * work set so its next owner creates the attempt. Conditional updates and row locks keep every supported path
      * single-winner; the V2 fact-validation path may requeue multiple zero-write windows in one closed transaction.
      *
-     * [Req-ID]: REQ-CAG-007, REQ-TGV2-011, REQ-TGV2-012
+     * [Req-ID]: REQ-CAG-007, REQ-TGV2-011, REQ-TGV2-012, REQ-TGV2-013
      */
     public int retryFailedBatches(String taskId) {
-        return transactionTemplate.execute(status -> {
+        return retryTransactionTemplate.execute(status -> {
             StructuredRetryDecision decision = structuredRetryEligibility(taskId, true);
+            // This V2 branch authorizes from complete attempt history after acquiring task/work locks. READ COMMITTED
+            // gives that statement a fresh view; joining an older REPEATABLE READ snapshot must fail closed. Other
+            // established retry branches retain their existing transaction semantics.
+            // [Req-ID]: REQ-TGV2-013
+            if (decision.mutation() == StructuredRetryMutation.RECOVER_V2_ZERO_WRITE_TECHNICAL_FAILURE
+                    && !Objects.equals(TransactionSynchronizationManager.getCurrentTransactionIsolationLevel(),
+                            TransactionDefinition.ISOLATION_READ_COMMITTED)) {
+                return 0;
+            }
             if (hasStructuredWork(taskId)) {
                 return decision.eligibility().canRetry()
                         && retryExplicitStructuredWorkInTransaction(taskId, decision) ? 1 : 0;
@@ -1065,6 +1095,9 @@ public final class GenerationTaskRepository {
         if (decision.mutation() == StructuredRetryMutation.RECOVER_V2_DIRECT_EVIDENCE_REJECTION) {
             return recoverV2DirectEvidenceRejectedTask(taskId);
         }
+        if (decision.mutation() == StructuredRetryMutation.RECOVER_V2_ZERO_WRITE_TECHNICAL_FAILURE) {
+            return recoverV2ZeroWriteTechnicalFailureTask(taskId);
+        }
         int workChanged = switch (decision.mutation()) {
             case REQUEUE_FAILED_WORK -> jdbcTemplate.update("""
                         UPDATE structured_generation_work_item
@@ -1075,7 +1108,8 @@ public final class GenerationTaskRepository {
             case REBUILD_INVALID_RECONCILIATION_STAGING -> rebuildInvalidReconciliationStaging(
                     taskId, decision.workItemId());
             case RESUME_QUEUED_RESIDUE, RESUME_EXPIRED_RUNNING_RESIDUE, RESUME_STAGE_GAP -> 1;
-            case RECOVER_V2_ATOMICITY_REJECTION, RECOVER_V2_DIRECT_EVIDENCE_REJECTION ->
+            case RECOVER_V2_ATOMICITY_REJECTION, RECOVER_V2_DIRECT_EVIDENCE_REJECTION,
+                    RECOVER_V2_ZERO_WRITE_TECHNICAL_FAILURE ->
                     throw new IllegalStateException("V2 fact recovery must use its exact mutation");
         };
         int taskChanged = decision.mutation() == StructuredRetryMutation.RESUME_QUEUED_RESIDUE
@@ -1123,7 +1157,10 @@ public final class GenerationTaskRepository {
             return unavailableRetry("该任务不支持结构化断点重试");
         }
         boolean v2FactValidationRecoveryTask = isV2FactValidationRecoveryTask(task);
-        if (!GenerationTaskStatus.FAILED.name().equals(task.status()) && !v2FactValidationRecoveryTask) {
+        boolean v2ZeroWriteTechnicalRecoveryTask = isV2ZeroWriteTechnicalRecoveryTask(task);
+        if (!GenerationTaskStatus.FAILED.name().equals(task.status())
+                && !v2FactValidationRecoveryTask
+                && !v2ZeroWriteTechnicalRecoveryTask) {
             return unavailableRetry("任务当前状态不允许重试");
         }
         if (task.cancellationRequested()) return unavailableRetry("任务已取消或正在取消，不能重试");
@@ -1177,6 +1214,9 @@ public final class GenerationTaskRepository {
         }
         if (v2FactValidationRecoveryTask) {
             return v2FactValidationRecoveryDecision(taskId, task, unfinished, lockTask);
+        }
+        if (v2ZeroWriteTechnicalRecoveryTask) {
+            return v2ZeroWriteTechnicalRecoveryDecision(taskId, task, unfinished, lockTask);
         }
         if (unfinished.isEmpty()) {
             if (isSafeReconciliationStageGap(taskId)) {
@@ -1632,6 +1672,158 @@ public final class GenerationTaskRepository {
     private static boolean isRecoverableV2FactValidationCode(String code) {
         return StructuredValidationFailure.Code.FACT_ATOMICITY_INVALID.name().equals(code)
                 || StructuredValidationFailure.Code.FACT_DIRECT_EVIDENCE_UNSUPPORTED.name().equals(code);
+    }
+
+    /**
+     * Selects only the terminal V2 shape whose workbook is a failure projection rather than accepted business data.
+     * The database graph is checked separately after task/work locks are acquired.
+     * [Req-ID]: REQ-TGV2-013
+     */
+    private static boolean isV2ZeroWriteTechnicalRecoveryTask(RetryTaskRow task) {
+        return GenerationTaskStatus.PARTIAL.name().equals(task.status())
+                && StructuredProcessingStatus.FAILED.name().equals(task.processingStatus())
+                && StructuredCoverageStatus.UNABLE_TO_GENERATE.name().equals(task.coverageStatus())
+                && GenerationContractVersions.V2.equals(task.workflowVersion())
+                && GenerationContractVersions.V2.equals(task.inputVersion())
+                && GenerationContractVersions.V2.equals(task.artifactVersion())
+                && task.validationErrorCode() == null
+                && task.validationErrorPath() == null
+                && task.validationErrorMessage() == null
+                && nonBlank(task.artifactId())
+                && nonBlank(task.artifactSha256())
+                && task.artifactSha256().matches("(?i)[0-9a-f]{64}")
+                && nonBlank(task.artifactPath());
+    }
+
+    /**
+     * Proves that every model-facing V2 work failed technically before publishing any business row.
+     * Advisory reads and the mutation path share this predicate; the latter additionally holds task/work/current-row
+     * locks so a concurrent accept cannot cross the zero-write decision.
+     * [Req-ID]: REQ-TGV2-013
+     */
+    private StructuredRetryDecision v2ZeroWriteTechnicalRecoveryDecision(
+            String taskId, RetryTaskRow task, List<RetryWorkRow> unfinished, boolean lockRows) {
+        if (unfinished.isEmpty() || !hasUniqueFailureArtifact(taskId, task.artifactId(),
+                task.artifactSha256(), task.artifactPath(), lockRows)) {
+            return unavailableRetry("V2 技术失败制品或处理项不符合安全恢复条件");
+        }
+        List<String> allWorkIds = jdbcTemplate.queryForList("""
+                SELECT id FROM structured_generation_work_item
+                WHERE task_id = ? ORDER BY created_at, id%s
+                """.formatted(lockRows ? " FOR UPDATE" : ""), String.class, taskId);
+        if (allWorkIds.size() != unfinished.size()) {
+            return unavailableRetry("V2 技术失败任务已包含其他处理结果");
+        }
+        for (RetryWorkRow work : unfinished) {
+            if (!"FAILED".equals(work.status())
+                    || work.acceptedResultSha256() != null
+                    || work.hasLease()
+                    || work.hasRunningAttempt()
+                    || work.validationErrorCode() != null
+                    || work.validationErrorPath() != null
+                    || work.validationErrorMessage() != null
+                    || !isV2GenerationWork(work)) {
+                return unavailableRetry("V2 技术失败处理项不符合安全恢复条件");
+            }
+            List<V2TechnicalRecoveryAttemptRow> attempts = v2TechnicalRecoveryAttempts(work.id());
+            if (!hasOnlyTerminalRecoverableV2TechnicalAttempts(attempts)) {
+                return unavailableRetry("该 V2 技术失败类型不能通过此操作恢复");
+            }
+        }
+        if (unfinishedWorkOwnedBusinessRowCount(taskId, lockRows) != 0
+                || hasAnyV2TechnicalRecoveryBusinessState(taskId, lockRows)) {
+            return unavailableRetry("V2 技术失败任务已存在部分业务结果");
+        }
+        return new StructuredRetryDecision(
+                StructuredRetryEligibility.eligible(), null,
+                StructuredRetryMutation.RECOVER_V2_ZERO_WRITE_TECHNICAL_FAILURE);
+    }
+
+    private static boolean isV2GenerationWork(RetryWorkRow work) {
+        return ("requirement-fact-extraction".equals(work.skillName())
+                        && "REQUIREMENT_FACT_EXTRACTION_V2".equals(work.operationName()))
+                || ("functional-testcase-design".equals(work.skillName())
+                        && "FUNCTIONAL_TESTCASE_DESIGN_V2".equals(work.operationName()));
+    }
+
+    private List<V2TechnicalRecoveryAttemptRow> v2TechnicalRecoveryAttempts(String workItemId) {
+        // The READ COMMITTED mutation path already holds the parent work row before this query. InnoDB therefore
+        // blocks any child attempt insert on the foreign-key check, while this fresh statement sees every commit that
+        // preceded the acquired work lock. A prefix-range FOR UPDATE on (work_item_id, attempt_number) would add
+        // next-key locks across adjacent UUIDs and can deadlock two otherwise unrelated task recoveries.
+        // [Req-ID]: REQ-TGV2-013
+        return jdbcTemplate.query("""
+                        SELECT attempt_number, status, failure_type, completed_at,
+                               validation_error_code, validation_error_path, validation_error_message
+                        FROM structured_generation_attempt
+                        WHERE work_item_id = ? ORDER BY attempt_number DESC
+                        """,
+                (row, ignored) -> new V2TechnicalRecoveryAttemptRow(
+                        row.getInt("attempt_number"), row.getString("status"), row.getString("failure_type"),
+                        row.getTimestamp("completed_at") == null ? null : row.getTimestamp("completed_at").toInstant(),
+                        row.getString("validation_error_code"), row.getString("validation_error_path"),
+                        row.getString("validation_error_message")), workItemId);
+    }
+
+    private static boolean hasOnlyTerminalRecoverableV2TechnicalAttempts(
+            List<V2TechnicalRecoveryAttemptRow> attempts) {
+        if (attempts.isEmpty()) return false;
+        int expectedAttemptNumber = attempts.size();
+        for (V2TechnicalRecoveryAttemptRow attempt : attempts) {
+            if (attempt.attemptNumber() != expectedAttemptNumber--
+                    || !"FAILED".equals(attempt.status())
+                    || attempt.completedAt() == null
+                    || !V2_ZERO_WRITE_TECHNICAL_FAILURES.contains(attempt.failureType())
+                    || attempt.validationErrorCode() != null
+                    || attempt.validationErrorPath() != null
+                    || attempt.validationErrorMessage() != null) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean hasUniqueFailureArtifact(String taskId, String artifactId, String artifactSha256,
+            String artifactPath, boolean lockRows) {
+        // V24 gives both identity lookups their own unique indexes. Separate, fixed-order current reads avoid the
+        // unindexed OR scan that could deadlock two unrelated task recoveries after each had locked its task row.
+        // Equal workbook hashes remain legal because a digest is content identity, not artifact ownership.
+        // [Req-ID]: REQ-TGV2-013
+        List<FailureArtifactOwner> idOwners = artifactOwners("artifact_id = ?", artifactId, lockRows);
+        List<FailureArtifactOwner> pathOwners = artifactOwners(
+                "artifact_path_sha256 = UNHEX(SHA2(?, 256)) AND artifact_path = ?",
+                new Object[] {artifactPath, artifactPath}, lockRows);
+        return isExactArtifactOwner(idOwners, taskId, artifactId, artifactSha256, artifactPath)
+                && isExactArtifactOwner(pathOwners, taskId, artifactId, artifactSha256, artifactPath);
+    }
+
+    private List<FailureArtifactOwner> artifactOwners(String predicate, Object argument, boolean lockRows) {
+        return artifactOwners(predicate, new Object[] {argument}, lockRows);
+    }
+
+    private List<FailureArtifactOwner> artifactOwners(String predicate, Object[] arguments, boolean lockRows) {
+        return jdbcTemplate.query("""
+                        SELECT id, artifact_id, artifact_sha256, artifact_path
+                        FROM generation_task WHERE %s%s
+                        """.formatted(predicate, lockRows ? " FOR UPDATE" : ""),
+                (row, ignored) -> new FailureArtifactOwner(row.getString("id"), row.getString("artifact_id"),
+                        row.getString("artifact_sha256"), row.getString("artifact_path")), arguments);
+    }
+
+    private static boolean isExactArtifactOwner(List<FailureArtifactOwner> owners, String taskId,
+            String artifactId, String artifactSha256, String artifactPath) {
+        return owners.size() == 1
+                && taskId.equals(owners.get(0).taskId())
+                && artifactId.equals(owners.get(0).artifactId())
+                && artifactSha256.equals(owners.get(0).artifactSha256())
+                && artifactPath.equals(owners.get(0).artifactPath());
+    }
+
+    private boolean hasAnyV2TechnicalRecoveryBusinessState(String taskId, boolean lockRows) {
+        for (String table : V2_TECHNICAL_RECOVERY_BUSINESS_TABLES) {
+            if (hasLockedRows("SELECT task_id FROM " + table + " WHERE task_id = ?", taskId, lockRows)) return true;
+        }
+        return hasLockedRows("SELECT work_item_id FROM structured_reconciliation_run WHERE task_id = ?", taskId, lockRows);
     }
 
     private static boolean nonBlank(String value) {
@@ -3271,6 +3463,45 @@ public final class GenerationTaskRepository {
                 """, taskId);
         if (requeued != failedWorks.size() || superseded != fallbackRows.size() || taskChanged != 1) {
             throw new IllegalStateException("V2 direct-evidence recovery did not mutate its complete frozen set");
+        }
+        return true;
+    }
+
+    /**
+     * Requeues the complete locked set of zero-write V2 technical failures and detaches only its failure artifact.
+     * Historical attempts and immutable input rows remain untouched; each next claim creates the new attempt.
+     * [Req-ID]: REQ-TGV2-013
+     */
+    private boolean recoverV2ZeroWriteTechnicalFailureTask(String taskId) {
+        int expectedWorks = count("""
+                SELECT COUNT(*) FROM structured_generation_work_item
+                WHERE task_id = ? AND status = 'FAILED' AND accepted_result_sha256 IS NULL
+                  AND ((skill_name='requirement-fact-extraction' AND operation_name='REQUIREMENT_FACT_EXTRACTION_V2')
+                    OR (skill_name='functional-testcase-design' AND operation_name='FUNCTIONAL_TESTCASE_DESIGN_V2'))
+                """, taskId);
+        if (expectedWorks <= 0) {
+            throw new IllegalStateException("V2 technical recovery lost its locked work set");
+        }
+        int requeued = jdbcTemplate.update("""
+                UPDATE structured_generation_work_item
+                SET status='QUEUED', lease_owner=NULL, lease_expires_at=NULL,
+                    validation_error_code=NULL, validation_error_path=NULL, validation_error_message=NULL
+                WHERE task_id=? AND status='FAILED' AND accepted_result_sha256 IS NULL
+                  AND ((skill_name='requirement-fact-extraction' AND operation_name='REQUIREMENT_FACT_EXTRACTION_V2')
+                    OR (skill_name='functional-testcase-design' AND operation_name='FUNCTIONAL_TESTCASE_DESIGN_V2'))
+                """, taskId);
+        int taskChanged = jdbcTemplate.update("""
+                UPDATE generation_task
+                SET status='QUEUED', structured_processing_status='PENDING', structured_coverage_status='PENDING',
+                    result_snapshot=NULL, artifact_id=NULL, artifact_sha256=NULL, artifact_path=NULL,
+                    validation_error_code=NULL, validation_error_path=NULL, validation_error_message=NULL
+                WHERE id=? AND status='PARTIAL' AND structured_processing_status='FAILED'
+                  AND structured_coverage_status='UNABLE_TO_GENERATE'
+                  AND workflow_version='2.0' AND input_version='2.0' AND artifact_version='2.0'
+                  AND artifact_id IS NOT NULL AND artifact_sha256 IS NOT NULL AND artifact_path IS NOT NULL
+                """, taskId);
+        if (requeued != expectedWorks || taskChanged != 1) {
+            throw new IllegalStateException("V2 technical recovery did not mutate its complete locked set");
         }
         return true;
     }
@@ -6255,6 +6486,13 @@ public final class GenerationTaskRepository {
             String status, String failureType, String validationErrorCode, String validationErrorPath,
             String validationErrorMessage) { }
 
+    private record V2TechnicalRecoveryAttemptRow(
+            int attemptNumber, String status, String failureType, Instant completedAt,
+            String validationErrorCode, String validationErrorPath, String validationErrorMessage) { }
+
+    private record FailureArtifactOwner(
+            String taskId, String artifactId, String artifactSha256, String artifactPath) { }
+
     private record StoredValidationDiagnostic(String code, String path, String storageMessage) { }
 
     private record V2FallbackWorkRow(String id, String functionKey, String testPointKey, String status,
@@ -6400,7 +6638,8 @@ public final class GenerationTaskRepository {
         RESUME_EXPIRED_RUNNING_RESIDUE,
         RESUME_STAGE_GAP,
         RECOVER_V2_ATOMICITY_REJECTION,
-        RECOVER_V2_DIRECT_EVIDENCE_REJECTION
+        RECOVER_V2_DIRECT_EVIDENCE_REJECTION,
+        RECOVER_V2_ZERO_WRITE_TECHNICAL_FAILURE
     }
 
     private record TaskFailureSnapshot(String failureSummary) {

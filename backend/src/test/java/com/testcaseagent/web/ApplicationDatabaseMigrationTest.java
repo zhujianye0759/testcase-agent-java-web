@@ -317,6 +317,26 @@ class ApplicationDatabaseMigrationTest {
                 """, String.class)).contains("SUPERSEDED");
     }
 
+    /** [Req-ID]: REQ-TGV2-013 */
+    @Test
+    void indexesArtifactIdentityWithoutMakingEqualWorkbookContentIllegal(
+            @Autowired JdbcTemplate jdbcTemplate) {
+        assertThat(jdbcTemplate.queryForMap("""
+                SELECT version, script FROM flyway_schema_history
+                WHERE script = 'V24__enforce_generation_artifact_identity.sql'
+                """))
+                .containsEntry("version", "24")
+                .containsEntry("script", "V24__enforce_generation_artifact_identity.sql");
+        assertThat(columnNames(jdbcTemplate, "generation_task")).contains("artifact_path_sha256");
+        assertThat(jdbcTemplate.queryForList("""
+                SELECT index_name FROM information_schema.statistics
+                WHERE table_schema=DATABASE() AND table_name='generation_task' AND non_unique=0
+                  AND index_name IN ('uq_generation_task_artifact_id', 'uq_generation_task_artifact_path_sha256')
+                ORDER BY index_name
+                """, String.class)).containsExactly(
+                        "uq_generation_task_artifact_id", "uq_generation_task_artifact_path_sha256");
+    }
+
     /** [Req-ID]: REQ-STG-001 */
     @Test
     void productionContextRequiresTheRealStructuredAllCoordinator(

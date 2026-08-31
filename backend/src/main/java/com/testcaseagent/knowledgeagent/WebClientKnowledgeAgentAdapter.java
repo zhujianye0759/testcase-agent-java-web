@@ -316,7 +316,10 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
             throw new StructuredSkillExecutionException(StructuredSkillErrorType.INVALID_REQUEST, false);
         }
         if (body.length > structuredContractV2RequestMaxBytes) {
-            throw new StructuredSkillExecutionException(StructuredSkillErrorType.REQUEST_TOO_LARGE, false);
+            // A local serialization budget rejection never reached KEE. Keep it distinct from KEE's
+            // request_too_large response so an explicit retry cannot misclassify an unchanged local payload
+            // as a remotely repairable capacity failure. [Req-ID]: REQ-TGV2-013
+            throw new StructuredSkillExecutionException(StructuredSkillErrorType.INVALID_REQUEST, false);
         }
         try {
             StructuredHttpResponse response = structuredV2WebClient.post()

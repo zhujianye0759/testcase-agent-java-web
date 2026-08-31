@@ -237,3 +237,28 @@ Java MUST 将 `statement` 视为原子事实的读者可读语义描述，将 `s
 - **AND** 安全规则原因只用于说明确定性拒绝位置，不得把其他错误代码变为可重试；严格解析失败的数据库原值不得进入异常原因链、日志、详情 API、页面或 Excel
 - **AND** 大规模恢复按固定事实工作、解析单元和用例工作批次读取；原始解析单元正文与 V23 回放 JSON 只在当前批次内存活，快照只保留任务级哈希/闭合结论，不得把整任务正文或回放结果同时缓存在内存
 - **AND** 锁内门禁必须使用能看到等待期间已提交业务行的当前读；并发插入任一事实、反馈、用例、步骤、绑定或发布坐标后，恢复资格必须失败关闭
+
+### Requirement: REQ-TGV2-013 V2 零业务写入技术失败的显式恢复
+系统 MUST 允许用户显式恢复仅由模型调用前或模型执行技术故障导致失败的 V2 新任务，但 MUST 在同一事务的当前读和行锁下证明任务从未接受任何 V2 或历史业务结果。该能力只依据版本化 V2 协议、固定技术失败类型、持久化状态和零写入闭集，不得按任务、项目、知识库、文档名称、材料类型、功能数量或样本身份特判，也不得把业务校验或结构化输出错误纳入技术恢复。
+
+#### Scenario: 恢复只有失败投影的 V2 技术故障任务
+- **WHEN** 一个 `workflow/input/artifact_version=2.0` 的 `PARTIAL/FAILED/UNABLE_TO_GENERATE` 任务只包含 `requirement-fact-extraction/REQUIREMENT_FACT_EXTRACTION_V2` 与 `functional-testcase-design/FUNCTIONAL_TESTCASE_DESIGN_V2` 的失败 work，每个 work 的全部历史 attempt 均按连续 attempt 序号以固定允许的技术失败终止、完成时间非空且不存在成功、运行、业务或结构化失败历史，accepted hash、租约和运行 attempt 均为空，且事实、反馈、测试点、三态结果、用例、步骤、绑定、发布账本、历史业务表和暂存表均为零
+- **THEN** `canRetry=true`，一次显式 retry 在同一事务仅把这些失败 work 重新排队、清除当前失败诊断和失败 artifact 投影，并把同一任务恢复为 `QUEUED/PENDING/PENDING`
+- **AND** 历史 attempt、冻结请求、材料 inventory、已审核功能范围和工作身份保持不变；下一次 claim 为每个 work 创建新的 attempt，并继续调用各自冻结的 V2 operation
+
+#### Scenario: 技术失败白名单与零写入失败关闭
+- **WHEN** 任一 work 的任一历史 attempt 为业务校验、结构化输出、合同错误、本地请求预算拒绝、不可缩小容量错误或其他非允许技术类型，或 attempt 未终态、序号不连续，或存在 accepted hash、已完成 work、正式/待确认/无法生成结果、任何事实/反馈/测试点/用例/步骤/绑定/发布/历史业务/暂存行、活动租约、运行 attempt、执行槽或 V1/旧 operation
+- **THEN** `canRetry=false`，显式 retry 不得改变 task、work、attempt、artifact 或任何业务表
+- **AND** Java 在发出 HTTP 前发现 V2 序列化请求超过本地预算时必须保存为不可恢复的 `invalid_request`；部署本需求前已经持久化且无法区分来源的 `request_too_large` 仅在本需求的完整零写入闭集下保留显式恢复兼容，最坏情况只能在发出 HTTP 前再次失败，不得接受业务结果
+
+#### Scenario: 失败 artifact 的唯一性与一致性
+- **WHEN** PARTIAL 任务没有完整的 artifact 标识、64 位摘要和路径，artifact 标识或路径被其他任务重复引用，或任务的 `PARTIAL/FAILED/UNABLE_TO_GENERATE` 三态与 V2 三版本不能共同证明它是失败终态投影
+- **THEN** 恢复失败关闭；系统不得把缺失、重复或不一致 artifact 当作可安全废止的失败投影
+- **AND** 数据库必须以可索引的唯一约束保证 artifact 标识和路径身份，锁内查询不得用无索引全表扫描破坏跨任务固定锁序；内容 SHA 只表示文件内容，相同工作簿内容允许具有相同摘要
+
+#### Scenario: 并发恢复与事务回滚
+- **WHEN** 两个用户并发恢复同一任务，或锁内复核、work 更新、artifact 清理、任务状态更新中的任一步未精确命中预期行数
+- **THEN** 最多一个请求成功，失败请求或中途异常整体回滚，不产生部分 requeue、部分清理或额外 attempt
+- **AND** 两个身份、artifact 和 work 均不同的任务并发恢复时，系统必须各自成功，不得因 artifact 全表扫描或 attempt 复合索引的跨任务范围锁产生死锁
+- **AND** mutation 路径必须先锁定父 work 以阻止新增 attempt，再读取完整 attempt 历史；不得用只指定 `work_item_id` 的 attempt 前缀范围锁代替父行保护
+- **AND** 显式 retry 的授权事务必须使用 `READ COMMITTED`，使父 work 锁后的 attempt 与业务闭集查询读取最新已提交事实；若调用方已有不兼容的旧快照事务，必须失败关闭，不得复用旧快照完成授权

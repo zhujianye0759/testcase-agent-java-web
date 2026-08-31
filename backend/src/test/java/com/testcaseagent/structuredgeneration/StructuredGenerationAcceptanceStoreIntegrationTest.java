@@ -59,9 +59,11 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.containers.MySQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -310,6 +312,555 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
             softly.assertThat(jdbc.queryForObject(
                     "SELECT status FROM structured_generation_work_item WHERE id=?", String.class, workId))
                     .isEqualTo("COMPLETED");
+        });
+    }
+
+    /** [Req-ID]: REQ-TGV2-013 */
+    @Test
+    void allowsExplicitRetryForACompleteV2FailureArtifactWithOnlyZeroWriteTechnicalFailures() {
+        V2TechnicalFailureRecoveryFixture fixture = v2TechnicalFailureRecoveryFixture("request_too_large");
+
+        var eligibility = taskRepository.structuredRetryEligibility("task-1");
+
+        assertThat(eligibility.canRetry()).as(eligibility.unavailableReason()).isTrue();
+        assertThat(fixture.workIds()).hasSize(2);
+    }
+
+    /** [Req-ID]: REQ-TGV2-013 */
+    @Test
+    void explicitV2TechnicalRecoveryRequeuesTheClosedWorkSetAndKeepsAttemptAudit() {
+        V2TechnicalFailureRecoveryFixture fixture = v2TechnicalFailureRecoveryFixture("request_too_large");
+        Map<String, Object> immutableBefore = v2TechnicalRecoveryImmutableSnapshot(fixture);
+
+        assertThat(taskRepository.retryFailedBatches("task-1")).isEqualTo(1);
+
+        assertSoftly(softly -> {
+            softly.assertThat(jdbc.queryForMap("""
+                    SELECT status, structured_processing_status, structured_coverage_status,
+                           result_snapshot, artifact_id, artifact_sha256, artifact_path
+                    FROM generation_task WHERE id='task-1'
+                    """))
+                    .containsEntry("status", "QUEUED")
+                    .containsEntry("structured_processing_status", "PENDING")
+                    .containsEntry("structured_coverage_status", "PENDING")
+                    .containsEntry("result_snapshot", null)
+                    .containsEntry("artifact_id", null)
+                    .containsEntry("artifact_sha256", null)
+                    .containsEntry("artifact_path", null);
+            softly.assertThat(jdbc.queryForList("""
+                    SELECT status FROM structured_generation_work_item
+                    WHERE task_id='task-1' ORDER BY identity_key
+                    """, String.class)).containsExactly("QUEUED", "QUEUED");
+            softly.assertThat(jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM structured_generation_attempt
+                    WHERE work_item_id IN (?, ?)
+                    """, Integer.class, fixture.workIds().get(0), fixture.workIds().get(1))).isEqualTo(2);
+            softly.assertThat(v2TechnicalRecoveryImmutableSnapshot(fixture)).isEqualTo(immutableBefore);
+        });
+
+        var factClaim = store.claimRegistered(
+                "task-1", fixture.workIds().get(0), "v2-technical-fact-worker").orElseThrow();
+        var testcaseClaim = store.claimRegistered(
+                "task-1", fixture.workIds().get(1), "v2-technical-testcase-worker").orElseThrow();
+        assertSoftly(softly -> {
+            softly.assertThat(factClaim.attemptNumber()).isEqualTo(2);
+            softly.assertThat(factClaim.operationName()).isEqualTo("REQUIREMENT_FACT_EXTRACTION_V2");
+            softly.assertThat(testcaseClaim.attemptNumber()).isEqualTo(2);
+            softly.assertThat(testcaseClaim.operationName()).isEqualTo("FUNCTIONAL_TESTCASE_DESIGN_V2");
+            softly.assertThat(jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM structured_generation_attempt
+                    WHERE work_item_id IN (?, ?)
+                    """, Integer.class, fixture.workIds().get(0), fixture.workIds().get(1))).isEqualTo(4);
+        });
+    }
+
+    /** [Req-ID]: REQ-TGV2-013 */
+    @ParameterizedTest
+    @ValueSource(strings = {"request_too_large", "session_not_found", "skill_unavailable",
+            "model_unavailable", "model_execution_failed", "worker_interrupted"})
+    void explicitV2TechnicalRecoveryUsesAClosedTechnicalFailureAllowlist(String failureType) {
+        v2TechnicalFailureRecoveryFixture(failureType);
+
+        assertThat(taskRepository.structuredRetryEligibility("task-1").canRetry()).isTrue();
+    }
+
+    /** [Req-ID]: REQ-TGV2-013 */
+    @Test
+    void artifactIdentityConstraintsRejectSharedOwnershipButAllowEqualWorkbookContent() {
+        v2TechnicalFailureRecoveryFixture("request_too_large");
+
+        assertThatThrownBy(() -> jdbc.update("""
+                INSERT INTO generation_task (id, task_mode, status, request_snapshot, artifact_id, artifact_path)
+                VALUES ('task-duplicate-artifact-id', 'ALL', 'PARTIAL', JSON_OBJECT('scope','other'),
+                        'artifact-technical-v2', 'different-v2.xlsx')
+                """)).isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> jdbc.update("""
+                INSERT INTO generation_task (id, task_mode, status, request_snapshot, artifact_id, artifact_path)
+                VALUES ('task-duplicate-artifact-path', 'ALL', 'PARTIAL', JSON_OBJECT('scope','other'),
+                        'different-artifact-v2', 'technical-v2.xlsx')
+                """)).isInstanceOf(DataIntegrityViolationException.class);
+        assertThat(jdbc.update("""
+                INSERT INTO generation_task
+                (id, task_mode, status, request_snapshot, artifact_id, artifact_sha256, artifact_path)
+                VALUES ('task-equal-workbook-content', 'ALL', 'PARTIAL', JSON_OBJECT('scope','other'),
+                        'equal-content-artifact-v2', ?, 'equal-content-v2.xlsx')
+                """, "a".repeat(64))).isEqualTo(1);
+        assertThat(taskRepository.structuredRetryEligibility("task-1").canRetry()).isTrue();
+    }
+
+    /** [Req-ID]: REQ-TGV2-013 */
+    @Test
+    void multipleTerminalTechnicalAttemptsRemainAuditableAndTheNextClaimCreatesAttemptThree() {
+        V2TechnicalFailureRecoveryFixture fixture = v2TechnicalFailureRecoveryFixture("request_too_large");
+        for (String workId : fixture.workIds()) {
+            jdbc.update("""
+                    INSERT INTO structured_generation_attempt
+                    (id, work_item_id, attempt_number, status, failure_type, created_at, completed_at)
+                    VALUES (UUID(), ?, 2, 'FAILED', 'model_unavailable', CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6))
+                    """, workId);
+        }
+
+        assertThat(taskRepository.structuredRetryEligibility("task-1").canRetry()).isTrue();
+        assertThat(taskRepository.retryFailedBatches("task-1")).isEqualTo(1);
+        var next = store.claimRegistered("task-1", fixture.workIds().get(0), "attempt-three-worker").orElseThrow();
+
+        assertThat(next.attemptNumber()).isEqualTo(3);
+        assertThat(jdbc.queryForList("""
+                SELECT attempt_number, status, failure_type FROM structured_generation_attempt
+                WHERE work_item_id=? ORDER BY attempt_number
+                """, fixture.workIds().get(0))).extracting(row -> row.get("attempt_number"))
+                .containsExactly(1L, 2L, 3L);
+    }
+
+    /** [Req-ID]: REQ-TGV2-013 */
+    @ParameterizedTest
+    @ValueSource(strings = {"invalid_request", "forbidden", "unsupported_skill", "scope_validation_failed",
+            "structured_output_invalid", "response_too_large", "business_validation_failed"})
+    void explicitV2TechnicalRecoveryRejectsContractAuthorizationAndValidationFailures(String failureType) {
+        V2TechnicalFailureRecoveryFixture fixture = v2TechnicalFailureRecoveryFixture("request_too_large");
+        jdbc.update("""
+                UPDATE structured_generation_attempt SET failure_type=?
+                WHERE work_item_id=? AND attempt_number=1
+                """, failureType, fixture.workIds().get(0));
+
+        assertThat(taskRepository.structuredRetryEligibility("task-1").canRetry()).isFalse();
+        assertThat(taskRepository.retryFailedBatches("task-1")).isZero();
+    }
+
+    /** [Req-ID]: REQ-TGV2-013 */
+    @ParameterizedTest
+    @ValueSource(strings = {"accepted-hash", "completed-work", "lease", "running-attempt", "wrong-operation",
+            "task-diagnostic", "work-diagnostic", "attempt-diagnostic", "partial-artifact",
+            "latest-attempt-not-terminal", "attempt-number-gap",
+            "historical-success-attempt", "historical-business-failure",
+            "wrong-task-status", "wrong-contract-version", "business-binding", "v2-fact", "v2-feedback",
+            "test-point", "generation-outcome", "test-case", "publication", "legacy-fact", "reconciliation-run"})
+    void explicitV2TechnicalRecoveryRejectsEveryNearStateWithoutMutation(String mutation) {
+        V2TechnicalFailureRecoveryFixture fixture = v2TechnicalFailureRecoveryFixture("request_too_large");
+        String factWork = fixture.workIds().get(0);
+        String testcaseWork = fixture.workIds().get(1);
+        switch (mutation) {
+            case "accepted-hash" -> jdbc.update(
+                    "UPDATE structured_generation_work_item SET accepted_result_sha256=? WHERE id=?",
+                    "b".repeat(64), factWork);
+            case "completed-work" -> jdbc.update(
+                    "UPDATE structured_generation_work_item SET status='COMPLETED', accepted_result_sha256=? WHERE id=?",
+                    "b".repeat(64), factWork);
+            case "lease" -> jdbc.update("""
+                    UPDATE structured_generation_work_item
+                    SET lease_owner='other-worker', lease_expires_at=DATE_ADD(CURRENT_TIMESTAMP(6), INTERVAL 5 MINUTE)
+                    WHERE id=?
+                    """, factWork);
+            case "running-attempt" -> jdbc.update("""
+                    UPDATE structured_generation_attempt SET status='RUNNING', completed_at=NULL
+                    WHERE work_item_id=? AND attempt_number=1
+                    """, factWork);
+            case "wrong-operation" -> jdbc.update("""
+                    UPDATE structured_generation_work_item
+                    SET skill_name='requirement-material-quality-review', operation_name='REVIEW_REQUIREMENT_MATERIAL'
+                    WHERE id=?
+                    """, factWork);
+            case "task-diagnostic" -> jdbc.update(
+                    """
+                    UPDATE generation_task
+                    SET validation_error_code='FACT_ATOMICITY_INVALID',
+                        validation_error_path='$.requirement_facts[0].statement',
+                        validation_error_message='V2 structured result failed business validation'
+                    WHERE id='task-1'
+                    """);
+            case "work-diagnostic" -> jdbc.update(
+                    """
+                    UPDATE structured_generation_work_item
+                    SET validation_error_code='FACT_ATOMICITY_INVALID',
+                        validation_error_path='$.requirement_facts[0].statement',
+                        validation_error_message='V2 structured result failed business validation'
+                    WHERE id=?
+                    """, factWork);
+            case "attempt-diagnostic" -> jdbc.update(
+                    """
+                    UPDATE structured_generation_attempt
+                    SET validation_error_code='FACT_ATOMICITY_INVALID',
+                        validation_error_path='$.requirement_facts[0].statement',
+                        validation_error_message='V2 structured result failed business validation'
+                    WHERE work_item_id=?
+                    """, factWork);
+            case "partial-artifact" -> jdbc.update(
+                    "UPDATE generation_task SET artifact_path=NULL WHERE id='task-1'");
+            case "latest-attempt-not-terminal" -> jdbc.update("""
+                    UPDATE structured_generation_attempt SET completed_at=NULL
+                    WHERE work_item_id=? AND attempt_number=1
+                    """, factWork);
+            case "attempt-number-gap" -> jdbc.update("""
+                    UPDATE structured_generation_attempt SET attempt_number=2
+                    WHERE work_item_id=? AND attempt_number=1
+                    """, factWork);
+            case "historical-success-attempt" -> {
+                jdbc.update("""
+                        UPDATE structured_generation_attempt
+                        SET status='COMPLETED', failure_type=NULL
+                        WHERE work_item_id=? AND attempt_number=1
+                        """, factWork);
+                jdbc.update("""
+                        INSERT INTO structured_generation_attempt
+                        (id, work_item_id, attempt_number, status, failure_type, created_at, completed_at)
+                        VALUES (UUID(), ?, 2, 'FAILED', 'request_too_large', CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6))
+                        """, factWork);
+            }
+            case "historical-business-failure" -> {
+                jdbc.update("""
+                        UPDATE structured_generation_attempt SET failure_type='business_validation_failed'
+                        WHERE work_item_id=? AND attempt_number=1
+                        """, factWork);
+                jdbc.update("""
+                        INSERT INTO structured_generation_attempt
+                        (id, work_item_id, attempt_number, status, failure_type, created_at, completed_at)
+                        VALUES (UUID(), ?, 2, 'FAILED', 'request_too_large', CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6))
+                        """, factWork);
+            }
+            case "wrong-task-status" -> jdbc.update(
+                    "UPDATE generation_task SET status='FAILED' WHERE id='task-1'");
+            case "wrong-contract-version" -> jdbc.update(
+                    "UPDATE generation_task SET workflow_version='1.0' WHERE id='task-1'");
+            case "business-binding" -> jdbc.update("""
+                    INSERT INTO structured_reference_binding
+                    (work_item_id, subject_key, subject_type, reference_type, reference_key)
+                    VALUES (?, 'unexpected', 'TEST_POINT', 'EVIDENCE', 'evidence-1')
+                    """, factWork);
+            case "v2-fact" -> jdbc.update("""
+                    INSERT INTO v2_requirement_fact
+                    (task_id, fact_key, first_work_item_id, function_key, fact_type, statement_text)
+                    VALUES ('task-1', 'unexpected-fact', ?, 'function-1', 'business_rule', 'unexpected')
+                    """, factWork);
+            case "v2-feedback" -> jdbc.update("""
+                    INSERT INTO v2_testability_feedback
+                    (task_id, feedback_key, work_item_id, function_key, window_key, observation_type,
+                     description_text, affected_fact_types_json)
+                    VALUES ('task-1', 'unexpected-feedback', ?, 'function-1', 'window-1', 'ambiguous',
+                            'unexpected', JSON_ARRAY('business_rule'))
+                    """, factWork);
+            case "test-point" -> jdbc.update("""
+                    INSERT INTO structured_test_point
+                    (work_item_id, task_id, test_point_key, function_key, function_name, test_point_type,
+                     basis, description, missing_information_json, formal_coverage_satisfied)
+                    VALUES (?, 'task-1', 'unexpected-point', 'function-1', 'fixture', 'normal_behavior',
+                            'general_experience', 'unexpected', JSON_ARRAY('missing'), FALSE)
+                    """, testcaseWork);
+            case "generation-outcome" -> jdbc.update("""
+                    INSERT INTO v2_generation_outcome
+                    (work_item_id, task_id, test_point_key, function_key, generation_outcome,
+                     missing_information_json, formal_coverage_satisfied)
+                    VALUES (?, 'task-1', 'point-1', 'function-1', 'unable_to_generate',
+                            JSON_ARRAY('missing'), FALSE)
+                    """, testcaseWork);
+            case "test-case" -> jdbc.update("""
+                    INSERT INTO structured_test_case
+                    (work_item_id, task_id, case_key, title, preconditions_json, case_status, missing_information_json)
+                    VALUES (?, 'task-1', 'unexpected-case', 'fixture', JSON_ARRAY(),
+                            'PENDING_CONFIRMATION', JSON_ARRAY('missing'))
+                    """, testcaseWork);
+            case "publication" -> jdbc.update("""
+                    INSERT INTO v2_work_publication
+                    (work_item_id, task_id, publication_type, input_sha256, result_sha256, published_at)
+                    VALUES (?, 'task-1', 'testcase_design', ?, ?, CURRENT_TIMESTAMP(6))
+                    """, testcaseWork, "c".repeat(64), "d".repeat(64));
+            case "legacy-fact" -> jdbc.update("""
+                    INSERT INTO structured_requirement_fact
+                    (work_item_id, task_id, fact_key, function_name, roles_json, trigger_conditions_json,
+                     inputs_json, business_rules_json, outputs_json, permissions_json, state_changes_json,
+                     exception_handling_json, external_dependencies_json)
+                    VALUES (?, 'task-1', 'unexpected-legacy-fact', 'fixture', JSON_ARRAY(), JSON_ARRAY(),
+                            JSON_ARRAY(), JSON_ARRAY(), JSON_ARRAY(), JSON_ARRAY(), JSON_ARRAY(), JSON_ARRAY(), JSON_ARRAY())
+                    """, factWork);
+            case "reconciliation-run" -> jdbc.update("""
+                    INSERT INTO structured_reconciliation_run
+                    (work_item_id, task_id, run_key, catalog_sha256, function_item_count,
+                     requirement_fact_count, catalog_source_refs_json, initial_page_keys_json, status)
+                    VALUES (?, 'task-1', 'unexpected-run', ?, 0, 0, JSON_ARRAY(), JSON_ARRAY(), 'STAGING')
+                    """, factWork, "e".repeat(64));
+            default -> throw new IllegalArgumentException("unknown mutation");
+        }
+        Map<String, Object> before = v2TechnicalRecoveryFullSnapshot(fixture);
+
+        assertThat(taskRepository.structuredRetryEligibility("task-1").canRetry()).isFalse();
+        assertThat(taskRepository.retryFailedBatches("task-1")).isZero();
+        assertThat(v2TechnicalRecoveryFullSnapshot(fixture)).isEqualTo(before);
+    }
+
+    /** [Req-ID]: REQ-TGV2-013 */
+    @Test
+    void concurrentV2TechnicalRecoveryHasOneWinner() throws Exception {
+        V2TechnicalFailureRecoveryFixture fixture = v2TechnicalFailureRecoveryFixture("request_too_large");
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            Callable<Integer> retry = () -> {
+                ready.countDown();
+                assertThat(start.await(10, TimeUnit.SECONDS)).isTrue();
+                return taskRepository.retryFailedBatches("task-1");
+            };
+            Future<Integer> first = executor.submit(retry);
+            Future<Integer> second = executor.submit(retry);
+            assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            assertThat(List.of(first.get(30, TimeUnit.SECONDS), second.get(30, TimeUnit.SECONDS)))
+                    .containsExactlyInAnyOrder(0, 1);
+            assertThat(jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM structured_generation_work_item
+                    WHERE id IN (?, ?) AND status='QUEUED'
+                    """, Integer.class, fixture.workIds().get(0), fixture.workIds().get(1))).isEqualTo(2);
+            assertThat(jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM structured_generation_attempt
+                    WHERE work_item_id IN (?, ?)
+                    """, Integer.class, fixture.workIds().get(0), fixture.workIds().get(1))).isEqualTo(2);
+        } finally {
+            start.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    /** [Req-ID]: REQ-TGV2-013 */
+    @Test
+    void unrelatedV2TechnicalRecoveriesUseIndexedArtifactLocksAndDoNotDeadlock() throws Exception {
+        V2TechnicalFailureRecoveryFixture first = v2TechnicalFailureRecoveryFixture("request_too_large");
+        seedV2TechnicalRecoveryTask("task-2");
+        V2TechnicalFailureRecoveryFixture second = v2TechnicalFailureRecoveryFixture(
+                "task-2", "request_too_large", "artifact-technical-v2-2", "technical-v2-2.xlsx");
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            Future<Integer> firstRetry = executor.submit(() -> {
+                ready.countDown();
+                assertThat(start.await(10, TimeUnit.SECONDS)).isTrue();
+                return taskRepository.retryFailedBatches("task-1");
+            });
+            Future<Integer> secondRetry = executor.submit(() -> {
+                ready.countDown();
+                assertThat(start.await(10, TimeUnit.SECONDS)).isTrue();
+                return taskRepository.retryFailedBatches("task-2");
+            });
+            assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            assertThat(firstRetry.get(30, TimeUnit.SECONDS)).isEqualTo(1);
+            assertThat(secondRetry.get(30, TimeUnit.SECONDS)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM structured_generation_work_item
+                    WHERE id IN (?, ?, ?, ?) AND status='QUEUED'
+                    """, Integer.class, first.workIds().get(0), first.workIds().get(1),
+                    second.workIds().get(0), second.workIds().get(1))).isEqualTo(4);
+        } finally {
+            start.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    /** [Req-ID]: REQ-TGV2-013 */
+    @Test
+    void v2TechnicalRecoveryRollsBackWithItsOuterTransaction() {
+        V2TechnicalFailureRecoveryFixture fixture = v2TechnicalFailureRecoveryFixture("request_too_large");
+        Map<String, Object> before = v2TechnicalRecoveryFullSnapshot(fixture);
+        TransactionTemplate readCommitted = new TransactionTemplate(transactionManager);
+        readCommitted.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
+
+        assertThatThrownBy(() -> readCommitted.executeWithoutResult(ignored -> {
+            assertThat(taskRepository.retryFailedBatches("task-1")).isEqualTo(1);
+            throw new IllegalStateException("force-test-rollback");
+        })).isInstanceOf(IllegalStateException.class);
+
+        assertThat(v2TechnicalRecoveryFullSnapshot(fixture)).isEqualTo(before);
+    }
+
+    /** [Req-ID]: REQ-TGV2-013 */
+    @Test
+    void v2TechnicalRecoverySeesBusinessRowsCommittedWhileWaitingForItsWorkLock() throws Exception {
+        V2TechnicalFailureRecoveryFixture fixture = v2TechnicalFailureRecoveryFixture("request_too_large");
+        String blockedWorkId = fixture.workIds().get(0);
+        List<Map<String, Object>> taskBefore = generationTaskSnapshot("task-1");
+        List<Map<String, Object>> worksBefore = structuredWorkSnapshot("task-1");
+        List<Map<String, Object>> attemptsBefore = taskAttemptSnapshot("task-1");
+        CountDownLatch workLockAttempted = new CountDownLatch(1);
+        JdbcTemplate observingJdbc = new JdbcTemplate(jdbc.getDataSource()) {
+            @Override
+            public <T> List<T> query(String sql, RowMapper<T> rowMapper, Object... args) {
+                if (sql.contains("FROM structured_generation_work_item work")
+                        && sql.contains("WHERE work.task_id = ?")
+                        && sql.contains("FOR UPDATE")) {
+                    workLockAttempted.countDown();
+                }
+                return super.query(sql, rowMapper, args);
+            }
+        };
+        GenerationTaskRepository observingRepository = new GenerationTaskRepository(
+                observingJdbc, new ObjectMapper().findAndRegisterModules(), transactionManager);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+
+        try (Connection blocker = jdbc.getDataSource().getConnection()) {
+            blocker.setAutoCommit(false);
+            blocker.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
+            try (PreparedStatement lockWork = blocker.prepareStatement(
+                    "SELECT id FROM structured_generation_work_item WHERE id = ? FOR UPDATE")) {
+                lockWork.setString(1, blockedWorkId);
+                assertThat(lockWork.executeQuery().next()).isTrue();
+            }
+
+            Future<Integer> retry = executor.submit(() -> observingRepository.retryFailedBatches("task-1"));
+            awaitTaskLockHeldByRetry("task-1");
+            assertThat(workLockAttempted.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(retry.isDone()).isFalse();
+
+            try (PreparedStatement insertBinding = blocker.prepareStatement("""
+                    INSERT INTO structured_reference_binding
+                    (work_item_id, subject_key, subject_type, reference_type, reference_key)
+                    VALUES (?, 'concurrent-partial-v2', 'TEST_POINT', 'EVIDENCE', 'evidence-1')
+                    """)) {
+                insertBinding.setString(1, blockedWorkId);
+                assertThat(insertBinding.executeUpdate()).isEqualTo(1);
+            }
+            blocker.commit();
+
+            assertThat(retry.get(30, TimeUnit.SECONDS)).isZero();
+        } finally {
+            executor.shutdownNow();
+            assertThat(executor.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+        }
+
+        assertSoftly(softly -> {
+            softly.assertThat(generationTaskSnapshot("task-1")).isEqualTo(taskBefore);
+            softly.assertThat(structuredWorkSnapshot("task-1")).isEqualTo(worksBefore);
+            softly.assertThat(taskAttemptSnapshot("task-1")).isEqualTo(attemptsBefore);
+            softly.assertThat(jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM structured_reference_binding
+                    WHERE work_item_id=? AND subject_key='concurrent-partial-v2'
+                    """, Integer.class, blockedWorkId)).isEqualTo(1);
+        });
+    }
+
+    /** [Req-ID]: REQ-TGV2-013 */
+    @Test
+    void v2TechnicalRecoverySeesAttemptCommittedWhileWaitingForItsWorkLock() throws Exception {
+        V2TechnicalFailureRecoveryFixture fixture = v2TechnicalFailureRecoveryFixture("request_too_large");
+        String blockedWorkId = fixture.workIds().get(0);
+        List<Map<String, Object>> taskBefore = generationTaskSnapshot("task-1");
+        List<Map<String, Object>> worksBefore = structuredWorkSnapshot("task-1");
+        CountDownLatch workLockAttempted = new CountDownLatch(1);
+        JdbcTemplate observingJdbc = new JdbcTemplate(jdbc.getDataSource()) {
+            @Override
+            public <T> List<T> query(String sql, RowMapper<T> rowMapper, Object... args) {
+                if (sql.contains("FROM structured_generation_work_item work")
+                        && sql.contains("WHERE work.task_id = ?")
+                        && sql.contains("FOR UPDATE")) {
+                    workLockAttempted.countDown();
+                }
+                return super.query(sql, rowMapper, args);
+            }
+        };
+        GenerationTaskRepository observingRepository = new GenerationTaskRepository(
+                observingJdbc, new ObjectMapper().findAndRegisterModules(), transactionManager);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+
+        try (Connection blocker = jdbc.getDataSource().getConnection()) {
+            blocker.setAutoCommit(false);
+            blocker.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
+            try (PreparedStatement lockWork = blocker.prepareStatement(
+                    "SELECT id FROM structured_generation_work_item WHERE id = ? FOR UPDATE")) {
+                lockWork.setString(1, blockedWorkId);
+                assertThat(lockWork.executeQuery().next()).isTrue();
+            }
+
+            Future<Integer> retry = executor.submit(() -> observingRepository.retryFailedBatches("task-1"));
+            awaitTaskLockHeldByRetry("task-1");
+            assertThat(workLockAttempted.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(retry.isDone()).isFalse();
+
+            // The child attempt commits before the waiting recovery acquires its parent work lock. The subsequent
+            // consistent read must therefore observe it and reject recovery instead of using an older snapshot.
+            try (PreparedStatement insertAttempt = blocker.prepareStatement("""
+                    INSERT INTO structured_generation_attempt
+                    (id, work_item_id, attempt_number, status, failure_type, created_at, completed_at)
+                    VALUES (UUID(), ?, 2, 'FAILED', 'structured_output_invalid',
+                            CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6))
+                    """)) {
+                insertAttempt.setString(1, blockedWorkId);
+                assertThat(insertAttempt.executeUpdate()).isEqualTo(1);
+            }
+            blocker.commit();
+
+            assertThat(retry.get(30, TimeUnit.SECONDS)).isZero();
+        } finally {
+            executor.shutdownNow();
+            assertThat(executor.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+        }
+
+        assertSoftly(softly -> {
+            softly.assertThat(generationTaskSnapshot("task-1")).isEqualTo(taskBefore);
+            softly.assertThat(structuredWorkSnapshot("task-1")).isEqualTo(worksBefore);
+            softly.assertThat(jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM structured_generation_attempt
+                    WHERE work_item_id=? AND attempt_number=2
+                    """, Integer.class, blockedWorkId)).isEqualTo(1);
+        });
+    }
+
+    /** [Req-ID]: REQ-TGV2-013 */
+    @Test
+    void v2TechnicalRecoveryFailsClosedWhenJoiningAnOlderRepeatableReadSnapshot() throws Exception {
+        V2TechnicalFailureRecoveryFixture fixture = v2TechnicalFailureRecoveryFixture("request_too_large");
+        String changedWorkId = fixture.workIds().get(0);
+        List<Map<String, Object>> taskBefore = generationTaskSnapshot("task-1");
+        List<Map<String, Object>> worksBefore = structuredWorkSnapshot("task-1");
+        TransactionTemplate repeatableRead = new TransactionTemplate(transactionManager);
+        repeatableRead.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
+
+        Integer recovered = repeatableRead.execute(ignored -> {
+            assertThat(jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM structured_generation_attempt WHERE work_item_id=?
+                    """, Integer.class, changedWorkId)).isEqualTo(1);
+            try (Connection writer = jdbc.getDataSource().getConnection();
+                    PreparedStatement insertAttempt = writer.prepareStatement("""
+                            INSERT INTO structured_generation_attempt
+                            (id, work_item_id, attempt_number, status, failure_type, created_at, completed_at)
+                            VALUES (UUID(), ?, 2, 'FAILED', 'structured_output_invalid',
+                                    CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6))
+                            """)) {
+                insertAttempt.setString(1, changedWorkId);
+                assertThat(insertAttempt.executeUpdate()).isEqualTo(1);
+            } catch (SQLException exception) {
+                throw new IllegalStateException(exception);
+            }
+            return taskRepository.retryFailedBatches("task-1");
+        });
+
+        assertThat(recovered).isZero();
+        assertSoftly(softly -> {
+            softly.assertThat(generationTaskSnapshot("task-1")).isEqualTo(taskBefore);
+            softly.assertThat(structuredWorkSnapshot("task-1")).isEqualTo(worksBefore);
+            softly.assertThat(jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM structured_generation_attempt
+                    WHERE work_item_id=? AND attempt_number=2
+                    """, Integer.class, changedWorkId)).isEqualTo(1);
         });
     }
 
@@ -6234,6 +6785,110 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
         return new V2AtomicityRecoveryFixture(List.copyOf(factWorkIds), List.copyOf(fallbackWorkIds));
     }
 
+    /** Builds the generic V2 shape where every model-facing work failed before any business result was accepted. */
+    private V2TechnicalFailureRecoveryFixture v2TechnicalFailureRecoveryFixture(String failureType) {
+        return v2TechnicalFailureRecoveryFixture(
+                "task-1", failureType, "artifact-technical-v2", "technical-v2.xlsx");
+    }
+
+    private V2TechnicalFailureRecoveryFixture v2TechnicalFailureRecoveryFixture(
+            String taskId, String failureType, String artifactId, String artifactPath) {
+        jdbc.update("""
+                UPDATE generation_task
+                SET task_mode='ALL', status='GENERATING', structured_processing_status='RUNNING',
+                    structured_coverage_status='PENDING', request_snapshot=JSON_OBJECT('scope', 'frozen-v2'),
+                    workflow_version='2.0', input_version='2.0', artifact_version='2.0',
+                    approved_scope_version='scope-v2'
+                WHERE id=?
+                """, taskId);
+        List<StructuredGenerationAcceptanceStore.WorkRegistration> registrations = List.of(
+                new StructuredGenerationAcceptanceStore.WorkRegistration(
+                        taskId, "d".repeat(64), "requirement-fact-extraction",
+                        "REQUIREMENT_FACT_EXTRACTION_V2", 1, 1, "document-1", "需求材料",
+                        List.of("evidence-1"), "function-1", null, "document-1", List.of(), null, 0),
+                new StructuredGenerationAcceptanceStore.WorkRegistration(
+                        taskId, "e".repeat(64), "functional-testcase-design",
+                        "FUNCTIONAL_TESTCASE_DESIGN_V2", null, null, null, null,
+                        List.of(), "function-1", "point-1"));
+        List<String> workIds = new java.util.ArrayList<>();
+        for (int index = 0; index < registrations.size(); index++) {
+            String workId = store.register(registrations.get(index));
+            var claim = store.claimRegistered(taskId, workId, "technical-worker-" + index).orElseThrow();
+            store.fail(claim, failureType);
+            workIds.add(workId);
+        }
+        jdbc.update("""
+                UPDATE generation_task
+                SET status='PARTIAL', structured_processing_status='FAILED',
+                    structured_coverage_status='UNABLE_TO_GENERATE',
+                    result_snapshot=NULL,
+                    artifact_id=?, artifact_sha256=?, artifact_path=?
+                WHERE id=?
+                """, artifactId, "a".repeat(64), artifactPath, taskId);
+        return new V2TechnicalFailureRecoveryFixture(List.copyOf(workIds));
+    }
+
+    private void seedV2TechnicalRecoveryTask(String taskId) {
+        jdbc.update("""
+                INSERT INTO generation_task (id, task_mode, status, request_snapshot)
+                VALUES (?, 'FEATURE', 'QUEUED', JSON_OBJECT())
+                """, taskId);
+        jdbc.update("""
+                INSERT INTO v2_approved_function
+                (task_id, function_key, stable_sequence, scope_version, name_text, path_text, description_text)
+                VALUES (?, 'function-1', 1, 'scope-v2', '通用功能', '模块/通用功能', '')
+                """, taskId);
+        jdbc.update("""
+                INSERT INTO material_inventory_document
+                (task_id, document_id, knowledge_id, document_role, total_units, complete)
+                VALUES (?, 'document-1', 'knowledge-1', 'REQUIREMENT', 1, TRUE)
+                """, taskId);
+        jdbc.update("""
+                INSERT INTO material_inventory_unit
+                (task_id, document_id, unit_id, document_role, chunk_index, ordinal, content, start_at, end_at)
+                VALUES (?, 'document-1', 'evidence-1', 'REQUIREMENT', 0, 1, '通用合成证据', 0, 6)
+                """, taskId);
+    }
+
+    /** Captures immutable request and attempt audit fields retained by a V2 technical recovery. */
+    private Map<String, Object> v2TechnicalRecoveryImmutableSnapshot(V2TechnicalFailureRecoveryFixture fixture) {
+        Map<String, Object> snapshot = new java.util.LinkedHashMap<>();
+        snapshot.put("task-contract", jdbc.queryForList("""
+                SELECT request_snapshot, workflow_version, input_version, artifact_version, approved_scope_version
+                FROM generation_task WHERE id='task-1'
+                """));
+        snapshot.put("work-identity", jdbc.queryForList("""
+                SELECT id, identity_key, skill_name, operation_name, ordinal_start, ordinal_end,
+                       material_document_id, function_key, test_point_key, allowed_evidence_keys_json
+                FROM structured_generation_work_item WHERE task_id='task-1' ORDER BY identity_key
+                """));
+        snapshot.put("attempts", jdbc.queryForList("""
+                SELECT id, work_item_id, attempt_number, status, failure_type, completed_at,
+                       validation_error_code, validation_error_path, validation_error_message
+                FROM structured_generation_attempt
+                WHERE work_item_id IN (?, ?) ORDER BY work_item_id, attempt_number
+                """, fixture.workIds().get(0), fixture.workIds().get(1)));
+        return Map.copyOf(snapshot);
+    }
+
+    /** Captures every mutable coordinate used by rollback and no-op rejection assertions. */
+    private Map<String, Object> v2TechnicalRecoveryFullSnapshot(V2TechnicalFailureRecoveryFixture fixture) {
+        Map<String, Object> snapshot = new java.util.LinkedHashMap<>();
+        snapshot.put("task", jdbc.queryForList("""
+                SELECT status, structured_processing_status, structured_coverage_status, result_snapshot,
+                       artifact_id, artifact_sha256, artifact_path,
+                       validation_error_code, validation_error_path, validation_error_message
+                FROM generation_task WHERE id='task-1'
+                """));
+        snapshot.put("work", jdbc.queryForList("""
+                SELECT id, status, accepted_result_sha256, lease_owner, lease_expires_at,
+                       validation_error_code, validation_error_path, validation_error_message
+                FROM structured_generation_work_item WHERE task_id='task-1' ORDER BY identity_key
+                """));
+        snapshot.put("audit", v2TechnicalRecoveryImmutableSnapshot(fixture));
+        return Map.copyOf(snapshot);
+    }
+
     /** Replaces only the safe diagnostic message columns in the synthetic V2 recovery graph. */
     private void replaceV2FactRecoveryDiagnostic(V2AtomicityRecoveryFixture fixture, String storedMessage) {
         jdbc.update("UPDATE generation_task SET validation_error_message=? WHERE id='task-1'", storedMessage);
@@ -6302,6 +6957,8 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
     }
 
     private record V2AtomicityRecoveryFixture(List<String> factWorkIds, List<String> fallbackWorkIds) { }
+
+    private record V2TechnicalFailureRecoveryFixture(List<String> workIds) { }
 
     private record RecoveredFactWork(
             String workId, String identityKey, String functionKey, String evidenceKey, int ordinal) { }
@@ -6703,7 +7360,17 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
     }
 
     private List<Map<String, Object>> generationTaskSnapshot(String taskId) {
-        return jdbc.queryForList("SELECT * FROM generation_task WHERE id = ?", taskId);
+        // The V24 path digest is a generated binary derivative of artifact_path. Snapshot the writable business
+        // coordinates explicitly so JDBC byte-array object identity cannot masquerade as a state change.
+        return jdbc.queryForList("""
+                SELECT id, task_mode, status, structured_processing_status, structured_coverage_status,
+                       workflow_version, input_version, artifact_version, approved_scope_version,
+                       idempotency_key, request_snapshot, result_snapshot,
+                       artifact_id, artifact_sha256, artifact_path,
+                       cancellation_requested_at, created_at, updated_at,
+                       validation_error_code, validation_error_path, validation_error_message
+                FROM generation_task WHERE id = ?
+                """, taskId);
     }
 
     private List<Map<String, Object>> structuredWorkSnapshot(String taskId) {

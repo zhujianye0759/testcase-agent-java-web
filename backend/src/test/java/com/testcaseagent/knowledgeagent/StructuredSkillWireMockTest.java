@@ -149,7 +149,7 @@ class StructuredSkillWireMockTest {
                                 .isEqualTo(StructuredSkillErrorType.STRUCTURED_OUTPUT_INVALID));
     }
 
-    /** [Req-ID]: REQ-FSC-008 */
+    /** [Req-ID]: REQ-TGV2-013 */
     @Test
     void mapsV2LengthCapacityErrorsFromHttp400AndPreservesTheRepairStage() {
         kee.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill"))
@@ -180,11 +180,21 @@ class StructuredSkillWireMockTest {
 
     /** [Req-ID]: REQ-FSC-008 */
     @Test
-    void appliesV2RequestAndResponseBudgetsWithoutChangingOtherSkillLimits() {
-        WebClientKnowledgeAgentAdapter requestLimited = v2Adapter(100, 4 * 1024 * 1024);
-        assertThatThrownBy(() -> requestLimited.reconcileFeatureScopePage(v2Invocation()))
+    void classifiesLocalV2RequestBudgetRejectionSeparatelyFromKeeCapacityFailures() {
+        WebClientKnowledgeAgentAdapter requestLimited = new WebClientKnowledgeAgentAdapter(
+                kee.baseUrl() + "/api/v1", "test-key", Duration.ofSeconds(5), 1, 20_000,
+                16 * 1024 * 1024, 4 * 1024 * 1024, 2 * 1024 * 1024, 4 * 1024 * 1024);
+        var oversized = new RequirementFactExtractionV2Input(
+                "function-1", "功能", "模块/功能", "", "material-1", MaterialContentTypeKey.WORK_ORDER_PLAN,
+                "window-1", List.of(new RequirementFactExtractionV2Input.MaterialUnit(
+                        "unit-1", 1, "x".repeat(2 * 1024 * 1024))), List.of());
+        var invocation = new RequirementFactExtractionV2Invocation("session-1", "agent-1",
+                new RequirementScope("kb-1", "system-1", "version-1", "work_order_plan", "project-1",
+                        List.of(new RequirementDocumentCoordinate("doc-1"))), oversized);
+
+        assertThatThrownBy(() -> requestLimited.extractRequirementFactsV2(invocation))
                 .isInstanceOfSatisfying(StructuredSkillExecutionException.class,
-                        failure -> assertThat(failure.type()).isEqualTo(StructuredSkillErrorType.REQUEST_TOO_LARGE));
+                        failure -> assertThat(failure.type()).isEqualTo(StructuredSkillErrorType.INVALID_REQUEST));
         kee.verify(0, postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill")));
 
         kee.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill"))
