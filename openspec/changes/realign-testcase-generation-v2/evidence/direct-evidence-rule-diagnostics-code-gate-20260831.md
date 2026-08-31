@@ -27,4 +27,17 @@
 - 复用 V14 既有 `validation_error_code/path/message` 可空列；未新增或改写 Flyway 迁移。
 - 接收失败时 attempt、work、task 的安全诊断与零业务接收在同一事务中提交；并发终结仍只有一个赢家。
 - 没有调用 KEE，没有创建、重试、恢复或取消业务任务，没有修改 MySQL 或 Docker 生命周期。
-- 部署、运行物身份和 live 零副作用资格门禁记录在 6.9e 完成证据中；6.10 的两套通用材料三态联合验收继续保持未执行。
+- 6.10 的两套通用材料三态联合验收继续保持未执行。
+
+## 提交、部署与 live 零副作用门禁
+
+- 生产代码提交：`3385def`（`feat: persist safe direct evidence diagnostics`），已推送至 `origin/codex/enforce-formal-testcase-grounding`。
+- 不可变 JAR：`backend/target/testcase-agent-backend-direct-evidence-diagnostics-20260831-3385def.jar`。
+- JAR 字节数：54,506,844；SHA-256：`3D76992460278614B6419D2CAE5B436C4DEB903A92EDC9E6156305BC193015BC`。
+- 唯一 8082 进程：PID 53828；命令行直接加载上述不可变 JAR；知识代理外层等待为 3060 秒。
+- 8082 `/api/tasks`、`/api/task-options`，5173 首页及其 `/api/tasks` 代理均为 HTTP 200。
+- Flyway 仍为 V23，启动日志确认数据库已是最新版本且无需迁移；启动标准错误为空，标准输出 ERROR 计数为 0。
+- 部署前后均为 22 个任务、0 在途；目标任务仍为 `PARTIAL/FAILED/UNABLE_TO_GENERATE`、`canRetry=true`。
+- 目标任务 32 组表的计数与逐行 SHA-256 综合摘要部署前后均为 `3897CDF3AEA96396D5934A697FA96EEF0ED12D21840BE391645D54B2366D8371`；task、work、attempt、制品和业务表无变化。
+- 运行明细：`backend/target/acceptance/direct-evidence-diagnostics-deploy-20260831-2255`。
+- 部署期间业务 POST、retry、create、cancel 和 KEE 模型调用均为 0；MySQL、KEE、5173 的生命周期均未操作。

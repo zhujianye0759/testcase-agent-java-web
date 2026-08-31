@@ -49,5 +49,5 @@
 - [x] 6.9 运行聚焦、真实 MySQL/并发/事务、完整后端、前端、OpenSpec strict、diff/sensitive 与双轴复审，构建并部署唯一 Java 运行物后完成 live 零副作用资格门禁
 - [x] 6.9c 为 `FACT_DIRECT_EVIDENCE_UNSUPPORTED` 增加安全规则级诊断规格，冻结有限枚举、旧行兼容、内部持久化与 API/页面/Excel/普通日志不泄漏边界
 - [x] 6.9d 按公共 validator 与真实 MySQL 接缝 RED→GREEN 实现确定性多引文原因集合和 V14 无迁移存储解析，保留零部分接收、并发与反臆造门禁
-- [ ] 6.9e 运行聚焦、相关后端、真实 MySQL/并发、OpenSpec strict、diff/sensitive 和双轴复审，提交推送、构建精确提交并部署唯一 Java，完成 live 零业务副作用门禁
+- [x] 6.9e 运行聚焦、相关后端、真实 MySQL/并发、OpenSpec strict、diff/sensitive 和双轴复审，提交推送、构建精确提交并部署唯一 Java，完成 live 零业务副作用门禁
 - [ ] 6.10 在 6.9 门禁完成后，用两套实质不同、版本化已审核测试点覆盖非正式三态链路：材料 A 使用具有可执行步骤但仍有待确认条件的独立测试点，按 KEE 实际结果验证 `pending_only` 或 `unable_to_generate` 矩阵，只有实际 `pending_only` 才作为待确认链路证据；材料 B 独立证明 `unable_to_generate`、零用例和非空缺失信息。核对数据库、中文页面、第一张固定 Sheet“需求可测性反馈”和第二张“测试用例”同源且不泄露内部键、原始 JSON、提示词或凭据；不通过临时修改 KEE JSON、猜章节或样本身份特判实现
