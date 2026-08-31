@@ -121,6 +121,28 @@ class DynamicTaskScopeResolverTest {
                 .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("材料范围");
     }
 
+    /** [Req-ID]: REQ-TGV2-001, REQ-TGV2-002 */
+    @Test
+    void rejectsLegacyCreationBeforeScopeLookupAndFreezesTheExactAuditedFunctionScopeForV2() {
+        DynamicTaskScopeResolver resolver = new DynamicTaskScopeResolver(catalog(), profile());
+        List<String> selected = documentSelectionIds(catalog().catalog(false));
+
+        assertThatThrownBy(() -> resolver.resolve(new CreateGenerationTaskCommand(GenerationTaskMode.ALL, "",
+                FewShotPolicy.AUTO, "2.0", "2.0", selected, "")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("版本 2.0");
+
+        CreateGenerationTaskRequest request = resolver.resolve(command(selected));
+
+        assertThat(request.isV2()).isTrue();
+        assertThat(request.featureIds()).containsExactly("audited-function-1");
+        assertThat(request.approvedFunctionScope().scopeVersion()).isEqualTo("scope-release-7");
+        assertThat(request.approvedFunctionScope().functions()).extracting(
+                ApprovedFunctionScope.ApprovedFunction::functionKey,
+                ApprovedFunctionScope.ApprovedFunction::path)
+                .containsExactly(org.assertj.core.groups.Tuple.tuple("audited-function-1", "业务域/提交申请"));
+    }
+
     @Test
     void rejectsASelectionWhoseDocumentWhitelistChangedAfterThePageWasRendered() {
         MutableCatalogPort port = new MutableCatalogPort();
@@ -163,9 +185,31 @@ class DynamicTaskScopeResolverTest {
                 .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("SHA-256");
     }
 
+    /** [Req-ID]: REQ-TGV2-002 */
+    @Test
+    void acceptsFormalRequirementMaterialWithoutRequiringTheRetiredFunctionListInput() {
+        DynamicScopeCatalogService formalOnly = new DynamicScopeCatalogService(
+                new FixedDocumentsCatalogPort(List.of(
+                        document("work-order-doc", "hash-work-order", "work_order_plan"))),
+                Duration.ofHours(1), Clock.systemUTC());
+
+        CreateGenerationTaskRequest request = new DynamicTaskScopeResolver(formalOnly, profile())
+                .resolve(command(documentSelectionIds(formalOnly.catalog(false))));
+
+        assertThat(request.isV2()).isTrue();
+        assertThat(request.requirementScope().documents()).extracting(RequirementDocumentCoordinate::documentId)
+                .containsExactly("work-order-doc");
+        assertThat(request.approvedFunctionScope().functions())
+                .extracting(ApprovedFunctionScope.ApprovedFunction::functionKey)
+                .containsExactly("audited-function-1");
+    }
+
     private static CreateGenerationTaskCommand command(List<String> selected) {
         return new CreateGenerationTaskCommand(GenerationTaskMode.ALL, "", FewShotPolicy.AUTO,
-                "markdown-1.0", "1.0", selected, "");
+                "2.0", "2.0", selected, "", "2.0", "2.0", "2.0",
+                new ApprovedFunctionScope("scope-release-7", List.of(
+                        new ApprovedFunctionScope.ApprovedFunction("audited-function-1", "提交申请",
+                                "业务域/提交申请", "提交一项业务申请"))));
     }
 
     private static List<String> legacyMaterialTypeSelectionIds(ScopeCatalogSnapshot snapshot) {

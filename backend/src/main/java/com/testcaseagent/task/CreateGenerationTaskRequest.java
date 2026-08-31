@@ -30,7 +30,9 @@ public record CreateGenerationTaskRequest(
         @JsonAlias("requirementAdmissionTypeKey")
         @JsonFormat(with = JsonFormat.Feature.ACCEPT_SINGLE_VALUE_AS_ARRAY)
         List<String> requirementAdmissionTypeKeys,
-        String prompt) {
+        String prompt,
+        GenerationContractVersions contractVersions,
+        ApprovedFunctionScope approvedFunctionScope) {
 
     public CreateGenerationTaskRequest {
         taskMode = Objects.requireNonNull(taskMode, "taskMode must not be null");
@@ -59,6 +61,12 @@ public record CreateGenerationTaskRequest(
         exampleScope.requireIndependentFrom(requirementScope);
         requirementAdmissionTypeKeys = requiredTypes(requirementAdmissionTypeKeys);
         prompt = requireText(prompt, "prompt");
+        if ((contractVersions == null) != (approvedFunctionScope == null)) {
+            throw new IllegalArgumentException("V2 versions and approved function scope must be supplied together");
+        }
+        if (contractVersions != null && !contractVersions.isV2()) {
+            throw new IllegalArgumentException("Only the frozen V2 generation contract is supported for new tasks");
+        }
     }
 
     private static String requireText(String value, String field) {
@@ -81,8 +89,20 @@ public record CreateGenerationTaskRequest(
             String promptVersion, String agentId, RequirementScope requirementScope, ExampleScope exampleScope,
             String requirementAdmissionTypeKey, String prompt) {
         this(taskMode, featureId, List.of(featureId), Map.of(featureId, featureId), fewShotPolicy, schemaVersion, promptVersion, agentId,
-                requirementScope, exampleScope, List.of(requirementAdmissionTypeKey), prompt);
+                requirementScope, exampleScope, List.of(requirementAdmissionTypeKey), prompt, null, null);
     }
+
+    /** Historical constructor used only to deserialize and exercise pre-V2 task snapshots. */
+    public CreateGenerationTaskRequest(GenerationTaskMode taskMode, String featureId, List<String> featureIds,
+            Map<String, String> featurePaths, FewShotPolicy fewShotPolicy, String schemaVersion,
+            String promptVersion, String agentId, RequirementScope requirementScope, ExampleScope exampleScope,
+            List<String> requirementAdmissionTypeKeys, String prompt) {
+        this(taskMode, featureId, featureIds, featurePaths, fewShotPolicy, schemaVersion, promptVersion, agentId,
+                requirementScope, exampleScope, requirementAdmissionTypeKeys, prompt, null, null);
+    }
+
+    /** True only for a task whose complete frozen version tuple selects generation V2. */
+    public boolean isV2() { return contractVersions != null && contractVersions.isV2(); }
 
     /**
      * Replaces an unplanned ALL request with the server-owned, durably frozen generation subset.
@@ -115,6 +135,7 @@ public record CreateGenerationTaskRequest(
         for (FrozenFeatureTarget target : eligible) paths.put(target.stableFeatureId(), target.featureName());
         String nextFeatureId = ids.isEmpty() ? featureId : ids.get(0);
         return new CreateGenerationTaskRequest(taskMode, nextFeatureId, ids, paths, fewShotPolicy, schemaVersion, promptVersion,
-                agentId, requirementScope, exampleScope, requirementAdmissionTypeKeys, prompt);
+                agentId, requirementScope, exampleScope, requirementAdmissionTypeKeys, prompt,
+                contractVersions, approvedFunctionScope);
     }
 }

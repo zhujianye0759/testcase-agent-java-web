@@ -46,6 +46,42 @@ class StructuredCompletionGateTest {
         assertThat(failed.artifactPublishable()).isFalse();
     }
 
+    /** [Req-ID]: REQ-AFCE-006 */
+    @Test
+    void candidateDeliveryWithTrustedFormalResultsAndAnIncompleteWindowIsPartialButProcessingCompleted() {
+        var outcome = new StructuredCompletionGate().evaluate(new StructuredCompletionGate.Snapshot(
+                true, 4, 4, true, true, 3, 3, 1, true,
+                8, 1, true, true, 2, 1, 1, false));
+
+        assertThat(outcome.processingStatus()).isEqualTo(StructuredProcessingStatus.COMPLETED);
+        assertThat(outcome.coverageStatus()).isEqualTo(StructuredCoverageStatus.PARTIAL);
+        assertThat(outcome.artifactPublishable()).isTrue();
+    }
+
+    /** [Req-ID]: REQ-AFCE-006 */
+    @Test
+    void completeCandidateDeliveryKeepsCompletedAndCompleteAxes() {
+        var outcome = new StructuredCompletionGate().evaluate(new StructuredCompletionGate.Snapshot(
+                true, 4, 4, true, true, 3, 3, 0, true,
+                8, 0, true, true, 2, 0, 0, false));
+
+        assertThat(outcome.processingStatus()).isEqualTo(StructuredProcessingStatus.COMPLETED);
+        assertThat(outcome.coverageStatus()).isEqualTo(StructuredCoverageStatus.COMPLETE);
+        assertThat(outcome.artifactPublishable()).isTrue();
+    }
+
+    /** [Req-ID]: REQ-AFCE-006 */
+    @Test
+    void candidateDeliveryWithoutAnyTrustedFormalResultFailsInsteadOfClaimingCompletion() {
+        var outcome = new StructuredCompletionGate().evaluate(new StructuredCompletionGate.Snapshot(
+                true, 4, 4, false, true, 0, 0, 2, true,
+                5, 0, true, true, 0, 2, 0, false));
+
+        assertThat(outcome.processingStatus()).isEqualTo(StructuredProcessingStatus.FAILED);
+        assertThat(outcome.coverageStatus()).isEqualTo(StructuredCoverageStatus.UNABLE_TO_GENERATE);
+        assertThat(outcome.artifactPublishable()).isFalse();
+    }
+
     private static StructuredCompletionGate.Snapshot snapshot(
             int formalPointTotal, int formalPointCovered, boolean allTerminal, boolean artifactValidated) {
         return new StructuredCompletionGate.Snapshot(

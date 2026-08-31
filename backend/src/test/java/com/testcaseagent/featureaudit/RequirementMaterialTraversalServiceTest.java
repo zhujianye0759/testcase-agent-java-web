@@ -13,16 +13,22 @@ import static org.mockito.Mockito.when;
 
 import com.testcaseagent.fewshot.ExampleScope;
 import com.testcaseagent.scope.ParsedMaterial;
+import com.testcaseagent.scope.ParsedMaterialPage;
+import com.testcaseagent.scope.ParsedMaterialSummary;
 import com.testcaseagent.scope.ParsedMaterialUnit;
 import com.testcaseagent.scope.RequirementDocumentCoordinate;
 import com.testcaseagent.scope.RequirementMaterialReaderPort;
 import com.testcaseagent.scope.RequirementScope;
 import com.testcaseagent.task.CreateGenerationTaskRequest;
+import com.testcaseagent.task.ApprovedFunctionScope;
+import com.testcaseagent.task.GenerationContractVersions;
 import com.testcaseagent.task.GenerationTaskRepository;
 import com.testcaseagent.testcase.FewShotPolicy;
 import com.testcaseagent.testcase.GenerationTaskMode;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CancellationException;
+import java.util.function.Consumer;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -32,6 +38,60 @@ import org.mockito.ArgumentCaptor;
  * [Req-ID]: REQ-SMR-002, REQ-SMR-003, REQ-BFA-001
  */
 class RequirementMaterialTraversalServiceTest {
+
+    /** [Req-ID]: REQ-TGV2-003 */
+    @Test
+    void v2StagesBoundedPagesAndPublishesOnlyAfterEveryFrozenDocumentCompletes() {
+        RequirementMaterialReaderPort reader = mock(RequirementMaterialReaderPort.class);
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        CreateGenerationTaskRequest request = v2Request(List.of(
+                new RequirementDocumentCoordinate("function-doc", "function_list"),
+                new RequirementDocumentCoordinate("work-order-doc", "work_order_plan")),
+                List.of("function_list", "work_order_plan"));
+        when(reader.scanAll(eq(request.requirementScope()), eq("function-doc"), eq(50), any()))
+                .thenAnswer(invocation -> emit(invocation.getArgument(3), "function-doc", List.of(
+                        List.of(unit("function-1", 1)), List.of(unit("function-2", 2)))));
+        when(reader.scanAll(eq(request.requirementScope()), eq("work-order-doc"), eq(50), any()))
+                .thenAnswer(invocation -> emit(invocation.getArgument(3), "work-order-doc", List.of(
+                        List.of(unit("work-1", 1)))));
+
+        new RequirementMaterialTraversalService(reader, repository)
+                .traversePagedV2("task-1", request, false);
+
+        verify(reader, never()).readAll(any(), any());
+        verify(repository, never()).replaceMaterialInventory(any(), any(), any(Boolean.class));
+        ArgumentCaptor<MaterialInventoryPage> pages = ArgumentCaptor.forClass(MaterialInventoryPage.class);
+        verify(repository, org.mockito.Mockito.times(3)).stageMaterialInventoryPage(eq("task-1"), pages.capture());
+        assertThat(pages.getAllValues()).extracting(MaterialInventoryPage::documentRole)
+                .containsExactly("FUNCTION_LIST", "FUNCTION_LIST", "WORK_ORDER_PLAN");
+        verify(repository).publishStagedMaterialInventory("task-1", request.requirementScope());
+    }
+
+    /** [Req-ID]: REQ-TGV2-003 */
+    @Test
+    void v2NeverPublishesWhenALaterPageFailsAfterEarlierPagesWereStaged() {
+        RequirementMaterialReaderPort reader = mock(RequirementMaterialReaderPort.class);
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        CreateGenerationTaskRequest request = v2Request(List.of(
+                new RequirementDocumentCoordinate("work-order-doc", "work_order_plan")),
+                List.of("work_order_plan"));
+        when(reader.scanAll(eq(request.requirementScope()), eq("work-order-doc"), eq(50), any()))
+                .thenAnswer(invocation -> {
+                    @SuppressWarnings("unchecked")
+                    Consumer<ParsedMaterialPage> consumer = invocation.getArgument(3);
+                    consumer.accept(new ParsedMaterialPage("work-order-doc", 2,
+                            List.of(unit("work-1", 1)), false));
+                    throw new IllegalStateException("later page failed closed");
+                });
+
+        assertThatThrownBy(() -> new RequirementMaterialTraversalService(reader, repository)
+                .traversePagedV2("task-1", request, false))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("failed closed");
+
+        verify(repository).stageMaterialInventoryPage(eq("task-1"), any());
+        verify(repository, never()).publishStagedMaterialInventory(any(), any());
+    }
 
     @Test
     void readsEveryFrozenDocumentThenPersistsRoleMappedCompleteInventory() {
@@ -171,5 +231,32 @@ class RequirementMaterialTraversalServiceTest {
     private static ParsedMaterial material(String documentId, String unitId) {
         return new ParsedMaterial(documentId, 1,
                 List.of(new ParsedMaterialUnit(unitId, 0, 1, "text", 0, 4)));
+    }
+
+    private static CreateGenerationTaskRequest v2Request(
+            List<RequirementDocumentCoordinate> documents, List<String> admissionTypes) {
+        ApprovedFunctionScope approved = new ApprovedFunctionScope("scope-v2", List.of(
+                new ApprovedFunctionScope.ApprovedFunction("function-a", "提交申请", "业务/提交申请", "")));
+        RequirementScope scope = new RequirementScope(
+                "requirement-kb", "system-1", "version-1", "admission_material", "project-1", documents);
+        return new CreateGenerationTaskRequest(GenerationTaskMode.ALL, "function-a", List.of("function-a"),
+                Map.of("function-a", "业务/提交申请"), FewShotPolicy.NONE, "2.0", "2.0", "audit-agent", scope,
+                new ExampleScope("example-kb", List.of("example-1")), admissionTypes, "traverse material",
+                new GenerationContractVersions("2.0", "2.0", "2.0"), approved);
+    }
+
+    private static ParsedMaterialSummary emit(Object rawConsumer, String documentId,
+            List<List<ParsedMaterialUnit>> pages) {
+        @SuppressWarnings("unchecked")
+        Consumer<ParsedMaterialPage> consumer = (Consumer<ParsedMaterialPage>) rawConsumer;
+        int total = pages.stream().mapToInt(List::size).sum();
+        for (int index = 0; index < pages.size(); index++) {
+            consumer.accept(new ParsedMaterialPage(documentId, total, pages.get(index), index == pages.size() - 1));
+        }
+        return new ParsedMaterialSummary(documentId, total);
+    }
+
+    private static ParsedMaterialUnit unit(String unitId, int ordinal) {
+        return new ParsedMaterialUnit(unitId, ordinal - 1, ordinal, "text-" + ordinal, ordinal - 1, ordinal);
     }
 }

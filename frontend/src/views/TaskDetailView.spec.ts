@@ -52,6 +52,25 @@ const completedDetail = {
   },
 }
 
+const mutableV2Result = {
+  workflowVersion: '2.0' as const,
+  processingStatus: '处理中',
+  coverageStatus: '正式覆盖待完成',
+  retryEligibility: { canRetry: false, unavailableReason: '' },
+  pendingCandidateCaseCount: 0,
+  phaseProgress: {
+    materialTraversal: { total: 2, completed: 2, failed: 0 },
+    factExtraction: { total: 1, completed: 1, failed: 0 },
+    requirementReview: { total: 0, completed: 0, failed: 0 },
+    featureReconciliation: { total: 0, completed: 0, failed: 0 },
+    testcaseDesign: { total: 1, completed: 0, failed: 0 },
+  },
+  reviewFindings: [],
+  testabilityFeedback: [],
+  reconciliations: [],
+  testPoints: [],
+}
+
 // [Req-ID]: REQ-WEB-003, REQ-WEB-004, REQ-WEB-005, REQ-WEB-006, REQ-WEB-007, REQ-WEB-008
 describe('generation task detail', () => {
   it('[Req-ID]: REQ-SMS-001 renders supplementary material types as reader-safe Chinese labels', async () => {
@@ -98,6 +117,10 @@ describe('generation task detail', () => {
             processingStatus: 'COMPLETED',
             coverageStatus: 'UNABLE_TO_GENERATE',
             pendingCandidateCaseCount: 0,
+            functionCandidateSummary: {
+              acceptedCandidateCount: 0, pendingCandidateCount: 0, rejectedCandidateCount: 0,
+              noFunctionSourceCount: 0, unresolvedSourceCount: 0, incompleteWindowCount: 0, issues: [],
+            },
             phaseProgress: {
               materialTraversal: { total: 3, completed: 3, failed: 0 },
               requirementReview: { total: 2, completed: 2, failed: 0 },
@@ -137,6 +160,7 @@ describe('generation task detail', () => {
     expect(wrapper.text()).not.toContain('尚未冻结')
     expect(wrapper.text()).not.toContain('旧审查行')
     expect(wrapper.text()).not.toContain('旧 Markdown 用例')
+    expect(wrapper.find('[data-testid="function-candidate-summary"]').exists()).toBe(false)
   })
 
   it('[Req-ID]: REQ-SGD-001, REQ-SGD-002 renders saved structured results with processing and coverage separated', async () => {
@@ -567,8 +591,14 @@ describe('generation task detail', () => {
       resolveCancel = resolve
     }))
     const getTask = vi.fn()
-      .mockResolvedValueOnce({ ...completedDetail, status: 'RUNNING', artifactReady: false, artifactId: undefined })
-      .mockResolvedValueOnce({ ...completedDetail, status: 'CANCELLED', artifactReady: false, artifactId: undefined })
+      .mockResolvedValueOnce({
+        ...completedDetail, status: 'RUNNING', artifactReady: false, artifactId: undefined,
+        structuredResult: mutableV2Result,
+      })
+      .mockResolvedValueOnce({
+        ...completedDetail, status: 'CANCELLED', artifactReady: false, artifactId: undefined,
+        structuredResult: { ...mutableV2Result, processingStatus: '已取消' },
+      })
     const wrapper = mount(TaskDetailView, {
       props: { taskId: 'task-123', getTask, cancelTask } as never,
       attachTo: document.body,
@@ -597,8 +627,7 @@ describe('generation task detail', () => {
     wrapper.unmount()
   })
 
-  it('only offers retry for failed batches and retains dialog context when the write fails', async () => {
-    const retryTask = vi.fn().mockRejectedValue(new Error('重试服务不可用'))
+  it('[Req-ID]: REQ-TGV2-010 keeps a historical V1 failed batch read-only', async () => {
     const wrapper = mount(TaskDetailView, {
       props: {
         taskId: 'task-123',
@@ -609,25 +638,241 @@ describe('generation task detail', () => {
           artifactId: undefined,
           batches: [{ featureId: 'feature-login', status: 'FAILED', failureSummary: '暂时失败' }],
         }),
-        retryTask,
       } as never,
     })
     await flushPromises()
 
     expect(wrapper.find('button.task-detail__cancel-action').exists()).toBe(false)
+    expect(wrapper.find('.task-detail__actions').exists()).toBe(false)
+    expect(wrapper.text()).toContain('暂时失败')
+  })
+
+  it('[Req-ID]: REQ-AFCE-006, REQ-AFCE-008 renders candidate coverage gaps in Chinese without internal identities', async () => {
+    const wrapper = mount(TaskDetailView, {
+      props: {
+        taskId: 'task-candidate-partial',
+        getTask: vi.fn().mockResolvedValue({
+          ...completedDetail,
+          status: 'PARTIAL',
+          structuredResult: {
+            processingStatus: 'COMPLETED',
+            coverageStatus: 'PARTIAL',
+            pendingCandidateCaseCount: 0,
+            functionCandidateSummary: {
+              acceptedCandidateCount: 12,
+              pendingCandidateCount: 1,
+              rejectedCandidateCount: 2,
+              noFunctionSourceCount: 4,
+              unresolvedSourceCount: 1,
+              incompleteWindowCount: 1,
+              issues: [{
+                subject: '订单/撤销',
+                status: '待确认功能候选',
+                description: '材料未说明撤销条件。',
+                missingInformation: ['撤销前置条件待确认'],
+              }],
+            },
+            phaseProgress: {
+              materialTraversal: { total: 2, completed: 2, failed: 0 },
+              requirementReview: { total: 2, completed: 2, failed: 0 },
+              featureReconciliation: { total: 2, completed: 2, failed: 0 },
+              testcaseDesign: { total: 1, completed: 1, failed: 0 },
+            },
+            reviewFindings: [],
+            reconciliations: [],
+            testPoints: [],
+          },
+        }),
+      } as never,
+    })
+    await flushPromises()
+
+    const summary = wrapper.get('[data-testid="function-candidate-summary"]')
+    expect(summary.text()).toContain('功能候选审查')
+    expect(summary.text()).toContain('正式接受 12 条')
+    expect(summary.text()).toContain('待确认 1 条')
+    expect(summary.text()).toContain('未纳入 2 条')
+    expect(summary.text()).toContain('原文无功能 4 条')
+    expect(summary.text()).toContain('原文待确认 1 条')
+    expect(summary.text()).toContain('未完成窗口 1 个')
+    expect(summary.text()).toContain('只有正式接受的候选计入正式覆盖')
+    expect(summary.text()).toContain('订单/撤销')
+    expect(summary.text()).toContain('撤销前置条件待确认')
+    expect(wrapper.text()).toContain('处理已完成，正式覆盖部分完整')
+    const deliverySummary = wrapper.get('.task-detail__summary')
+    expect(deliverySummary.text()).toContain('待确认用例0 条')
+    expect(deliverySummary.text()).not.toContain('待确认候选')
+    for (const internalValue of ['candidate_ref', 'unit_key', 'candidate_linked', 'model_omitted_unit']) {
+      expect(summary.text()).not.toContain(internalValue)
+    }
+    wrapper.unmount()
+  })
+
+  it('[Req-ID]: REQ-TGV2-009 does not deny an already saved artifact when later processing is failed', async () => {
+    const wrapper = mount(TaskDetailView, {
+      props: {
+        taskId: 'task-failed-with-artifact',
+        getTask: vi.fn().mockResolvedValue({
+          ...completedDetail,
+          status: 'FAILED',
+          structuredResult: {
+            processingStatus: 'FAILED', coverageStatus: 'PARTIAL', pendingCandidateCaseCount: 0,
+            phaseProgress: {
+              materialTraversal: { total: 2, completed: 2, failed: 0 },
+              requirementReview: { total: 2, completed: 2, failed: 0 },
+              featureReconciliation: { total: 2, completed: 2, failed: 0 },
+              testcaseDesign: { total: 2, completed: 2, failed: 0 },
+            },
+            reviewFindings: [], reconciliations: [], testPoints: [],
+          },
+        }),
+      } as never,
+    })
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="delivery-status"]').text()).toContain('处理存在失败，已保存可用结果')
+    expect(wrapper.text()).not.toContain('处理失败，未形成交付')
+    expect(wrapper.find('a[href*="/download"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('[Req-ID]: REQ-ESR-004 uses server structured retry eligibility instead of failed-status inference', async () => {
+    const retryTask = vi.fn().mockResolvedValue(undefined)
+    const getTask = vi.fn().mockResolvedValue({
+      ...completedDetail,
+      status: 'FAILED',
+      artifactReady: false,
+      artifactId: undefined,
+      batches: [],
+      structuredResult: {
+        workflowVersion: '2.0',
+        processingStatus: 'FAILED',
+        coverageStatus: 'PENDING',
+        retryEligibility: { canRetry: true, unavailableReason: '' },
+        pendingCandidateCaseCount: 0,
+        phaseProgress: {
+          materialTraversal: { total: 5, completed: 5, failed: 0 },
+          factExtraction: { total: 3, completed: 2, failed: 1 },
+          requirementReview: { total: 3, completed: 2, failed: 1 },
+          featureReconciliation: { total: 0, completed: 0, failed: 0 },
+          testcaseDesign: { total: 0, completed: 0, failed: 0 },
+        },
+        reviewFindings: [],
+        reconciliations: [],
+        testPoints: [],
+      },
+    })
+    const wrapper = mount(TaskDetailView, {
+      props: { taskId: 'task-structured-retry', getTask, retryTask } as never,
+    })
+    await flushPromises()
+
     const retry = wrapper.get('button:not(.task-detail__cancel-action)')
-    expect(retry.text()).toContain('重试失败批次')
+    expect(retry.text()).toContain('重试失败的结构化处理')
+    expect(wrapper.text()).not.toContain('重新识别并生成')
     await retry.trigger('click')
+    expect(wrapper.get('dialog').text()).toContain('仅重新执行一个符合条件的失败处理项')
     await wrapper.get('dialog button:last-of-type').trigger('click')
     await flushPromises()
 
     expect(retryTask).toHaveBeenCalledTimes(1)
-    expect(wrapper.get('dialog [role="alert"]').text()).toContain('重试服务不可用')
-    expect(wrapper.text()).toContain('暂时失败')
   })
 
-  it('offers a business retry when all-function discovery fails before any batch is created', async () => {
-    const retryTask = vi.fn().mockResolvedValue(undefined)
+  it('[Req-ID]: REQ-ESR-004 fails closed for an ineligible or old structured retry projection', async () => {
+    for (const retryEligibility of [
+      { canRetry: false, unavailableReason: '当前失败不属于可安全重试的结构错误。' },
+      undefined,
+    ]) {
+      const wrapper = mount(TaskDetailView, {
+        props: {
+          taskId: 'task-structured-ineligible',
+          getTask: vi.fn().mockResolvedValue({
+            ...completedDetail,
+            status: 'FAILED',
+            artifactReady: false,
+            artifactId: undefined,
+            batches: [],
+            structuredResult: {
+              workflowVersion: '2.0',
+              processingStatus: 'FAILED',
+              coverageStatus: 'PENDING',
+              retryEligibility,
+              pendingCandidateCaseCount: 0,
+              phaseProgress: {
+                materialTraversal: { total: 5, completed: 5, failed: 0 },
+                factExtraction: { total: 3, completed: 2, failed: 1 },
+                requirementReview: { total: 3, completed: 2, failed: 1 },
+                featureReconciliation: { total: 0, completed: 0, failed: 0 },
+                testcaseDesign: { total: 0, completed: 0, failed: 0 },
+              },
+              reviewFindings: [],
+              reconciliations: [],
+              testPoints: [],
+            },
+          }),
+        } as never,
+      })
+      await flushPromises()
+
+      expect(wrapper.find('.task-detail__actions').exists()).toBe(false)
+      if (retryEligibility) expect(wrapper.text()).toContain(retryEligibility.unavailableReason)
+      wrapper.unmount()
+    }
+  })
+
+  it('[Req-ID]: REQ-ESR-004 refreshes structured detail when retry eligibility becomes stale', async () => {
+    const eligible = {
+      ...completedDetail,
+      status: 'FAILED',
+      artifactReady: false,
+      artifactId: undefined,
+      batches: [],
+      structuredResult: {
+        workflowVersion: '2.0',
+        processingStatus: 'FAILED',
+        coverageStatus: 'PENDING',
+        retryEligibility: { canRetry: true, unavailableReason: '' },
+        pendingCandidateCaseCount: 0,
+        phaseProgress: {
+          materialTraversal: { total: 5, completed: 5, failed: 0 },
+          factExtraction: { total: 3, completed: 2, failed: 1 },
+          requirementReview: { total: 3, completed: 2, failed: 1 },
+          featureReconciliation: { total: 0, completed: 0, failed: 0 },
+          testcaseDesign: { total: 0, completed: 0, failed: 0 },
+        },
+        reviewFindings: [],
+        reconciliations: [],
+        testPoints: [],
+      },
+    }
+    const getTask = vi.fn()
+      .mockResolvedValueOnce(eligible)
+      .mockResolvedValueOnce({
+        ...eligible,
+        structuredResult: {
+          ...eligible.structuredResult,
+          retryEligibility: { canRetry: false, unavailableReason: '任务状态已经变化，请刷新后查看。' },
+        },
+      })
+    const wrapper = mount(TaskDetailView, {
+      props: {
+        taskId: 'task-stale-retry',
+        getTask,
+        retryTask: vi.fn().mockRejectedValue(new Error('任务请求失败（409）')),
+      } as never,
+    })
+    await flushPromises()
+
+    await wrapper.get('button:not(.task-detail__cancel-action)').trigger('click')
+    await wrapper.get('dialog button:last-of-type').trigger('click')
+    await flushPromises()
+
+    expect(getTask).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('任务状态已经变化，请刷新后查看。')
+    expect(wrapper.find('.task-detail__actions').exists()).toBe(false)
+  })
+
+  it('[Req-ID]: REQ-TGV2-010 does not offer historical discovery retry', async () => {
     const wrapper = mount(TaskDetailView, {
       props: {
         taskId: 'task-discovery-failed',
@@ -639,15 +884,183 @@ describe('generation task detail', () => {
           batches: [],
           failureSummary: '材料暂时无法识别',
         }),
-        retryTask,
       } as never,
     })
     await flushPromises()
 
-    const retry = wrapper.get('button')
-    expect(retry.text()).toContain('重新识别并生成')
-    await retry.trigger('click')
-    expect(wrapper.get('dialog').text()).toContain('重新识别材料并生成测试用例')
-    expect(wrapper.get('dialog').text()).not.toContain('批次')
+    expect(wrapper.find('.task-detail__actions').exists()).toBe(false)
+    expect(wrapper.text()).toContain('材料暂时无法识别')
+  })
+
+  it('[Req-ID]: REQ-TGV2-009, REQ-TGV2-010 renders the V2 flow and non-blocking feedback without legacy gates', async () => {
+    const wrapper = mount(TaskDetailView, {
+      props: {
+        taskId: 'task-v2-reader-safe',
+        getTask: vi.fn().mockResolvedValue({
+          ...completedDetail,
+          status: 'PARTIAL',
+          structuredResult: {
+            workflowVersion: '2.0',
+            processingStatus: '已完成',
+            coverageStatus: '正式覆盖部分完整',
+            pendingCandidateCaseCount: 1,
+            phaseProgress: {
+              materialTraversal: { total: 2, completed: 2, failed: 0 },
+              factExtraction: { total: 3, completed: 3, failed: 0 },
+              requirementReview: { total: 0, completed: 0, failed: 0 },
+              featureReconciliation: { total: 0, completed: 0, failed: 0 },
+              testcaseDesign: { total: 3, completed: 3, failed: 0 },
+            },
+            reviewFindings: [],
+            testabilityFeedback: [{
+              functionName: '提交订单', observationType: '未量化',
+              description: '响应时间没有量化标准', affectedFactTypes: ['业务规则'],
+            }],
+            reconciliations: [],
+            testPoints: [{
+              functionName: '提交订单', type: '正常行为', description: '验证订单提交',
+              basis: '正式需求依据', generationOutcome: '已生成', generationMissingInformation: [],
+              missingInformation: [], formalCoverageSatisfied: true, testcases: [],
+            }, {
+              functionName: '提交订单', type: '权限', description: '验证权限边界',
+              basis: '通用经验依据', generationOutcome: '仅待确认',
+              generationMissingInformation: ['缺少角色权限'], missingInformation: ['缺少角色权限'],
+              formalCoverageSatisfied: false, testcases: [],
+            }, {
+              functionName: '提交订单', type: '依赖失败', description: '验证依赖故障',
+              basis: '通用经验依据', generationOutcome: '无法生成',
+              generationMissingInformation: ['缺少依赖行为'], missingInformation: ['缺少依赖行为'],
+              formalCoverageSatisfied: false, testcases: [],
+            }],
+          },
+        }),
+      } as never,
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('需求事实提取')
+    expect(wrapper.text()).toContain('需求可测性反馈')
+    expect(wrapper.text()).toContain('响应时间没有量化标准')
+    expect(wrapper.text()).toContain('已生成')
+    expect(wrapper.text()).toContain('仅待确认')
+    expect(wrapper.text()).toContain('无法生成')
+    expect(wrapper.text()).not.toContain('需求材料审查')
+    expect(wrapper.text()).not.toContain('功能清单核对')
+    for (const internalValue of ['feedback_key', 'fact_key', 'window_key', 'unquantified', 'pending_only',
+      'COMPLETED', 'PARTIAL', 'FORMAL_REQUIREMENT', 'GENERAL_EXPERIENCE']) {
+      expect(wrapper.text()).not.toContain(internalValue)
+    }
+  })
+
+  it('[Req-ID]: REQ-TGV2-009 pages V2 test points without exposing internal identities', async () => {
+    const first = {
+      ...completedDetail,
+      structuredResult: {
+        ...mutableV2Result,
+        processingStatus: '已完成',
+        v2Collections: {
+          testabilityFeedback: { items: [], page: 0, size: 10, totalItems: 0, hasNext: false },
+          testcases: { items: [], page: 0, size: 1, totalItems: 0, hasNext: false },
+          testPoints: {
+            items: [{
+              functionName: '第一页功能', type: '正常行为', description: '第一页测试点',
+              basis: '正式需求依据', generationOutcome: '已生成', generationMissingInformation: [],
+              missingInformation: [], formalCoverageSatisfied: true, testcases: [],
+            }],
+            page: 0, size: 10, totalItems: 11, hasNext: true,
+          },
+        },
+      },
+    }
+    const second = {
+      ...first,
+      structuredResult: {
+        ...first.structuredResult,
+        v2Collections: {
+          ...first.structuredResult.v2Collections,
+          testPoints: {
+            items: [{
+              functionName: '第二页功能', type: '边界', description: '第二页测试点',
+              basis: '正式需求依据', generationOutcome: '已生成', generationMissingInformation: [],
+              missingInformation: [], formalCoverageSatisfied: true, testcases: [],
+            }],
+            page: 1, size: 10, totalItems: 11, hasNext: false,
+          },
+        },
+      },
+    }
+    const getTask = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(second)
+    const wrapper = mount(TaskDetailView, {
+      props: { taskId: 'task-v2-paged', getTask } as never,
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('第一页功能')
+    const navigation = wrapper.get('nav[aria-label="测试点分页"]')
+    expect(navigation.text()).toContain('第 1 页，共 11 条')
+    await navigation.findAll('button')[1].trigger('click')
+    await flushPromises()
+
+    expect(getTask).toHaveBeenLastCalledWith('task-v2-paged', {
+      feedbackPage: 0, testPointPage: 1, testcasePage: 0, size: 10,
+    })
+    expect(wrapper.text()).toContain('第二页功能')
+    expect(wrapper.text()).not.toContain('第一页功能')
+    expect(wrapper.text()).not.toContain('test_point_key')
+  })
+
+  it('[Req-ID]: REQ-TGV2-009 pages one V2 testcase independently and hides mutable pending counts', async () => {
+    const point = {
+      functionName: '订单提交', type: '正常行为', description: '验证订单提交',
+      basis: '正式需求依据', generationOutcome: '已生成', generationMissingInformation: [],
+      missingInformation: [], formalCoverageSatisfied: true, testcases: [],
+    }
+    const testcase = (title: string) => ({
+      name: title, title, status: '正式用例', priority: '中', preconditions: [],
+      initialization: {
+        hardwareConfiguration: [], softwareConfiguration: [], testConfiguration: [], parameterConfiguration: [],
+      },
+      inputs: [], steps: [{
+        stepNo: 1, action: '提交订单', expected: '订单提交成功',
+        evaluationCriteria: '实际结果符合预期', terminationOrError: '', resultCollection: '记录结果',
+      }],
+      expectedResults: ['订单提交成功'], evaluationCriteria: '全部步骤符合预期',
+      resultEvaluationCriteria: '任一步骤失败则不通过', terminationConditions: [], resultCollection: '记录结果',
+      authoringInformation: { author: '', date: '' }, requirementSummaries: ['订单提交要求'], missingInformation: [],
+    })
+    const detailPage = (page: number, title: string, processingStatus = '已完成') => ({
+      ...completedDetail,
+      structuredResult: {
+        ...mutableV2Result,
+        processingStatus,
+        pendingCandidateCaseCount: 99,
+        v2Collections: {
+          testabilityFeedback: { items: [], page: 0, size: 10, totalItems: 0, hasNext: false },
+          testPoints: { items: [point], page: 0, size: 1, totalItems: 1, hasNext: false },
+          testcases: { items: [testcase(title)], page, size: 1, totalItems: 2, hasNext: page === 0 },
+        },
+      },
+    })
+    const getTask = vi.fn()
+      .mockResolvedValueOnce(detailPage(0, '第一条用例', '处理中'))
+      .mockResolvedValueOnce(detailPage(1, '第二条用例'))
+    const wrapper = mount(TaskDetailView, {
+      props: { taskId: 'task-v2-case-paged', getTask } as never,
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('第一条用例')
+    expect(wrapper.text()).not.toContain('99 条')
+    expect(wrapper.get('section[aria-labelledby="structured-case-title"]')
+      .find('p[data-state="no-results"]').exists()).toBe(false)
+    const navigation = wrapper.get('nav[aria-label="测试用例分页"]')
+    await navigation.findAll('button')[1].trigger('click')
+    await flushPromises()
+
+    expect(getTask).toHaveBeenLastCalledWith('task-v2-case-paged', {
+      feedbackPage: 0, testPointPage: 0, testcasePage: 1, size: 10,
+    })
+    expect(wrapper.text()).toContain('第二条用例')
+    expect(wrapper.text()).not.toContain('第一条用例')
   })
 })

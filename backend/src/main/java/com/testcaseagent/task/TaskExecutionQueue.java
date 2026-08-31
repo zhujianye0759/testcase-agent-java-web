@@ -36,6 +36,7 @@ public final class TaskExecutionQueue {
             String taskId = jdbcTemplate.query("""
                             SELECT id FROM generation_task
                             WHERE status = 'QUEUED'
+                              AND workflow_version = '2.0'
                             ORDER BY created_at, id
                             LIMIT 1 FOR UPDATE
                             """, (resultSet, rowNumber) -> resultSet.getString("id"))
@@ -73,6 +74,47 @@ public final class TaskExecutionQueue {
 
     private void recoverExpiredClaimsInTransaction(boolean startupRecovery) {
         if (startupRecovery) {
+            // Historical V1 tasks are read-only. A slot left by an older process is execution infrastructure, so it
+            // can be released without mutating the retained task, batch or attempt rows. [Req-ID]: REQ-TGV2-010
+            jdbcTemplate.update("""
+                    UPDATE task_execution_slot slot
+                    JOIN generation_task task ON task.id = slot.task_id
+                    SET slot.task_id = NULL
+                    WHERE task.workflow_version IS NULL OR task.workflow_version <> '2.0'
+                    """);
+            // A crash after the atomic task/artifact commit but before the worker finally block must not consume a
+            // concurrency slot forever. Terminal task data is deliberately left untouched.
+            jdbcTemplate.update("""
+                    UPDATE task_execution_slot slot
+                    JOIN generation_task task ON task.id = slot.task_id
+                    SET slot.task_id = NULL
+                    WHERE task.workflow_version = '2.0'
+                      AND task.status IN ('COMPLETED','PARTIAL','FAILED','CANCELLED')
+                    """);
+            // Compatibility recovery for the old two-transaction finalization window. All durable work is already
+            // terminal and no artifact was published, so only the idempotent V2 finalization must run again.
+            jdbcTemplate.update("""
+                    UPDATE task_execution_slot slot
+                    JOIN generation_task task ON task.id = slot.task_id
+                    SET slot.task_id = NULL
+                    WHERE task.workflow_version = '2.0' AND task.status = 'VALIDATING'
+                      AND task.structured_processing_status IN ('COMPLETED','FAILED')
+                      AND task.artifact_id IS NULL AND task.artifact_sha256 IS NULL AND task.artifact_path IS NULL
+                      AND NOT EXISTS (
+                          SELECT 1 FROM structured_generation_work_item work
+                          WHERE work.task_id = task.id AND work.status NOT IN ('COMPLETED','FAILED','SPLIT'))
+                    """);
+            jdbcTemplate.update("""
+                    UPDATE generation_task task
+                    SET task.status = 'QUEUED', task.structured_processing_status = 'PENDING',
+                        task.structured_coverage_status = 'PENDING'
+                    WHERE task.workflow_version = '2.0' AND task.status = 'VALIDATING'
+                      AND task.structured_processing_status IN ('COMPLETED','FAILED')
+                      AND task.artifact_id IS NULL AND task.artifact_sha256 IS NULL AND task.artifact_path IS NULL
+                      AND NOT EXISTS (
+                          SELECT 1 FROM structured_generation_work_item work
+                          WHERE work.task_id = task.id AND work.status NOT IN ('COMPLETED','FAILED','SPLIT'))
+                    """);
             // Structured ALL tasks have no legacy generation_batch lease. A process restart is therefore the
             // authoritative crash boundary: invalidate only the still-running structured attempt, preserve every
             // completed accepted row, release the shared slot, and let the normal bounded retry reclaim the work.
@@ -80,9 +122,10 @@ public final class TaskExecutionQueue {
                     UPDATE structured_generation_attempt attempt
                     JOIN structured_generation_work_item work ON work.id = attempt.work_item_id
                     JOIN generation_task task ON task.id = work.task_id
-                    SET attempt.status = 'FAILED', attempt.failure_type = 'model_execution_failed',
+                    SET attempt.status = 'FAILED', attempt.failure_type = 'worker_interrupted',
                         attempt.completed_at = CURRENT_TIMESTAMP(6)
                     WHERE attempt.status = 'RUNNING' AND work.status = 'RUNNING'
+                      AND task.workflow_version = '2.0'
                       AND task.structured_processing_status = 'RUNNING'
                       AND task.status IN ('AUDITING','GENERATING','VALIDATING')
                       AND NOT EXISTS (SELECT 1 FROM generation_batch batch WHERE batch.task_id = task.id)
@@ -92,6 +135,7 @@ public final class TaskExecutionQueue {
                     JOIN generation_task task ON task.id = work.task_id
                     SET work.status = 'FAILED', work.lease_owner = NULL, work.lease_expires_at = NULL
                     WHERE work.status = 'RUNNING' AND task.structured_processing_status = 'RUNNING'
+                      AND task.workflow_version = '2.0'
                       AND task.status IN ('AUDITING','GENERATING','VALIDATING')
                       AND NOT EXISTS (SELECT 1 FROM generation_batch batch WHERE batch.task_id = task.id)
                     """);
@@ -100,6 +144,7 @@ public final class TaskExecutionQueue {
                     JOIN generation_task task ON task.id = slot.task_id
                     SET slot.task_id = NULL
                     WHERE task.structured_processing_status = 'RUNNING'
+                      AND task.workflow_version = '2.0'
                       AND task.status IN ('AUDITING','GENERATING','VALIDATING')
                       AND NOT EXISTS (SELECT 1 FROM generation_batch batch WHERE batch.task_id = task.id)
                     """);
@@ -107,6 +152,7 @@ public final class TaskExecutionQueue {
                     UPDATE generation_task task
                     SET task.status = 'QUEUED', task.structured_processing_status = 'PENDING'
                     WHERE task.structured_processing_status = 'RUNNING'
+                      AND task.workflow_version = '2.0'
                       AND task.status IN ('AUDITING','GENERATING','VALIDATING')
                       AND NOT EXISTS (SELECT 1 FROM generation_batch batch WHERE batch.task_id = task.id)
                     """);
@@ -116,6 +162,7 @@ public final class TaskExecutionQueue {
                                 UPDATE task_execution_slot s JOIN generation_task t ON t.id = s.task_id
                                 SET s.task_id = NULL, t.status = 'QUEUED'
                                 WHERE t.status = 'AUDITING'
+                                  AND t.workflow_version = '2.0'
                                   AND NOT EXISTS (
                                       SELECT 1 FROM generation_batch b
                                       WHERE b.task_id = t.id AND b.status = 'RUNNING')
@@ -129,7 +176,8 @@ public final class TaskExecutionQueue {
                                 b.lease_owner = NULL, b.lease_expires_at = NULL,
                                 a.status = CASE WHEN a.status = 'RUNNING' THEN 'QUEUED' ELSE a.status END,
                                 a.completed_at = CASE WHEN a.status = 'RUNNING' THEN NULL ELSE a.completed_at END
-                            WHERE b.status = 'RUNNING' AND b.lease_expires_at < CURRENT_TIMESTAMP(6)
+                            WHERE t.workflow_version = '2.0'
+                              AND b.status = 'RUNNING' AND b.lease_expires_at < CURRENT_TIMESTAMP(6)
                             """);
     }
 

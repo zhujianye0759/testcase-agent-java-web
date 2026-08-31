@@ -6,10 +6,6 @@ import com.testcaseagent.scope.RequirementScope;
 import com.testcaseagent.scope.ScopeCatalogSnapshot;
 import com.testcaseagent.scope.ScopeSelection;
 import com.testcaseagent.testcase.GenerationTaskMode;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -30,6 +26,10 @@ public final class DynamicTaskScopeResolver {
     }
 
     public CreateGenerationTaskRequest resolve(CreateGenerationTaskCommand command) {
+        GenerationContractVersions versions = command.contractVersions();
+        if (versions == null || !versions.isV2() || command.approvedFunctionScope() == null) {
+            throw new IllegalArgumentException("新任务必须提供版本 2.0 的已审核功能范围");
+        }
         ScopeCatalogSnapshot rendered = catalogService.catalog(false);
         List<ScopeSelection> selected = command.scopeSelectionIds().stream()
                 .map(id -> selection(rendered, id)).toList();
@@ -55,18 +55,30 @@ public final class DynamicTaskScopeResolver {
                 coordinate.versionId(), coordinate.materialCategory(), coordinate.projectId(),
                 documents);
 
+        List<ApprovedFunctionScope.ApprovedFunction> approved = command.approvedFunctionScope().functions();
+        List<String> approvedKeys = approved.stream().map(ApprovedFunctionScope.ApprovedFunction::functionKey).toList();
+        Map<String, String> approvedPaths = approved.stream().collect(java.util.stream.Collectors.toMap(
+                ApprovedFunctionScope.ApprovedFunction::functionKey,
+                ApprovedFunctionScope.ApprovedFunction::path,
+                (left, right) -> { throw new IllegalArgumentException("已审核功能范围包含重复键"); },
+                java.util.LinkedHashMap::new));
         if (command.taskMode() == GenerationTaskMode.ALL) {
-            return new CreateGenerationTaskRequest(command.taskMode(), "all-pending", List.of(), Map.of(),
+            return new CreateGenerationTaskRequest(command.taskMode(), approvedKeys.get(0), approvedKeys, approvedPaths,
                     command.fewShotPolicy(), command.schemaVersion(), command.promptVersion(), profile.requiredAgentId(),
                     requirementScope, profile.exampleScope(), admissionTypes,
-                    command.prompt().isBlank() ? "请发现全部功能。" : command.prompt());
+                    command.prompt().isBlank() ? "请根据已审核功能范围生成测试用例。" : command.prompt(),
+                    versions, command.approvedFunctionScope());
         }
-        String featureId = featureId(command.featureDescription());
+        if (approved.size() != 1) {
+            throw new IllegalArgumentException("单功能任务的已审核功能范围必须恰好包含一个功能");
+        }
+        String featureId = approvedKeys.get(0);
         String promptPrefix = command.prompt().isBlank() ? "" : command.prompt() + "\n";
         return new CreateGenerationTaskRequest(command.taskMode(), featureId, List.of(featureId),
-                Map.of(featureId, command.featureDescription()), command.fewShotPolicy(), command.schemaVersion(),
+                Map.of(featureId, approved.get(0).path()), command.fewShotPolicy(), command.schemaVersion(),
                 command.promptVersion(), profile.requiredAgentId(), requirementScope, profile.exampleScope(), admissionTypes,
-                promptPrefix + "目标功能描述：" + command.featureDescription());
+                promptPrefix + "目标功能描述：" + approved.get(0).description(),
+                versions, command.approvedFunctionScope());
     }
 
     private static ScopeSelection selection(ScopeCatalogSnapshot snapshot, String id) {
@@ -87,9 +99,6 @@ public final class DynamicTaskScopeResolver {
 
     private static void requireTaskPrerequisites(List<ScopeSelection> values) {
         Set<String> materialTypes = values.stream().map(ScopeSelection::admissionTypeKey).collect(java.util.stream.Collectors.toSet());
-        if (!materialTypes.contains("function_list")) {
-            throw new IllegalArgumentException("任务必须包含功能清单材料");
-        }
         if (!materialTypes.contains("requirements_spec") && !materialTypes.contains("work_order_plan")) {
             throw new IllegalArgumentException("任务必须包含需求规格说明书或工单方案作为正式需求材料");
         }
@@ -106,12 +115,4 @@ public final class DynamicTaskScopeResolver {
         }
     }
 
-    private static String featureId(String description) {
-        try {
-            byte[] digest = MessageDigest.getInstance("SHA-256").digest(description.getBytes(StandardCharsets.UTF_8));
-            return "feature-" + HexFormat.of().formatHex(digest, 0, 12);
-        } catch (NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("SHA-256 is required", exception);
-        }
-    }
 }

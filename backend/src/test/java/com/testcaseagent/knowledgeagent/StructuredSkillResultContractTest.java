@@ -5,12 +5,23 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.util.ArrayList;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /** Boundary tests for typed structured Skill results. [Req-ID]: REQ-SKI-004 */
 class StructuredSkillResultContractTest {
+    private static String sha256(String value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException exception) {
+            throw new AssertionError("The JDK must provide SHA-256", exception);
+        }
+    }
+
     /** [Req-ID]: REQ-SKI-004 */
     @Test
     void rejectsAnEmptyMaterialReviewAndNonContinuousCaseSteps() {
@@ -25,7 +36,7 @@ class StructuredSkillResultContractTest {
 
     /** [Req-ID]: REQ-SKI-004 */
     @Test
-    void deserializesAllFrozenResultEnumsAndRejectsUnknownNestedFields() throws Exception {
+    void deserializesFrozenV1ReconciliationAndTestcaseEnumsAndRejectsUnknownNestedFields() throws Exception {
         ObjectMapper mapper = new ObjectMapper().configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, true);
         FeatureScopeReconciliationResult reconciliation = mapper.readValue("""
                 {"operation":"reconcile","reconciliations":[{"reconciliation_key":"rec-1","function_list_item_keys":["item-1"],
@@ -62,19 +73,72 @@ class StructuredSkillResultContractTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
-    /** [Req-ID]: REQ-SKI-004 */
+    /** [Req-ID]: REQ-FSC-008 */
     @Test
-    void rejectsFrozenResultArrayBounds() {
-        List<FeatureScopeReconciliationResult.Reconciliation> tooMany = new ArrayList<>();
-        for (int index = 1; index <= 201; index++) {
-            tooMany.add(new FeatureScopeReconciliationResult.Reconciliation("rec-" + index,
-                    List.of("item-" + index), List.of(), FeatureScopeReconciliationResult.Classification.FUNCTION_LIST_ONLY,
-                    List.of(), "保留", FeatureScopeReconciliationResult.ConfirmationStatus.CONFIRMED));
-        }
-
+    void acceptsTheExactFrozenV2PageResultWithoutLegacyRelationCapsButKeepsOtherSkillBounds() throws Exception {
         assertThatThrownBy(() -> new FeatureScopeReconciliationResult(List.of()))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new FeatureScopeReconciliationResult(tooMany))
+
+        ObjectMapper mapper = new ObjectMapper().configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, true);
+        var page = mapper.createObjectNode();
+        page.put("operation", "reconcile_page");
+        page.put("protocol_version", "2");
+        page.put("run_key", "run-1");
+        page.put("page_key", "b".repeat(64));
+        var completedOwners = page.putArray("completed_owner_source_refs");
+        completedOwners.addObject().put("source_type", "function_list_item").put("source_key", "item-000");
+        var reconciliations = page.putArray("reconciliations");
+        for (int index = 0; index < 201; index++) {
+            var row = reconciliations.addObject();
+            row.putObject("owner_source_ref")
+                    .put("source_type", "function_list_item")
+                    .put("source_key", "item-000");
+            var itemKeys = row.putArray("function_list_item_keys");
+            var evidenceKeys = row.putArray("evidence_keys");
+            var referencedSources = mapper.createArrayNode();
+            int referenceCount = index == 0 ? 101 : 1;
+            for (int reference = 0; reference < referenceCount; reference++) {
+                itemKeys.add("item-%03d".formatted(reference));
+                evidenceKeys.add("evidence-%03d".formatted(reference));
+                referencedSources.addObject()
+                        .put("source_type", "function_list_item")
+                        .put("source_key", "item-%03d".formatted(reference));
+            }
+            row.putArray("requirement_fact_keys").add("fact-%03d".formatted(index));
+            referencedSources.addObject()
+                    .put("source_type", "requirement_fact")
+                    .put("source_key", "fact-%03d".formatted(index));
+            row.put("classification", "insufficient_evidence");
+            row.put("scope_recommendation", "完整核对后仍需确认");
+            row.put("confirmation_status", "pending_confirmation");
+            String relationIdentityBytes = "reconciliation-v2\nrun-1\ninsufficient_evidence\n"
+                    + "pending_confirmation\n" + mapper.writeValueAsString(referencedSources);
+            row.put("reconciliation_key", sha256(relationIdentityBytes));
+            if (index == 0) {
+                assertThat(row.path("reconciliation_key").asText())
+                        .isNotEqualTo(sha256(relationIdentityBytes + "\n"));
+            }
+        }
+
+        Class<?> resultType = Class.forName(
+                "com.testcaseagent.knowledgeagent.FeatureScopeReconciliationPageResult");
+        Object result = mapper.treeToValue(page, resultType);
+        var resultJson = mapper.valueToTree(result);
+
+        assertThat(resultJson.path("reconciliations")).hasSize(201);
+        assertThat(resultJson.path("reconciliations").path(0).path("function_list_item_keys")).hasSize(101);
+        assertThat(resultJson.path("reconciliations").path(0).path("evidence_keys")).hasSize(101);
+        var unknownRelationField = page.deepCopy();
+        ((com.fasterxml.jackson.databind.node.ObjectNode) unknownRelationField.path("reconciliations").path(0))
+                .put("provider_explanation", "不得进入公开结果");
+        assertThatThrownBy(() -> mapper.treeToValue(unknownRelationField, resultType))
+                .isInstanceOf(Exception.class);
+
+        List<String> tooManyReviewEvidence = java.util.stream.IntStream.range(0, 101)
+                .mapToObj(index -> "review-evidence-" + index).toList();
+        assertThatThrownBy(() -> new RequirementMaterialQualityReviewResult.RequirementFact(
+                "fact-1", "功能", List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(),
+                List.of(), List.of(), tooManyReviewEvidence))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new RequirementMaterialQualityReviewResult.ReviewFinding("finding-1", null,
                 "业务规则缺失", null, null, null, "需要补充规则", List.of("unit-1"),

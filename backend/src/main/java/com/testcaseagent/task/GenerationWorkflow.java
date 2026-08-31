@@ -96,7 +96,9 @@ public final class GenerationWorkflow {
     }
 
     public String create(CreateGenerationTaskRequest request) {
-        List<GenerationTaskRepository.PlannedBatch> batches = planBatches(request);
+        // V2 owns its durable work inventory; creating legacy generation_batch rows would make restart recovery
+        // mistake a valid V2 task for an old Markdown workflow. [Req-ID]: REQ-TGV2-002
+        List<GenerationTaskRepository.PlannedBatch> batches = request.isV2() ? List.of() : planBatches(request);
         GenerationTaskRepository.TaskCreation creation = repository.createTaskIfAbsent(UUID.randomUUID().toString(), batches,
                 request, idempotencyKey(request));
         if (creation.created()) scheduleNext();
@@ -124,6 +126,15 @@ public final class GenerationWorkflow {
     void executeClaimed(TaskExecutionClaim claim) {
         CreateGenerationTaskRequest request = repository.request(claim.taskId());
         try {
+            // V2 owns an explicit audited function scope, so a nonempty feature list is expected and must not
+            // be mistaken for the historical Markdown batch route. [Req-ID]: REQ-TGV2-001, REQ-TGV2-002
+            if (request.isV2()) {
+                if (structuredAllCoordinator == null) {
+                    throw new IllegalStateException("Generation V2 coordinator is unavailable");
+                }
+                structuredAllCoordinator.execute(claim.taskId(), request);
+                return;
+            }
             if (request.taskMode() == GenerationTaskMode.ALL && request.featureIds().isEmpty()
                     && structuredAllCoordinator != null) {
                 structuredAllCoordinator.execute(claim.taskId(), request);
@@ -326,14 +337,31 @@ public final class GenerationWorkflow {
         }
     }
 
-    public GenerationTaskDetail detail(String taskId) { return repository.findDetail(taskId).orElseThrow(() -> new GenerationTaskNotFoundException(taskId)); }
+    public GenerationTaskDetail detail(String taskId) {
+        return detail(taskId, StructuredDetailQuery.defaults());
+    }
+
+    /** Reads a bounded V2 projection while preserving the historical V1 response shape. [Req-ID]: REQ-TGV2-009 */
+    public GenerationTaskDetail detail(String taskId, StructuredDetailQuery query) {
+        return repository.findDetail(taskId, query).orElseThrow(() -> new GenerationTaskNotFoundException(taskId));
+    }
     public GenerationTaskPage list(int page, int size, String query) { return repository.findPage(page, size, query); }
-    public void cancel(String taskId) { repository.requestCancellation(taskId); }
-    public void retryFailedBatches(String taskId) { if (repository.retryFailedBatches(taskId) > 0) scheduleNext(); }
+    /** Cancels only a mutable V2 task; historical V1 records are retained as read-only evidence. [Req-ID]: REQ-TGV2-010 */
+    public void cancel(String taskId) {
+        if (!repository.isV2Task(taskId)) throw new IllegalStateException("Historical task is read-only");
+        repository.requestCancellation(taskId);
+    }
+    /** Requeues one exact eligible retry target or fails closed on a stale/forbidden user action. [Req-ID]: REQ-ESR-001 */
+    public void retryFailedBatches(String taskId) {
+        if (!repository.isV2Task(taskId)) throw new GenerationTaskRetryConflictException();
+        if (repository.retryFailedBatches(taskId) <= 0) throw new GenerationTaskRetryConflictException();
+        scheduleNext();
+    }
     /** Regenerates only the workbook projection for one completed structured ALL task. [Req-ID]: REQ-SGD-005 */
     public WorkbookArtifact regenerateStructuredArtifact(String taskId) {
+        if (!repository.isV2Task(taskId)) throw new IllegalStateException("Historical task is read-only");
         String expectedArtifactId = repository.structuredArtifactRegenerationBaseline(taskId);
-        WorkbookArtifact artifact = workbookExporter.exportStructured(repository.structuredWorkbookRequest(taskId));
+        WorkbookArtifact artifact = workbookExporter.exportStructuredRows(repository.structuredWorkbookRows(taskId));
         repository.replaceStructuredArtifact(taskId, expectedArtifactId, artifact);
         return artifact;
     }

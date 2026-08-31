@@ -1,6 +1,8 @@
 package com.testcaseagent.featureaudit;
 
 import com.testcaseagent.scope.ParsedMaterial;
+import com.testcaseagent.scope.ParsedMaterialPage;
+import com.testcaseagent.scope.ParsedMaterialSummary;
 import com.testcaseagent.scope.ParsedMaterialUnit;
 import com.testcaseagent.scope.ParsedUnitCatalogPort;
 import com.testcaseagent.scope.RequirementDocumentCoordinate;
@@ -8,13 +10,15 @@ import com.testcaseagent.task.CreateGenerationTaskRequest;
 import com.testcaseagent.task.GenerationTaskRepository;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.CancellationException;
 
 /**
  * Enumerates every frozen requirement document before atomically opening its durable audit work.
  *
- * <p>It deliberately consumes only {@link ParsedUnitCatalogPort}; preview text and model output cannot
- * satisfy this completion boundary. A later document failure happens before any inventory is persisted.</p>
+ * <p>It deliberately consumes only {@link ParsedUnitCatalogPort}; preview text and model output cannot satisfy this
+ * boundary. V1 publishes in one write. V2 may persist page-sized staging rows, but none become formal evidence until
+ * the complete frozen scope passes the final publication transaction.</p>
  *
  * [Req-ID]: REQ-SMR-002, REQ-SMR-003, REQ-BFA-001
  */
@@ -48,6 +52,49 @@ public final class RequirementMaterialTraversalService {
         throwIfCancellationRequested(taskId);
         repository.replaceMaterialInventory(taskId, documents, false);
         return new TraversalResult(documents);
+    }
+
+    /**
+     * Traverses V2 material with bounded pages, stages each page durably, then publishes the exact frozen inventory.
+     *
+     * <p>A remote or database failure can leave restartable staging rows, but never a complete evidence gate. A
+     * restart scans from the first remote page; exact staged rows are idempotent and any source drift fails closed.</p>
+     *
+     * [Req-ID]: REQ-TGV2-003
+     */
+    public void traversePagedV2(String taskId, CreateGenerationTaskRequest request, boolean explicitlyReplaced) {
+        if (!Objects.requireNonNull(request, "request must not be null").isV2()) {
+            throw new IllegalArgumentException("Paged traversal requires a V2 task snapshot");
+        }
+        throwIfCancellationRequested(taskId);
+        if (explicitlyReplaced) {
+            repository.clearMaterialInventoryForExplicitReplacement(taskId);
+        }
+        for (RequirementDocumentCoordinate document : request.requirementScope().documents()) {
+            throwIfCancellationRequested(taskId);
+            String role = documentRole(document, request.requirementAdmissionTypeKeys());
+            ParsedMaterialSummary summary = materialReader.scanAll(
+                    request.requirementScope(), document.documentId(), ParsedUnitCatalogPort.DEFAULT_PAGE_SIZE,
+                    page -> stagePage(taskId, document, role, page));
+            if (!document.documentId().equals(summary.knowledgeId())) {
+                throw new IllegalStateException("Parsed material knowledge id does not match the frozen document");
+            }
+        }
+        throwIfCancellationRequested(taskId);
+        repository.publishStagedMaterialInventory(taskId, request.requirementScope());
+    }
+
+    private void stagePage(String taskId, RequirementDocumentCoordinate document, String role,
+            ParsedMaterialPage page) {
+        throwIfCancellationRequested(taskId);
+        if (!document.documentId().equals(page.knowledgeId())) {
+            throw new IllegalStateException("Parsed material page does not match the frozen document");
+        }
+        List<MaterialInventoryUnit> units = page.units().stream()
+                .map(unit -> inventoryUnit(document.documentId(), role, unit))
+                .toList();
+        repository.stageMaterialInventoryPage(taskId, new MaterialInventoryPage(
+                document.documentId(), page.knowledgeId(), role, page.totalUnits(), page.complete(), units));
     }
 
     private void throwIfCancellationRequested(String taskId) {

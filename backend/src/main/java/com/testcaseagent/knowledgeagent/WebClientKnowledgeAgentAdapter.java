@@ -11,6 +11,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.testcaseagent.fewshot.ExampleQualityKind;
 import com.testcaseagent.fewshot.ExampleScope;
 import com.testcaseagent.scope.ParsedMaterial;
+import com.testcaseagent.scope.ParsedMaterialPage;
+import com.testcaseagent.scope.ParsedMaterialSummary;
 import com.testcaseagent.scope.ParsedMaterialUnit;
 import com.testcaseagent.scope.RequirementMaterialReaderPort;
 import com.testcaseagent.scope.RequirementScope;
@@ -25,6 +27,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Consumer;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.core.io.buffer.DataBufferLimitException;
 import org.springframework.http.MediaType;
@@ -58,13 +61,21 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
             "unit_too_large");
     private static final String GENERATION_SKILL = "functional-testcase-design";
     private static final String RECONCILIATION_SKILL = "feature-scope-reconciliation";
+    private static final int STRUCTURED_V1_REQUEST_MAX_BYTES = 2 * 1024 * 1024;
+    private static final int STRUCTURED_V1_RESPONSE_MAX_BYTES = 4 * 1024 * 1024;
+    private static final int FUNCTION_CANDIDATE_RESPONSE_MAX_BYTES = 16 * 1024 * 1024;
     /** A failed setup is isolated and retried before any business material is sent. */
     private static final int SKILL_PREPARATION_ATTEMPTS = 3;
     private final WebClient webClient;
+    private final WebClient structuredV2WebClient;
     private final String apiKey;
     private final Duration timeout;
     private final int maxAgentDiscoveryAttempts;
     private final int maxEventCharacters;
+    private final int featureReconciliationV2RequestMaxBytes;
+    private final int featureReconciliationV2ResponseMaxBytes;
+    private final int structuredContractV2RequestMaxBytes;
+    private final int structuredContractV2ResponseMaxBytes;
     /** Holds one preparation/business pair only; callers close it before the next bounded work item. */
     private final ThreadLocal<PreparedSkillSession> preparedSession = new ThreadLocal<>();
     private final ObjectMapper objectMapper = new ObjectMapper()
@@ -76,15 +87,61 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
 
     public WebClientKnowledgeAgentAdapter(String apiBaseUrl, String apiKey, Duration timeout,
             int maxAgentDiscoveryAttempts, int maxEventCharacters) {
-        this.webClient = WebClient.builder().baseUrl(requireText(apiBaseUrl, "apiBaseUrl"))
-                .codecs(codecs -> codecs.defaultCodecs().maxInMemorySize(4 * 1024 * 1024)).build();
+        this(apiBaseUrl, apiKey, timeout, maxAgentDiscoveryAttempts, maxEventCharacters,
+                KnowledgeAgentProperties.DEFAULT_RECONCILIATION_V2_REQUEST_MAX_BYTES,
+                KnowledgeAgentProperties.DEFAULT_RECONCILIATION_V2_RESPONSE_MAX_BYTES,
+                KnowledgeAgentProperties.DEFAULT_STRUCTURED_CONTRACT_V2_REQUEST_MAX_BYTES,
+                KnowledgeAgentProperties.DEFAULT_STRUCTURED_CONTRACT_V2_RESPONSE_MAX_BYTES);
+    }
+
+    /**
+     * Creates the adapter with protocol V2-specific byte budgets. Other Skills continue to use the
+     * frozen 2 MiB request boundary, so raising V2 capacity cannot widen their input surface.
+     */
+    public WebClientKnowledgeAgentAdapter(String apiBaseUrl, String apiKey, Duration timeout,
+            int maxAgentDiscoveryAttempts, int maxEventCharacters,
+            int featureReconciliationV2RequestMaxBytes, int featureReconciliationV2ResponseMaxBytes) {
+        this(apiBaseUrl, apiKey, timeout, maxAgentDiscoveryAttempts, maxEventCharacters,
+                featureReconciliationV2RequestMaxBytes, featureReconciliationV2ResponseMaxBytes,
+                KnowledgeAgentProperties.DEFAULT_STRUCTURED_CONTRACT_V2_REQUEST_MAX_BYTES,
+                KnowledgeAgentProperties.DEFAULT_STRUCTURED_CONTRACT_V2_RESPONSE_MAX_BYTES);
+    }
+
+    /** Creates the adapter with independent legacy-reconciliation and frozen contract V2 byte budgets. */
+    public WebClientKnowledgeAgentAdapter(String apiBaseUrl, String apiKey, Duration timeout,
+            int maxAgentDiscoveryAttempts, int maxEventCharacters,
+            int featureReconciliationV2RequestMaxBytes, int featureReconciliationV2ResponseMaxBytes,
+            int structuredContractV2RequestMaxBytes, int structuredContractV2ResponseMaxBytes) {
+        String validatedBaseUrl = requireText(apiBaseUrl, "apiBaseUrl");
+        this.webClient = WebClient.builder().baseUrl(validatedBaseUrl)
+                .codecs(codecs -> codecs.defaultCodecs().maxInMemorySize(
+                        Math.max(FUNCTION_CANDIDATE_RESPONSE_MAX_BYTES, Math.max(structuredContractV2ResponseMaxBytes,
+                                Math.max(STRUCTURED_V1_RESPONSE_MAX_BYTES, featureReconciliationV2ResponseMaxBytes)))))
+                .build();
+        // V2 has a smaller response contract than other operations. Enforcing it in the decoder prevents the
+        // complete oversized body from occupying the shared 16 MiB buffer before the business check can run.
+        this.structuredV2WebClient = WebClient.builder().baseUrl(validatedBaseUrl)
+                .codecs(codecs -> codecs.defaultCodecs().maxInMemorySize(structuredContractV2ResponseMaxBytes))
+                .build();
         this.apiKey = requireText(apiKey, "apiKey");
         this.timeout = Objects.requireNonNull(timeout, "timeout must not be null");
         if (timeout.isZero() || timeout.isNegative()) throw new IllegalArgumentException("timeout must be positive");
         if (maxAgentDiscoveryAttempts < 1) throw new IllegalArgumentException("maxAgentDiscoveryAttempts must be at least one");
         if (maxEventCharacters < 1) throw new IllegalArgumentException("maxEventCharacters must be at least one");
+        if (featureReconciliationV2RequestMaxBytes < 1 || featureReconciliationV2ResponseMaxBytes < 1) {
+            throw new IllegalArgumentException("feature reconciliation V2 byte budgets must be positive");
+        }
+        if (structuredContractV2RequestMaxBytes < KnowledgeAgentProperties.MIN_STRUCTURED_CONTRACT_V2_REQUEST_MAX_BYTES
+                || structuredContractV2RequestMaxBytes > KnowledgeAgentProperties.MAX_STRUCTURED_CONTRACT_V2_REQUEST_MAX_BYTES
+                || structuredContractV2ResponseMaxBytes != KnowledgeAgentProperties.DEFAULT_STRUCTURED_CONTRACT_V2_RESPONSE_MAX_BYTES) {
+            throw new IllegalArgumentException("structured contract V2 byte budgets are outside the frozen range");
+        }
         this.maxAgentDiscoveryAttempts = maxAgentDiscoveryAttempts;
         this.maxEventCharacters = maxEventCharacters;
+        this.featureReconciliationV2RequestMaxBytes = featureReconciliationV2RequestMaxBytes;
+        this.featureReconciliationV2ResponseMaxBytes = featureReconciliationV2ResponseMaxBytes;
+        this.structuredContractV2RequestMaxBytes = structuredContractV2RequestMaxBytes;
+        this.structuredContractV2ResponseMaxBytes = structuredContractV2ResponseMaxBytes;
     }
 
     @Override
@@ -132,6 +189,14 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
 
     /** Executes the material-review route without creating a chat session or parsing SSE/Markdown. [Req-ID]: REQ-SKI-002, REQ-SKI-004 */
     @Override
+    public StructuredSkillSuccessEnvelope<RequirementFactExtractionV2Result> extractRequirementFactsV2(
+            RequirementFactExtractionV2Invocation invocation) {
+        return invokeStructuredV2(invocation.sessionId(), invocation.agentId(),
+                StructuredSkillName.REQUIREMENT_FACT_EXTRACTION, invocation.requirementScope(), invocation.input(),
+                RequirementFactExtractionV2Result.class);
+    }
+
+    @Override
     public StructuredSkillSuccessEnvelope<RequirementMaterialQualityReviewResult> reviewRequirementMaterial(
             RequirementMaterialQualityReviewInvocation invocation) {
         return invokeStructured(invocation.sessionId(), invocation.agentId(), StructuredSkillName.REQUIREMENT_MATERIAL_QUALITY_REVIEW,
@@ -146,12 +211,41 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
                 invocation.requirementScope(), invocation.input(), FeatureScopeReconciliationResult.class);
     }
 
+    /** Executes one V2 owner window with the dedicated catalog request and page response budgets. [Req-ID]: REQ-FSC-008 */
+    @Override
+    public StructuredSkillSuccessEnvelope<FeatureScopeReconciliationPageResult> reconcileFeatureScopePage(
+            FeatureScopeReconciliationPageInvocation invocation) {
+        return invokeStructured(invocation.sessionId(), invocation.agentId(),
+                StructuredSkillName.FEATURE_SCOPE_RECONCILIATION, invocation.requirementScope(), invocation.input(),
+                FeatureScopeReconciliationPageResult.class, featureReconciliationV2RequestMaxBytes,
+                featureReconciliationV2ResponseMaxBytes);
+    }
+
     /** Executes extract-function-list without ordinary Agent Chat fallback. [Req-ID]: REQ-SKI-002, REQ-SKI-004 */
     @Override
     public StructuredSkillSuccessEnvelope<FunctionListExtractionResult> extractFunctionList(
             FunctionListExtractionInvocation invocation) {
         return invokeStructured(invocation.sessionId(), invocation.agentId(), StructuredSkillName.FEATURE_SCOPE_RECONCILIATION,
                 invocation.requirementScope(), invocation.input(), FunctionListExtractionResult.class);
+    }
+
+    /**
+     * Executes protocol V1 candidate extraction and verifies the window echo before returning it.
+     * A deployment mismatch fails closed and never invokes the legacy extraction operation.
+     *
+     * [Req-ID]: REQ-AFCE-001, REQ-AFCE-002, REQ-AFCE-008
+     */
+    @Override
+    public StructuredSkillSuccessEnvelope<FunctionCandidateExtractionResult> extractFunctionCandidates(
+            FunctionCandidateExtractionInvocation invocation) {
+        StructuredSkillSuccessEnvelope<FunctionCandidateExtractionResult> response = invokeStructured(
+                invocation.sessionId(), invocation.agentId(), StructuredSkillName.FEATURE_SCOPE_RECONCILIATION,
+                invocation.requirementScope(), invocation.input(), FunctionCandidateExtractionResult.class,
+                STRUCTURED_V1_REQUEST_MAX_BYTES, FUNCTION_CANDIDATE_RESPONSE_MAX_BYTES);
+        if (!invocation.input().windowKey().equals(response.data().result().windowKey())) {
+            throw invalidStructuredResponse();
+        }
+        return response;
     }
 
     /** Executes one testcase-design route without SSE, tools, or Markdown parsing. [Req-ID]: REQ-SKI-002, REQ-SKI-004 */
@@ -162,10 +256,25 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
                 invocation.requirementScope(), invocation.input(), FunctionalTestcaseDesignResult.class);
     }
 
+    @Override
+    public StructuredSkillSuccessEnvelope<FunctionalTestcaseDesignV2Result> designFunctionalTestcasesV2(
+            FunctionalTestcaseDesignV2Invocation invocation) {
+        return invokeStructuredV2(invocation.sessionId(), invocation.agentId(),
+                StructuredSkillName.FUNCTIONAL_TESTCASE_DESIGN, invocation.requirementScope(), invocation.input(),
+                FunctionalTestcaseDesignV2Result.class);
+    }
+
     private <T> StructuredSkillSuccessEnvelope<T> invokeStructured(String sessionId, String agentId, StructuredSkillName skillName,
             RequirementScope requirementScope, Object input, Class<T> resultType) {
+        return invokeStructured(sessionId, agentId, skillName, requirementScope, input, resultType,
+                STRUCTURED_V1_REQUEST_MAX_BYTES, STRUCTURED_V1_RESPONSE_MAX_BYTES);
+    }
+
+    private <T> StructuredSkillSuccessEnvelope<T> invokeStructured(String sessionId, String agentId,
+            StructuredSkillName skillName, RequirementScope requirementScope, Object input, Class<T> resultType,
+            int requestMaxBytes, int responseMaxBytes) {
         StructuredSkillScope scope = StructuredSkillScope.from(requirementScope);
-        StructuredSkillRequest request = new StructuredSkillRequest(agentId, skillName.wireValue(), scope.knowledgeBaseIds(),
+        StructuredSkillRequest request = new StructuredSkillRequest(null, agentId, skillName.wireValue(), scope.knowledgeBaseIds(),
                 scope.knowledgeIds(), scope.systemScopes(), input);
         byte[] body;
         try {
@@ -173,15 +282,17 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
         } catch (JsonProcessingException exception) {
             throw new StructuredSkillExecutionException(StructuredSkillErrorType.INVALID_REQUEST, false);
         }
-        if (body.length > 2 * 1024 * 1024) throw new StructuredSkillExecutionException(StructuredSkillErrorType.REQUEST_TOO_LARGE, false);
+        if (body.length > requestMaxBytes) {
+            throw new StructuredSkillExecutionException(StructuredSkillErrorType.REQUEST_TOO_LARGE, false);
+        }
         try {
             StructuredHttpResponse response = webClient.post().uri("/agent-chat/{sessionId}/isolated-skill", sessionId).header(API_KEY_HEADER, apiKey)
                     .contentType(MediaType.APPLICATION_JSON).accept(MediaType.APPLICATION_JSON).bodyValue(body)
                     .exchangeToMono(clientResponse -> clientResponse.bodyToMono(String.class).defaultIfEmpty("")
-                            .map(value -> new StructuredHttpResponse(clientResponse.statusCode().is2xxSuccessful(), value))).block(timeout);
+                            .map(value -> new StructuredHttpResponse(clientResponse.statusCode().value(), value))).block(timeout);
             if (response == null) throw new StructuredSkillExecutionException(StructuredSkillErrorType.MODEL_EXECUTION_FAILED, false);
-            if (!response.successful()) throw nonSuccessStructuredResponse(response.body());
-            return parseStructuredResponse(response.body(), skillName, resultType);
+            if (!response.successful()) throw nonSuccessStructuredResponse(response.body(), responseMaxBytes);
+            return parseStructuredResponse(response.body(), skillName, resultType, responseMaxBytes);
         } catch (StructuredSkillExecutionException exception) {
             throw exception;
         } catch (RuntimeException exception) {
@@ -192,8 +303,50 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
         }
     }
 
-    private <T> StructuredSkillSuccessEnvelope<T> parseStructuredResponse(String response, StructuredSkillName expectedSkill, Class<T> resultType) {
-        if (response.getBytes(StandardCharsets.UTF_8).length > 4 * 1024 * 1024) {
+    /** V2 never shares the V1 envelope or capacity fallback, so a deployment mismatch fails closed. */
+    private <T> StructuredSkillSuccessEnvelope<T> invokeStructuredV2(String sessionId, String agentId,
+            StructuredSkillName skillName, RequirementScope requirementScope, Object input, Class<T> resultType) {
+        StructuredSkillScope scope = StructuredSkillScope.from(requirementScope);
+        StructuredSkillRequest request = new StructuredSkillRequest("2.0", agentId, skillName.wireValue(),
+                scope.knowledgeBaseIds(), scope.knowledgeIds(), scope.systemScopes(), input);
+        byte[] body;
+        try {
+            body = structuredObjectMapper.writeValueAsBytes(request);
+        } catch (JsonProcessingException exception) {
+            throw new StructuredSkillExecutionException(StructuredSkillErrorType.INVALID_REQUEST, false);
+        }
+        if (body.length > structuredContractV2RequestMaxBytes) {
+            throw new StructuredSkillExecutionException(StructuredSkillErrorType.REQUEST_TOO_LARGE, false);
+        }
+        try {
+            StructuredHttpResponse response = structuredV2WebClient.post()
+                    .uri("/agent-chat/{sessionId}/isolated-skill", sessionId)
+                    .header(API_KEY_HEADER, apiKey).contentType(MediaType.APPLICATION_JSON)
+                    .accept(MediaType.APPLICATION_JSON).bodyValue(body)
+                    .exchangeToMono(clientResponse -> clientResponse.bodyToMono(String.class).defaultIfEmpty("")
+                            .map(value -> new StructuredHttpResponse(
+                                    clientResponse.statusCode().value(), value)))
+                    .block(timeout);
+            if (response == null) {
+                throw new StructuredSkillExecutionException(StructuredSkillErrorType.MODEL_EXECUTION_FAILED, false);
+            }
+            if (response.statusCode() != 200) {
+                throw nonSuccessStructuredResponseV2(response.statusCode(), response.body());
+            }
+            return parseStructuredResponseV2(response.body(), skillName, resultType);
+        } catch (StructuredSkillExecutionException exception) {
+            throw exception;
+        } catch (RuntimeException exception) {
+            if (hasCause(exception, DataBufferLimitException.class)) {
+                throw new StructuredSkillExecutionException(StructuredSkillErrorType.RESPONSE_TOO_LARGE, false);
+            }
+            throw new StructuredSkillExecutionException(StructuredSkillErrorType.MODEL_EXECUTION_FAILED, false);
+        }
+    }
+
+    private <T> StructuredSkillSuccessEnvelope<T> parseStructuredResponse(String response,
+            StructuredSkillName expectedSkill, Class<T> resultType, int responseMaxBytes) {
+        if (response.getBytes(StandardCharsets.UTF_8).length > responseMaxBytes) {
             throw new StructuredSkillExecutionException(StructuredSkillErrorType.RESPONSE_TOO_LARGE, false);
         }
         try {
@@ -217,9 +370,40 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
         }
     }
 
+    private <T> StructuredSkillSuccessEnvelope<T> parseStructuredResponseV2(String response,
+            StructuredSkillName expectedSkill, Class<T> resultType) {
+        if (response.getBytes(StandardCharsets.UTF_8).length > structuredContractV2ResponseMaxBytes) {
+            throw new StructuredSkillExecutionException(StructuredSkillErrorType.RESPONSE_TOO_LARGE, false);
+        }
+        try {
+            JsonNode root = structuredObjectMapper.readTree(response);
+            if (root == null || !root.isObject() || !root.path("success").isBoolean()
+                    || !root.path("success").booleanValue()) {
+                throw invalidStructuredResponse();
+            }
+            exactStructuredFields(root, Set.of("success", "data"));
+            JsonNode data = root.path("data");
+            if (!data.isObject()) throw invalidStructuredResponse();
+            exactStructuredFields(data, Set.of("schema_version", "skill_name", "repair_attempted", "result"));
+            if (!"2.0".equals(data.path("schema_version").asText())
+                    || !expectedSkill.wireValue().equals(data.path("skill_name").asText())
+                    || !data.path("repair_attempted").isBoolean() || !data.path("result").isObject()) {
+                throw invalidStructuredResponse();
+            }
+            validateV2ResultFields(data.path("result"), expectedSkill, resultType);
+            T result = structuredObjectMapper.treeToValue(data.path("result"), resultType);
+            return new StructuredSkillSuccessEnvelope<>(true, new StructuredSkillSuccess<>("2.0",
+                    expectedSkill.wireValue(), data.path("repair_attempted").booleanValue(), result));
+        } catch (StructuredSkillExecutionException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw invalidStructuredResponse();
+        }
+    }
+
     /** Rejects non-2xx responses unless their fixed failure envelope provides a safe stable type. */
-    private StructuredSkillExecutionException nonSuccessStructuredResponse(String response) {
-        if (response.getBytes(StandardCharsets.UTF_8).length > 4 * 1024 * 1024) {
+    private StructuredSkillExecutionException nonSuccessStructuredResponse(String response, int responseMaxBytes) {
+        if (response.getBytes(StandardCharsets.UTF_8).length > responseMaxBytes) {
             return new StructuredSkillExecutionException(StructuredSkillErrorType.RESPONSE_TOO_LARGE, false);
         }
         try {
@@ -258,6 +442,7 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
 
     private static void validateResultFields(JsonNode result, StructuredSkillName skill, Class<?> resultType) {
         switch (skill) {
+            case REQUIREMENT_FACT_EXTRACTION -> throw invalidStructuredResponse();
             case REQUIREMENT_MATERIAL_QUALITY_REVIEW -> {
                 exactStructuredFields(result, Set.of("requirement_facts", "review_findings"));
                 exactArrayObjects(result.path("requirement_facts"), Set.of("fact_key", "function", "roles", "trigger_conditions", "inputs",
@@ -279,10 +464,42 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
                     exactStructuredFields(result, Set.of("operation", "reconciliations"));
                     exactArrayObjects(result.path("reconciliations"), Set.of("reconciliation_key", "function_list_item_keys", "requirement_fact_keys",
                             "classification", "evidence_keys", "scope_recommendation", "confirmation_status"));
+                } else if (resultType == FeatureScopeReconciliationPageResult.class) {
+                    if (!FeatureScopeReconciliationPageInput.OPERATION.equals(result.path("operation").asText())
+                            || !FeatureScopeReconciliationPageInput.PROTOCOL_VERSION.equals(
+                                    result.path("protocol_version").asText())) {
+                        throw invalidStructuredResponse();
+                    }
+                    exactStructuredFields(result, Set.of("operation", "protocol_version", "run_key", "page_key",
+                            "completed_owner_source_refs", "reconciliations"));
+                    exactArrayObjects(result.path("completed_owner_source_refs"), Set.of("source_type", "source_key"));
+                    exactArrayObjects(result.path("reconciliations"), Set.of("reconciliation_key", "owner_source_ref",
+                            "function_list_item_keys", "requirement_fact_keys", "classification", "evidence_keys",
+                            "scope_recommendation", "confirmation_status"));
+                    for (JsonNode reconciliation : result.path("reconciliations")) {
+                        exactStructuredFields(reconciliation.path("owner_source_ref"), Set.of("source_type", "source_key"));
+                    }
                 } else if (resultType == FunctionListExtractionResult.class) {
                     if (!FunctionListExtractionInput.OPERATION.equals(result.path("operation").asText())) throw invalidStructuredResponse();
                     exactStructuredFields(result, Set.of("operation", "function_list_items"));
-                    exactArrayObjects(result.path("function_list_items"), Set.of("path", "description", "evidence_keys"));
+                    exactArrayObjects(result.path("function_list_items"),
+                            Set.of("path", "description", "target_quote", "evidence_keys"));
+                } else if (resultType == FunctionCandidateExtractionResult.class) {
+                    if (!FunctionCandidateExtractionInput.OPERATION.equals(result.path("operation").asText())
+                            || !FunctionCandidateExtractionInput.PROTOCOL_VERSION.equals(
+                                    result.path("protocol_version").asText())) {
+                        throw invalidStructuredResponse();
+                    }
+                    exactStructuredFields(result, Set.of("operation", "protocol_version", "window_key",
+                            "source_outcomes", "candidates", "normalization_summary"));
+                    exactArrayObjects(result.path("source_outcomes"),
+                            Set.of("unit_key", "disposition", "candidate_refs", "reason_code"));
+                    exactArrayObjects(result.path("candidates"), Set.of("candidate_ref", "path", "description",
+                            "target_quote", "evidence_keys", "recommended_status", "reason_code",
+                            "missing_information"));
+                    exactStructuredFields(result.path("normalization_summary"), Set.of("model_candidate_count",
+                            "downgraded_candidate_count", "discarded_candidate_count",
+                            "auto_unresolved_unit_count"));
                 } else {
                     throw invalidStructuredResponse();
                 }
@@ -306,6 +523,79 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
         }
     }
 
+    /**
+     * V2 failure identity is the frozen HTTP/status pair. A familiar details type on the wrong status is not safe
+     * evidence for retry or deterministic splitting, so it is deliberately collapsed to an invalid response.
+     */
+    private StructuredSkillExecutionException nonSuccessStructuredResponseV2(int statusCode, String response) {
+        if (response.getBytes(StandardCharsets.UTF_8).length > structuredContractV2ResponseMaxBytes) {
+            return new StructuredSkillExecutionException(StructuredSkillErrorType.RESPONSE_TOO_LARGE, false);
+        }
+        try {
+            JsonNode root = structuredObjectMapper.readTree(response);
+            if (root == null || !root.isObject() || !root.path("success").isBoolean()
+                    || root.path("success").booleanValue()) {
+                return invalidStructuredResponse();
+            }
+            StructuredSkillExecutionException failure = structuredFailure(root);
+            return matchesV2Status(statusCode, failure.type()) ? failure : invalidStructuredResponse();
+        } catch (StructuredSkillExecutionException exception) {
+            return exception;
+        } catch (Exception exception) {
+            return invalidStructuredResponse();
+        }
+    }
+
+    private static boolean matchesV2Status(int statusCode, StructuredSkillErrorType type) {
+        return switch (type) {
+            case INVALID_REQUEST, UNSUPPORTED_CONTRACT_VERSION, UNSUPPORTED_SKILL,
+                    STRUCTURED_OUTPUT_INVALID, RESPONSE_TOO_LARGE -> statusCode == 400;
+            case REQUEST_TOO_LARGE -> statusCode == 400 || statusCode == 413;
+            case FORBIDDEN -> statusCode == 401 || statusCode == 403 || statusCode == 409;
+            case SESSION_NOT_FOUND -> statusCode == 404;
+            case MODEL_UNAVAILABLE, SKILL_UNAVAILABLE -> statusCode == 503;
+            case MODEL_EXECUTION_FAILED -> statusCode == 500;
+        };
+    }
+
+    private static void validateV2ResultFields(JsonNode result, StructuredSkillName skill, Class<?> resultType) {
+        if (skill == StructuredSkillName.REQUIREMENT_FACT_EXTRACTION
+                && resultType == RequirementFactExtractionV2Result.class) {
+            exactStructuredFields(result, Set.of("function_key", "window_key", "requirement_facts",
+                    "testability_observations"));
+            exactArrayObjects(result.path("requirement_facts"),
+                    Set.of("fact_type", "statement", "source_quotes"));
+            for (JsonNode fact : result.path("requirement_facts")) {
+                exactArrayObjects(fact.path("source_quotes"), Set.of("evidence_key", "quote"));
+            }
+            exactArrayObjects(result.path("testability_observations"), Set.of("observation_type", "description",
+                    "affected_fact_types", "source_quotes"));
+            for (JsonNode observation : result.path("testability_observations")) {
+                exactArrayObjects(observation.path("source_quotes"), Set.of("evidence_key", "quote"));
+            }
+            return;
+        }
+        if (skill == StructuredSkillName.FUNCTIONAL_TESTCASE_DESIGN
+                && resultType == FunctionalTestcaseDesignV2Result.class) {
+            exactStructuredFields(result, Set.of("function_key", "test_point_key", "generation_outcome",
+                    "missing_information", "testcases"));
+            exactArrayObjects(result.path("testcases"), Set.of("name", "title", "priority", "preconditions",
+                    "initialization", "inputs", "steps", "expected_results", "evaluation_criteria",
+                    "result_evaluation_criteria", "termination_conditions", "result_collection",
+                    "requirement_fact_keys", "evidence_keys", "case_status", "missing_information"));
+            for (JsonNode testcase : result.path("testcases")) {
+                exactStructuredFields(testcase.path("initialization"), Set.of("hardware_configuration",
+                        "software_configuration", "test_configuration", "parameter_configuration"));
+                exactArrayObjects(testcase.path("inputs"), Set.of("content", "nature", "source", "method",
+                        "authenticity", "sequence"));
+                exactArrayObjects(testcase.path("steps"), Set.of("step_no", "action", "expected",
+                        "evaluation_criteria", "termination_or_error", "result_collection"));
+            }
+            return;
+        }
+        throw invalidStructuredResponse();
+    }
+
     private static void exactArrayObjects(JsonNode values, Set<String> expectedFields) {
         if (!values.isArray()) throw invalidStructuredResponse();
         for (JsonNode value : values) { if (!value.isObject()) throw invalidStructuredResponse(); exactStructuredFields(value, expectedFields); }
@@ -320,18 +610,35 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
      */
     @Override
     public ParsedMaterial readAll(RequirementScope scope, String knowledgeId, int requestedLimit) {
+        List<ParsedMaterialUnit> acceptedUnits = new ArrayList<>();
+        ParsedMaterialSummary summary = scanAll(scope, knowledgeId, requestedLimit,
+                page -> acceptedUnits.addAll(page.units()));
+        if (acceptedUnits.stream().map(ParsedMaterialUnit::unitId).distinct().count() != acceptedUnits.size()) {
+            throw parsedUnitsFailure("unit_id repeats across pages");
+        }
+        return new ParsedMaterial(summary.knowledgeId(), summary.totalUnits(), acceptedUnits);
+    }
+
+    /**
+     * Streams exact parsed-unit pages while preserving the same fail-closed cross-page checks as {@link #readAll}.
+     * Parsed text, unit identities, and cursors are released after the consumer durably stages each page. Global
+     * unit identity uniqueness is enforced by the V2 staging key; ordinal progress bounds cursor cycles without an
+     * in-memory cursor history. [Req-ID]: REQ-TGV2-003
+     */
+    @Override
+    public ParsedMaterialSummary scanAll(RequirementScope scope, String knowledgeId, int requestedLimit,
+            Consumer<ParsedMaterialPage> pageConsumer) {
         Objects.requireNonNull(scope, "scope must not be null");
+        Objects.requireNonNull(pageConsumer, "pageConsumer must not be null");
         String requestedKnowledgeId = requireText(knowledgeId, "knowledgeId");
         if (scope.documents().stream().noneMatch(document -> requestedKnowledgeId.equals(document.documentId()))) {
             throw new ScopeViolation("Requested material document is outside frozen RequirementScope");
         }
         if (requestedLimit < 1) throw new IllegalArgumentException("requestedLimit must be positive");
         int effectiveLimit = Math.min(requestedLimit, 100);
-        List<ParsedMaterialUnit> acceptedUnits = new ArrayList<>();
-        Set<String> unitIds = new HashSet<>();
-        Set<String> cursors = new HashSet<>();
         String cursor = null;
         Integer totalUnits = null;
+        int acceptedUnitCount = 0;
         int expectedOrdinal = 1;
         ParsedUnitsPageUnit previousUnit = null;
 
@@ -348,31 +655,39 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
             if (page.complete() && page.nextCursor() != null) throw parsedUnitsFailure("complete page must not include next_cursor");
             if (!page.complete() && page.nextCursor() == null) throw parsedUnitsFailure("non-complete page is missing next_cursor");
             if (page.units().isEmpty() && page.nextCursor() != null) throw parsedUnitsFailure("page with next_cursor made no progress");
+            if (cursor != null && cursor.equals(page.nextCursor())) {
+                throw parsedUnitsFailure("next_cursor loop made no progress");
+            }
 
+            List<ParsedMaterialUnit> acceptedPage = new ArrayList<>(page.units().size());
             for (ParsedUnitsPageUnit unit : page.units()) {
                 if (unit == null || unit.unitId() == null || unit.unitId().isBlank() || unit.content() == null) {
                     throw parsedUnitsFailure("unit is incomplete");
                 }
-                if (!unitIds.add(unit.unitId())) throw parsedUnitsFailure("unit_id repeats across pages");
                 if (unit.ordinal() != expectedOrdinal) throw parsedUnitsFailure("ordinal is not strictly continuous");
                 if (previousUnit != null && (unit.chunkIndex() < previousUnit.chunkIndex()
                         || (unit.chunkIndex() == previousUnit.chunkIndex()
                         && unit.unitId().compareTo(previousUnit.unitId()) <= 0))) {
                     throw parsedUnitsFailure("units are outside stable order");
                 }
-                acceptedUnits.add(new ParsedMaterialUnit(unit.unitId(), unit.chunkIndex(), unit.ordinal(), unit.content(),
+                acceptedPage.add(new ParsedMaterialUnit(unit.unitId(), unit.chunkIndex(), unit.ordinal(), unit.content(),
                         unit.startAt(), unit.endAt()));
                 previousUnit = unit;
                 expectedOrdinal++;
             }
+            acceptedUnitCount += acceptedPage.size();
+            if (acceptedUnitCount > totalUnits) {
+                throw parsedUnitsFailure("received unit count exceeds total_units");
+            }
+            pageConsumer.accept(new ParsedMaterialPage(
+                    requestedKnowledgeId, totalUnits, acceptedPage, page.complete()));
 
             if (page.nextCursor() == null) {
                 if (!page.complete()) throw parsedUnitsFailure("final page is not complete");
-                if (acceptedUnits.size() != totalUnits) throw parsedUnitsFailure("received unit count does not equal total_units");
-                return new ParsedMaterial(requestedKnowledgeId, totalUnits, acceptedUnits);
+                if (acceptedUnitCount != totalUnits) throw parsedUnitsFailure("received unit count does not equal total_units");
+                return new ParsedMaterialSummary(requestedKnowledgeId, totalUnits);
             }
             if (page.complete()) throw parsedUnitsFailure("complete page must be final");
-            if (!cursors.add(page.nextCursor())) throw parsedUnitsFailure("next_cursor loop detected");
             cursor = page.nextCursor();
         }
     }
@@ -734,10 +1049,16 @@ public final class WebClientKnowledgeAgentAdapter implements KnowledgeAgentPort,
     private static String requireText(String value, String field) { if (value == null || value.isBlank()) throw new IllegalArgumentException(field + " must not be blank"); return value; }
 
     private record SessionRequest(String title, String description) { }
-    private record StructuredSkillRequest(@JsonProperty("agent_id") String agentId, @JsonProperty("skill_name") String skillName,
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private record StructuredSkillRequest(@JsonProperty("contract_version") String contractVersion,
+            @JsonProperty("agent_id") String agentId, @JsonProperty("skill_name") String skillName,
             @JsonProperty("knowledge_base_ids") List<String> knowledgeBaseIds, @JsonProperty("knowledge_ids") List<String> knowledgeIds,
             @JsonProperty("system_scopes") List<SystemScopePayload> systemScopes, Object input) { }
-    private record StructuredHttpResponse(boolean successful, String body) { }
+    private record StructuredHttpResponse(int statusCode, String body) {
+        boolean successful() {
+            return statusCode >= 200 && statusCode < 300;
+        }
+    }
     private record SessionEnvelope(boolean success, SessionData data) { }
     private record SessionData(String id) { }
     private record AgentEnvelope(boolean success, AgentSummary data) { }

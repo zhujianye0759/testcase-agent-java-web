@@ -1,5 +1,7 @@
 package com.testcaseagent.diagnostics;
 
+import com.testcaseagent.validation.StructuredValidationFailure;
+import java.util.Objects;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,6 +37,29 @@ public final class WorkflowDiagnostics {
     public static void generation(String taskId, String batchId, String attemptId, String event, String payload) {
         record(taskId, "test-case-generation", null, null, null,
                 event + " batchId=" + batchId + " attemptId=" + attemptId, payload);
+    }
+
+    /**
+     * Records only the enumerated safe fields of a structured business-validation failure.
+     * Rejected model output, material text, and arbitrary exception messages are not accepted. [Req-ID]: REQ-FSC-007
+     */
+    public static void structuredValidationFailure(String taskId, String workId, String attemptId, int attempt,
+            StructuredValidationFailure failure) {
+        StructuredValidationFailure safe = Objects.requireNonNull(failure, "failure must not be null");
+        LOGGER.info("taskId={} stage=structured-business-validation workId={} attemptId={} attempt={} "
+                        + "code={} path={} message={}",
+                sanitize(taskId), sanitize(workId), sanitize(attemptId), attempt,
+                safe.code(), safe.path(), safe.message());
+    }
+
+    /**
+     * Records only the fixed task-level coordinator diagnostic.
+     * Arbitrary exception text and stacks are intentionally not accepted by this API. [Req-ID]: REQ-ESR-006
+     */
+    public static void structuredCoordinatorFailure(String taskId, StructuredValidationFailure failure) {
+        StructuredValidationFailure safe = Objects.requireNonNull(failure, "failure must not be null");
+        LOGGER.info("taskId={} stage=structured-coordinator-failure code={} path={} category={}",
+                sanitize(taskId), safe.code(), safe.path(), safe.message());
     }
 
     static String sanitize(String value) {

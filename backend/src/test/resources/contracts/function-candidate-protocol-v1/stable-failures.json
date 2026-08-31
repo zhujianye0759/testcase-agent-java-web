@@ -1,0 +1,62 @@
+{
+  "cases": [
+    {
+      "name": "结构化输出修复后仍无效",
+      "http_status": 400,
+      "body": {
+        "success": false,
+        "error": {
+          "code": 1000,
+          "message": "structured isolated skill output is invalid",
+          "details": {
+            "type": "structured_output_invalid",
+            "repair_attempted": true
+          }
+        }
+      }
+    },
+    {
+      "name": "响应超过候选协议上限",
+      "http_status": 400,
+      "body": {
+        "success": false,
+        "error": {
+          "code": 1000,
+          "message": "structured isolated skill response is too large",
+          "details": {
+            "type": "response_too_large",
+            "repair_attempted": true
+          }
+        }
+      }
+    },
+    {
+      "name": "请求超过候选协议上限",
+      "http_status": 413,
+      "body": {
+        "success": false,
+        "error": {
+          "code": 1000,
+          "message": "structured isolated skill request is too large",
+          "details": {
+            "type": "request_too_large"
+          }
+        }
+      }
+    },
+    {
+      "name": "模型执行失败",
+      "http_status": 500,
+      "body": {
+        "success": false,
+        "error": {
+          "code": 1007,
+          "message": "structured isolated skill execution failed",
+          "details": {
+            "type": "model_execution_failed"
+          }
+        }
+      }
+    }
+  ]
+}

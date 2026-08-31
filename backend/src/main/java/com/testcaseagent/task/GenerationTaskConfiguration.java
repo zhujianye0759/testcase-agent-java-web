@@ -31,6 +31,10 @@ import org.springframework.transaction.PlatformTransactionManager;
 
 import java.nio.file.Path;
 import java.time.Clock;
+import java.time.Duration;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Wires the task endpoint only when server-side integration dependencies exist.
@@ -68,7 +72,11 @@ public class GenerationTaskConfiguration {
     KnowledgeAgentPort knowledgeAgentPort(KnowledgeAgentProperties properties) {
         return new WebClientKnowledgeAgentAdapter(
                 properties.getApiBaseUrl(), properties.getApiKey(), properties.getTimeout(),
-                properties.getMaxAgentDiscoveryAttempts(), properties.getMaxEventCharacters());
+                properties.getMaxAgentDiscoveryAttempts(), properties.getMaxEventCharacters(),
+                properties.getFeatureReconciliationV2RequestMaxBytes(),
+                properties.getFeatureReconciliationV2ResponseMaxBytes(),
+                properties.getStructuredContractV2RequestMaxBytes(),
+                KnowledgeAgentProperties.DEFAULT_STRUCTURED_CONTRACT_V2_RESPONSE_MAX_BYTES);
     }
 
     /**
@@ -125,6 +133,26 @@ public class GenerationTaskConfiguration {
                 new org.springframework.transaction.support.TransactionTemplate(transactionManager), Clock.systemUTC(), objectMapper);
     }
 
+    /** Shared daemon scheduler for exact-attempt structured lease renewal. [Req-ID]: REQ-SEW-003 */
+    @Bean(destroyMethod = "shutdown")
+    ScheduledExecutorService structuredWorkLeaseScheduler() {
+        AtomicInteger sequence = new AtomicInteger();
+        return Executors.newScheduledThreadPool(5, runnable -> {
+            Thread thread = new Thread(runnable, "structured-work-lease-" + sequence.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        });
+    }
+
+    /** Renews a five-minute work lease once per minute while its exact attempt is active. [Req-ID]: REQ-SEW-002, REQ-SEW-003 */
+    @Bean
+    StructuredWorkLeaseHeartbeat structuredWorkLeaseHeartbeat(
+            StructuredGenerationAcceptanceStore acceptanceStore,
+            ScheduledExecutorService structuredWorkLeaseScheduler) {
+        return new ScheduledStructuredWorkLeaseHeartbeat(
+                acceptanceStore, structuredWorkLeaseScheduler, Duration.ofMinutes(1));
+    }
+
     @Bean
     RequirementMaterialTraversalService requirementMaterialTraversalService(
             @Qualifier("requirementMaterialReaderPort") RequirementMaterialReaderPort materialReader,
@@ -160,9 +188,15 @@ public class GenerationTaskConfiguration {
             @Qualifier("structuredSkillExecutionPort") StructuredSkillExecutionPort executionPort,
             @Qualifier("structuredSkillSessionPort") StructuredSkillSessionPort sessionPort,
             StructuredGenerationAcceptanceStore acceptanceStore,
-            WorkbookExporter workbookExporter, ObjectMapper objectMapper) {
-        return new DefaultStructuredAllGenerationCoordinator(repository, traversalService, executionPort,
-                sessionPort, acceptanceStore, workbookExporter, objectMapper);
+            WorkbookExporter workbookExporter, ObjectMapper objectMapper,
+            StructuredWorkLeaseHeartbeat leaseHeartbeat) {
+        StructuredAllGenerationCoordinator historical = new DefaultStructuredAllGenerationCoordinator(
+                repository, traversalService, executionPort, sessionPort, acceptanceStore, workbookExporter,
+                objectMapper, leaseHeartbeat);
+        StructuredAllGenerationCoordinator v2 = new V2StructuredAllGenerationCoordinator(
+                repository, traversalService, executionPort, sessionPort, acceptanceStore, workbookExporter,
+                objectMapper, leaseHeartbeat);
+        return new VersionedStructuredAllGenerationCoordinator(historical, v2);
     }
 
     @Bean

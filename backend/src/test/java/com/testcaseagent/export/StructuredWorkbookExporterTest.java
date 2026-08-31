@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.List;
@@ -19,13 +20,62 @@ class StructuredWorkbookExporterTest {
     @TempDir
     Path artifactRoot;
 
+    /** [Req-ID]: REQ-TGV2-009, REQ-TGV2-010 */
+    @Test
+    void readsBackV2FeedbackAndFormalCasesFromExactlyTheTwoFrozenSheets() throws Exception {
+        StructuredReviewRow feedback = new StructuredReviewRow("feedback-internal", 1,
+                StructuredReviewRow.Source.TESTABILITY_FEEDBACK, "订单提交", "未量化", "业务规则",
+                "响应时间没有量化标准", "", "", "", "", "", "", "正式需求材料", true);
+        StructuredReviewRow pending = new StructuredReviewRow("pending-internal", 2,
+                StructuredReviewRow.Source.GENERATION_OUTCOME, "订单提交", "仅生成待确认用例", "测试用例生成",
+                "缺少角色权限", "", "", "未计入正式覆盖", "补充缺失信息后重新生成", "", "信息待补充",
+                "已保存的生成结果", true);
+        StructuredReviewRow unable = new StructuredReviewRow("unable-internal", 3,
+                StructuredReviewRow.Source.GENERATION_OUTCOME, "订单撤销", "无法生成用例", "测试用例生成",
+                "缺少撤销前置条件", "", "", "未计入正式覆盖", "补充缺失信息后重新生成", "", "信息待补充",
+                "已保存的生成结果", true);
+        StructuredTestCaseRow formal = testcase("formal-internal", "订单提交正式用例",
+                StructuredTestCaseRow.Status.FORMAL);
+
+        WorkbookArtifact artifact = new ApachePoiWorkbookExporter(artifactRoot).exportStructured(
+                new StructuredWorkbookExportRequest("task-v2", List.of(feedback, pending, unable), List.of(formal)));
+
+        try (XSSFWorkbook workbook = new XSSFWorkbook(artifact.path().toFile())) {
+            assertThat(workbook.getNumberOfSheets()).isEqualTo(2);
+            assertThat(java.util.stream.IntStream.range(0, workbook.getNumberOfSheets())
+                    .mapToObj(workbook::getSheetName).toList())
+                    .containsExactly("需求与功能清单审查发现", "测试用例");
+            assertThat(workbook.getSheetAt(0).getRow(1).getCell(1).getStringCellValue())
+                    .isEqualTo("需求可测性反馈");
+            assertThat(workbook.getSheetAt(0).getRow(1).getCell(5).getStringCellValue())
+                    .isEqualTo("响应时间没有量化标准");
+            assertThat(workbook.getSheetAt(0).getRow(2).getCell(1).getStringCellValue())
+                    .isEqualTo("用例生成结果");
+            assertThat(workbook.getSheetAt(0).getRow(2).getCell(3).getStringCellValue())
+                    .isEqualTo("仅生成待确认用例");
+            assertThat(workbook.getSheetAt(0).getRow(2).getCell(5).getStringCellValue())
+                    .isEqualTo("缺少角色权限");
+            assertThat(workbook.getSheetAt(0).getRow(3).getCell(3).getStringCellValue())
+                    .isEqualTo("无法生成用例");
+            assertThat(workbook.getSheetAt(1).getRow(1).getCell(4).getStringCellValue())
+                    .isEqualTo("正式依据");
+            assertThat(workbook.getSheetAt(0).getRow(1).toString()).doesNotContain("feedback-internal");
+            assertThat(workbook.getSheetAt(0).getRow(2).toString()).doesNotContain("pending-internal");
+            assertThat(workbook.getSheetAt(0).getRow(3).toString()).doesNotContain("unable-internal");
+            assertThat(workbook.getSheetAt(1).getRow(1).toString()).doesNotContain("formal-internal");
+        }
+    }
+
     @Test
     void exportsOnlyValidatedStructuredRowsWithTwoSheetsAndVisibleStatus() throws Exception {
         StructuredWorkbookExportRequest request = new StructuredWorkbookExportRequest("task-1", List.of(
                 new StructuredReviewRow("finding-key-2", 2, StructuredReviewRow.Source.REQUIREMENT_MATERIAL_REVIEW,
                         "订单查询", "ambiguous", "补充登录超时处理", true),
                 new StructuredReviewRow("finding-key-1", 1, StructuredReviewRow.Source.FEATURE_RECONCILIATION,
-                        "订单查询", "conflict", "范围待确认", true)),
+                        "订单查询", "conflict", "范围待确认", true),
+                new StructuredReviewRow("candidate-ref-internal", 3,
+                        StructuredReviewRow.Source.FUNCTION_CANDIDATE_AUDIT,
+                        "订单/撤销", "待确认功能候选", "材料未说明撤销前置条件", true)),
                 List.of(
                         testcase("case-source-2", "待确认候选", StructuredTestCaseRow.Status.PENDING_CONFIRMATION),
                         testcase("case-source-1", "正式用例", StructuredTestCaseRow.Status.FORMAL)));
@@ -43,11 +93,20 @@ class StructuredWorkbookExporterTest {
                     "硬件初始化", "软件初始化", "测试初始化", "参数初始化", "测试输入", "执行步骤", "逐步预期", "逐步评价",
                     "异常或终止提示", "逐步结果采集", "总体预期", "执行评价标准", "结果评价标准", "终止条件", "结果采集",
                     "编写人", "编写日期", "对应需求内容", "缺失信息");
-            assertThat(workbook.getSheetAt(0).getLastRowNum()).isEqualTo(2);
+            assertThat(workbook.getSheetAt(0).getLastRowNum()).isEqualTo(3);
             assertThat(workbook.getSheetAt(0).getRow(1).getCell(0).getStringCellValue()).isEqualTo("1");
             assertThat(workbook.getSheetAt(0).getRow(1).getCell(1).getStringCellValue()).isEqualTo("功能核对");
             assertThat(workbook.getSheetAt(0).getRow(1).getCell(2).getStringCellValue()).isEqualTo("订单查询");
             assertThat(workbook.getSheetAt(0).getRow(1).getCell(5).getStringCellValue()).doesNotContain("finding-key-1");
+            assertThat(workbook.getSheetAt(0).getRow(3).getCell(1).getStringCellValue()).isEqualTo("功能候选审查");
+            assertThat(workbook.getSheetAt(0).getRow(3).getCell(2).getStringCellValue()).isEqualTo("订单/撤销");
+            assertThat(workbook.getSheetAt(0).getRow(3).getCell(3).getStringCellValue()).isEqualTo("待确认功能候选");
+            String candidateAuditRow = java.util.stream.IntStream.range(0, 13)
+                    .mapToObj(index -> workbook.getSheetAt(0).getRow(3).getCell(index).getStringCellValue())
+                    .collect(java.util.stream.Collectors.joining("|"));
+            assertThat(candidateAuditRow)
+                    .contains("材料未说明撤销前置条件")
+                    .doesNotContain("candidate-ref-internal", "candidate_linked", "model_omitted_unit");
             assertThat(workbook.getSheetAt(1).getRow(1).getCell(4).getStringCellValue()).isEqualTo("正式依据");
             assertThat(workbook.getSheetAt(1).getRow(2).getCell(4).getStringCellValue()).isEqualTo("待确认候选");
             assertThat(workbook.getSheetAt(1).getRow(1).getCell(0).getCellType()).isEqualTo(CellType.STRING);
@@ -131,6 +190,115 @@ class StructuredWorkbookExporterTest {
                     "硬件初始化", "软件初始化", "测试初始化", "参数初始化", "测试输入", "执行步骤", "逐步预期", "逐步评价",
                     "异常或终止提示", "逐步结果采集", "总体预期", "执行评价标准", "结果评价标准", "终止条件", "结果采集",
                     "编写人", "编写日期", "对应需求内容", "缺失信息");
+        }
+    }
+
+    /** [Req-ID]: REQ-TGV2-009 */
+    @Test
+    void flushesStructuredRowsBeyondTheStreamingWindowWithoutLosingOrder() throws Exception {
+        StructuredWorkbookRowSource source = new StructuredWorkbookRowSource() {
+            @Override public String taskId() { return "task-streaming"; }
+            @Override public long reviewRowCount() { return 1_200; }
+            @Override public long testCaseRowCount() { return 0; }
+            @Override public void forEachReview(java.util.function.Consumer<StructuredReviewRow> consumer) {
+                for (int index = 0; index < 1_200; index++) {
+                    consumer.accept(new StructuredReviewRow("review-" + String.format("%04d", index), index + 1,
+                            StructuredReviewRow.Source.TESTABILITY_FEEDBACK, "功能" + index,
+                            "信息待补充", "反馈" + index, true));
+                }
+            }
+            @Override public void forEachTestCase(java.util.function.Consumer<StructuredTestCaseRow> consumer) { }
+        };
+
+        WorkbookArtifact artifact = new ApachePoiWorkbookExporter(artifactRoot).exportStructuredRows(source);
+
+        try (XSSFWorkbook workbook = new XSSFWorkbook(artifact.path().toFile())) {
+            assertThat(workbook.getSheetAt(0).getLastRowNum()).isEqualTo(1_200);
+            assertThat(workbook.getSheetAt(0).getRow(1_200).getCell(2).getStringCellValue())
+                    .isEqualTo("功能1199");
+            assertThat(workbook.getSheetAt(1).getLastRowNum()).isZero();
+        }
+    }
+
+    @Test
+    void rejectsStreamingRowCountDriftWithoutPublishingAWorkbook() throws Exception {
+        StructuredWorkbookRowSource source = new StructuredWorkbookRowSource() {
+            @Override public String taskId() { return "task-drift"; }
+            @Override public long reviewRowCount() { return 2; }
+            @Override public long testCaseRowCount() { return 0; }
+            @Override public void forEachReview(java.util.function.Consumer<StructuredReviewRow> consumer) {
+                consumer.accept(new StructuredReviewRow("review-1", 1,
+                        StructuredReviewRow.Source.TESTABILITY_FEEDBACK, "通用功能", "信息待补充", "反馈", true));
+            }
+            @Override public void forEachTestCase(java.util.function.Consumer<StructuredTestCaseRow> consumer) { }
+        };
+
+        assertThatThrownBy(() -> new ApachePoiWorkbookExporter(artifactRoot).exportStructuredRows(source))
+                .isInstanceOf(WorkbookExportException.class)
+                .hasMessageContaining("row count");
+        try (var files = Files.list(artifactRoot)) {
+            assertThat(files.filter(path -> path.getFileName().toString().endsWith(".xlsx")).toList()).isEmpty();
+        }
+    }
+
+    /** [Req-ID]: REQ-TGV2-009 */
+    @Test
+    void rejectsDuplicateStreamingSourceIdentityWithoutPublishingAWorkbook() throws Exception {
+        StructuredWorkbookRowSource source = new StructuredWorkbookRowSource() {
+            @Override public String taskId() { return "task-duplicate-stream"; }
+            @Override public long reviewRowCount() { return 2; }
+            @Override public long testCaseRowCount() { return 0; }
+            @Override public void forEachReview(java.util.function.Consumer<StructuredReviewRow> consumer) {
+                consumer.accept(new StructuredReviewRow("review-1", 1,
+                        StructuredReviewRow.Source.TESTABILITY_FEEDBACK, "通用功能", "信息待补充", "反馈一", true));
+                consumer.accept(new StructuredReviewRow("review-1", 2,
+                        StructuredReviewRow.Source.TESTABILITY_FEEDBACK, "另一个功能", "信息待补充", "反馈二", true));
+            }
+            @Override public void forEachTestCase(java.util.function.Consumer<StructuredTestCaseRow> consumer) { }
+        };
+
+        assertThatThrownBy(() -> new ApachePoiWorkbookExporter(artifactRoot).exportStructuredRows(source))
+                .isInstanceOf(WorkbookExportException.class)
+                .hasMessageContaining("duplicate");
+        try (var files = Files.list(artifactRoot)) {
+            assertThat(files.filter(path -> path.getFileName().toString().endsWith(".xlsx")).toList()).isEmpty();
+        }
+    }
+
+    /** [Req-ID]: REQ-TGV2-009 */
+    @Test
+    void rejectsBlankStreamingSourceIdentityWithoutPublishingAWorkbook() throws Exception {
+        StructuredWorkbookRowSource source = new StructuredWorkbookRowSource() {
+            @Override public String taskId() { return "task-blank-stream"; }
+            @Override public long reviewRowCount() { return 1; }
+            @Override public long testCaseRowCount() { return 0; }
+            @Override public void forEachReview(java.util.function.Consumer<StructuredReviewRow> consumer) {
+                consumer.accept(new StructuredReviewRow(" ", 1,
+                        StructuredReviewRow.Source.TESTABILITY_FEEDBACK, "通用功能", "信息待补充", "反馈", true));
+            }
+            @Override public void forEachTestCase(java.util.function.Consumer<StructuredTestCaseRow> consumer) { }
+        };
+
+        assertThatThrownBy(() -> new ApachePoiWorkbookExporter(artifactRoot).exportStructuredRows(source))
+                .isInstanceOf(WorkbookExportException.class)
+                .hasMessageContaining("source identity");
+        try (var files = Files.list(artifactRoot)) {
+            assertThat(files.toList()).isEmpty();
+        }
+    }
+
+    /** [Req-ID]: REQ-TGV2-009 */
+    @Test
+    void failsClosedWhenTheFilesystemCannotAtomicallyPublishTheVerifiedWorkbook() throws Exception {
+        ApachePoiWorkbookExporter exporter = new ApachePoiWorkbookExporter(artifactRoot,
+                (source, target) -> { throw new AtomicMoveNotSupportedException(
+                        source.toString(), target.toString(), "atomic publication unavailable"); });
+
+        assertThatThrownBy(() -> exporter.exportStructured(
+                new StructuredWorkbookExportRequest("task-no-atomic-move", List.of(), List.of())))
+                .isInstanceOf(WorkbookExportException.class);
+        try (var files = Files.list(artifactRoot)) {
+            assertThat(files.toList()).isEmpty();
         }
     }
 

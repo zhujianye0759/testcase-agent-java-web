@@ -69,6 +69,7 @@ class TaskExecutionQueueIntegrationTest {
 
     @BeforeEach
     void cleanDatabase() {
+        jdbcTemplate.update("DELETE FROM v2_approved_function");
         jdbcTemplate.update("DELETE FROM structured_reference_binding");
         jdbcTemplate.update("DELETE FROM structured_generation_attempt");
         jdbcTemplate.update("DELETE FROM structured_generation_work_item");
@@ -88,7 +89,7 @@ class TaskExecutionQueueIntegrationTest {
         List<String> taskIds = new ArrayList<>();
         for (int index = 0; index < 6; index++) {
             String taskId = UUID.randomUUID().toString();
-            repository.createTask(taskId, request("feature-" + index));
+            repository.createTask(taskId, GenerationWorkflowV2RoutingTest.request());
             taskIds.add(taskId);
         }
 
@@ -135,7 +136,7 @@ class TaskExecutionQueueIntegrationTest {
         String taskId = UUID.randomUUID().toString();
         String batchId = UUID.randomUUID().toString();
         String attemptId = UUID.randomUUID().toString();
-        repository.createTask(taskId, request("feature-recovery"));
+        repository.createTask(taskId, GenerationWorkflowV2RoutingTest.request());
         repository.createBatch(batchId, taskId, "feature-recovery");
         repository.createAttempt(attemptId, batchId);
 
@@ -165,11 +166,7 @@ class TaskExecutionQueueIntegrationTest {
         String taskId = UUID.randomUUID().toString();
         String batchId = UUID.randomUUID().toString();
         String attemptId = UUID.randomUUID().toString();
-        CreateGenerationTaskRequest frozenAll = new CreateGenerationTaskRequest(GenerationTaskMode.ALL, "ff-1", List.of("ff-1"),
-                java.util.Map.of("ff-1", "订单查询"), FewShotPolicy.NONE, "1.0", "1.0", "queue-agent",
-                new RequirementScope("requirement-kb", "system-1", "version-1", "admission_material", null,
-                        List.of(new RequirementDocumentCoordinate("function-doc", "function_list"))),
-                new ExampleScope("example-kb", List.of("example-1")), List.of("function_list"), "恢复冻结功能");
+        CreateGenerationTaskRequest frozenAll = GenerationWorkflowV2RoutingTest.request();
         repository.createTask(taskId, frozenAll);
         repository.createBatch(batchId, taskId, "ff-1", 1);
         repository.createAttempt(attemptId, batchId);
@@ -193,6 +190,8 @@ class TaskExecutionQueueIntegrationTest {
         String validatingTask = "structured-validating";
         repository.createTask(generatingTask, request("structured-g"));
         repository.createTask(validatingTask, request("structured-v"));
+        jdbcTemplate.update("UPDATE generation_task SET workflow_version = '2.0' WHERE id IN (?, ?)",
+                generatingTask, validatingTask);
         jdbcTemplate.update("""
                 UPDATE generation_task SET status = 'GENERATING', structured_processing_status = 'RUNNING',
                     structured_coverage_status = 'PENDING' WHERE id = ?
@@ -230,11 +229,88 @@ class TaskExecutionQueueIntegrationTest {
         assertThat(jdbcTemplate.queryForList("""
                 SELECT failure_type FROM structured_generation_attempt
                 WHERE id IN ('attempt-generating','attempt-validating')
-                """, String.class)).containsOnly("model_execution_failed");
+                """, String.class)).containsOnly("worker_interrupted");
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT status FROM structured_generation_work_item WHERE id = 'work-completed'", String.class))
                 .isEqualTo("COMPLETED");
         assertThat(queue.claimNext()).isPresent();
+    }
+
+    /** [Req-ID]: REQ-TGV2-008, REQ-TGV2-010 */
+    @Test
+    void startupRecoveryClosesFinalizationCrashWindowsWithoutMutatingHistoricalTasks() {
+        String unpublishedV2 = "v2-unpublished-finalization";
+        String terminalV2 = "v2-terminal-with-slot";
+        String historicalV1 = "v1-read-only-with-slot";
+        repository.createTask(unpublishedV2, GenerationWorkflowV2RoutingTest.request());
+        repository.createTask(terminalV2, GenerationWorkflowV2RoutingTest.request());
+        repository.createTask(historicalV1, request("historical-slot"));
+        jdbcTemplate.update("""
+                UPDATE generation_task
+                SET status='VALIDATING', structured_processing_status='COMPLETED',
+                    structured_coverage_status='COMPLETE', artifact_id=NULL, artifact_sha256=NULL, artifact_path=NULL
+                WHERE id=?
+                """, unpublishedV2);
+        jdbcTemplate.update("""
+                UPDATE generation_task
+                SET status='COMPLETED', structured_processing_status='COMPLETED',
+                    structured_coverage_status='COMPLETE', artifact_id='artifact',
+                    artifact_sha256=?, artifact_path='artifact.xlsx'
+                WHERE id=?
+                """, "a".repeat(64), terminalV2);
+        jdbcTemplate.update("UPDATE generation_task SET status='FAILED' WHERE id=?", historicalV1);
+        jdbcTemplate.update("UPDATE task_execution_slot SET task_id=? WHERE slot_number=1", unpublishedV2);
+        jdbcTemplate.update("UPDATE task_execution_slot SET task_id=? WHERE slot_number=2", terminalV2);
+        jdbcTemplate.update("UPDATE task_execution_slot SET task_id=? WHERE slot_number=3", historicalV1);
+        var historicalBefore = jdbcTemplate.queryForMap("SELECT * FROM generation_task WHERE id=?", historicalV1);
+
+        queue.recoverAtStartup();
+
+        assertThat(jdbcTemplate.queryForMap("""
+                SELECT status, structured_processing_status, structured_coverage_status, artifact_id
+                FROM generation_task WHERE id=?
+                """, unpublishedV2)).containsEntry("status", "QUEUED")
+                .containsEntry("structured_processing_status", "PENDING")
+                .containsEntry("structured_coverage_status", "PENDING")
+                .containsEntry("artifact_id", null);
+        assertThat(jdbcTemplate.queryForMap("SELECT * FROM generation_task WHERE id=?", historicalV1))
+                .isEqualTo(historicalBefore);
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM task_execution_slot WHERE task_id IN (?,?,?)
+                """, Integer.class, unpublishedV2, terminalV2, historicalV1)).isZero();
+        assertThat(repository.taskStatus(terminalV2)).isEqualTo(GenerationTaskStatus.COMPLETED);
+    }
+
+    @Test
+    void everyHistoricalV1ShapeRemainsReadOnlyWhenTheQueueClaimsV2Work() {
+        String historicalEmptyAll = "historical-empty-all";
+        CreateGenerationTaskRequest emptyAll = new CreateGenerationTaskRequest(GenerationTaskMode.ALL, "legacy",
+                List.of(), java.util.Map.of(), FewShotPolicy.NONE, "1.0", "1.0", "queue-agent",
+                new RequirementScope("requirement-kb", "system-1", "version-1", "admission_material", null,
+                        List.of(new RequirementDocumentCoordinate("function-doc", "function_list"))),
+                new ExampleScope("example-kb", List.of("example-1")), List.of("function_list"), "历史任务");
+        repository.createTask(historicalEmptyAll, emptyAll);
+        String historicalFeature = "historical-feature";
+        repository.createTask(historicalFeature, request("legacy-feature"));
+        String historicalPopulatedAll = "historical-populated-all";
+        repository.createTask(historicalPopulatedAll, new CreateGenerationTaskRequest(
+                GenerationTaskMode.ALL, "legacy-all", List.of("legacy-feature"),
+                java.util.Map.of("legacy-feature", "旧功能"), FewShotPolicy.NONE, "1.0", "1.0", "queue-agent",
+                emptyAll.requirementScope(), emptyAll.exampleScope(), List.of("function_list"), "历史任务"));
+        String v2Task = "v2-runnable";
+        repository.createTask(v2Task, GenerationWorkflowV2RoutingTest.request());
+
+        queue.recoverAtStartup();
+        Optional<TaskExecutionClaim> claim = queue.claimNext();
+
+        assertThat(claim).hasValueSatisfying(value -> assertThat(value.taskId()).isEqualTo(v2Task));
+        assertThat(List.of(historicalEmptyAll, historicalFeature, historicalPopulatedAll))
+                .allSatisfy(taskId -> {
+                    assertThat(repository.taskStatus(taskId)).isEqualTo(GenerationTaskStatus.QUEUED);
+                    assertThat(jdbcTemplate.queryForObject(
+                            "SELECT COUNT(*) FROM task_execution_slot WHERE task_id = ?", Integer.class, taskId))
+                            .isZero();
+                });
     }
 
     private void insertStructuredRunningWork(String taskId, String workId, String attemptId, String identity) {

@@ -16,16 +16,31 @@ public final class StructuredCompletionGate {
                                 : snapshot.coveredFormalTestPointCount() > 0
                                         ? StructuredCoverageStatus.PARTIAL
                                         : StructuredCoverageStatus.UNABLE_TO_GENERATE;
+        boolean trustedCandidateDelivery = !snapshot.candidateProtocol()
+                || snapshot.acceptedFunctionCandidateCount() > 0
+                        && snapshot.coveredFormalTestPointCount() > 0;
+        if (snapshot.candidateProtocol()) {
+            if (!trustedCandidateDelivery) {
+                coverage = snapshot.allWorkTerminal()
+                        ? StructuredCoverageStatus.UNABLE_TO_GENERATE
+                        : StructuredCoverageStatus.PENDING;
+            } else if (snapshot.incompleteFunctionScopeCount() > 0
+                    || snapshot.partialEligibleFailedWorkCount() > 0) {
+                coverage = StructuredCoverageStatus.PARTIAL;
+            }
+        }
         if (snapshot.cancelled()) {
             return new Outcome(StructuredProcessingStatus.CANCELLED, coverage, false);
         }
+        int criticalFailedWorkCount = snapshot.failedWorkCount() - snapshot.partialEligibleFailedWorkCount();
         boolean completed = snapshot.allWorkTerminal()
                 && snapshot.parsedUnitsComplete()
                 && snapshot.completedReviewWork() == snapshot.totalReviewWork()
                 && snapshot.reconciliationComplete()
                 && snapshot.scopeFrozen()
                 && snapshot.artifactValidated()
-                && snapshot.failedWorkCount() == 0;
+                && criticalFailedWorkCount == 0
+                && trustedCandidateDelivery;
         if (completed) return new Outcome(StructuredProcessingStatus.COMPLETED, coverage, true);
         if (!snapshot.allWorkTerminal()) return new Outcome(StructuredProcessingStatus.RUNNING, coverage, false);
         return new Outcome(StructuredProcessingStatus.FAILED, coverage, false);
@@ -45,12 +60,30 @@ public final class StructuredCompletionGate {
             int acceptedWorkCount,
             int failedWorkCount,
             boolean allWorkTerminal,
+            boolean candidateProtocol,
+            int acceptedFunctionCandidateCount,
+            int incompleteFunctionScopeCount,
+            int partialEligibleFailedWorkCount,
             boolean cancelled) {
+        /** Retains the historical completion contract for old structured tasks and callers. */
+        public Snapshot(boolean parsedUnitsComplete, int totalReviewWork, int completedReviewWork,
+                boolean reconciliationComplete, boolean scopeFrozen, int formalTestPointTotal,
+                int coveredFormalTestPointCount, int pendingCandidateCaseCount, boolean artifactValidated,
+                int acceptedWorkCount, int failedWorkCount, boolean allWorkTerminal, boolean cancelled) {
+            this(parsedUnitsComplete, totalReviewWork, completedReviewWork, reconciliationComplete, scopeFrozen,
+                    formalTestPointTotal, coveredFormalTestPointCount, pendingCandidateCaseCount, artifactValidated,
+                    acceptedWorkCount, failedWorkCount, allWorkTerminal, false, 0, 0, 0, cancelled);
+        }
+
         private void validate() {
             if (totalReviewWork < 0 || completedReviewWork < 0 || completedReviewWork > totalReviewWork
                     || formalTestPointTotal < 0 || coveredFormalTestPointCount < 0
                     || coveredFormalTestPointCount > formalTestPointTotal || pendingCandidateCaseCount < 0
-                    || acceptedWorkCount < 0 || failedWorkCount < 0) {
+                    || acceptedWorkCount < 0 || failedWorkCount < 0 || acceptedFunctionCandidateCount < 0
+                    || incompleteFunctionScopeCount < 0 || partialEligibleFailedWorkCount < 0
+                    || partialEligibleFailedWorkCount > failedWorkCount
+                    || !candidateProtocol && (acceptedFunctionCandidateCount != 0
+                            || incompleteFunctionScopeCount != 0 || partialEligibleFailedWorkCount != 0)) {
                 throw new IllegalArgumentException("Structured completion counts are invalid");
             }
         }

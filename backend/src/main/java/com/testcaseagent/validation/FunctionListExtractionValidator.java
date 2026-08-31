@@ -1,6 +1,7 @@
 package com.testcaseagent.validation;
 
 import com.testcaseagent.identity.LengthPrefixedSha256;
+import com.testcaseagent.knowledgeagent.FunctionListExtractionResult;
 import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.HexFormat;
@@ -35,6 +36,11 @@ public final class FunctionListExtractionValidator {
             ModelItem row = Objects.requireNonNull(value, "function-list item must not be null");
             String path = displayText(row.path(), "path");
             String description = displayText(row.description(), "description");
+            String targetQuote = required(row.targetQuote(), "targetQuote");
+            if (targetQuote.codePointCount(0, targetQuote.length())
+                    > FunctionListExtractionResult.MAX_TARGET_QUOTE_CODE_POINTS) {
+                throw new IllegalArgumentException("targetQuote exceeds maximum Unicode characters");
+            }
             List<String> evidenceKeys = requiredList(row.evidenceKeys(), "evidenceKeys");
             if (evidenceKeys.isEmpty() || evidenceKeys.size() > 100) {
                 throw new IllegalArgumentException("Function-list evidenceKeys must contain 1..100 rows");
@@ -47,8 +53,22 @@ public final class FunctionListExtractionValidator {
                 }
                 item.registry().requireEvidence(key, item.materialKey());
             }
-            validated.add(new ValidatedItem(stableKey(item.registry().taskId(), path, description),
-                    path, description, List.copyOf(distinct)));
+            String normalizedQuote = directEvidenceText(targetQuote);
+            boolean quoteBound = distinct.stream().map(item.targetEvidenceTexts()::get)
+                    .filter(Objects::nonNull)
+                    .map(FunctionListExtractionValidator::directEvidenceText)
+                    .anyMatch(evidenceText -> evidenceText.contains(normalizedQuote));
+            if (!quoteBound) {
+                throw new IllegalArgumentException(
+                        "Function-list targetQuote must be a continuous excerpt of one referenced target unit");
+            }
+            String normalizedLeaf = directEvidenceText(finalPathLeaf(path));
+            if (!normalizedQuote.contains(normalizedLeaf)) {
+                throw new IllegalArgumentException(
+                        "Function-list targetQuote must contain the final path leaf");
+            }
+            validated.add(new ValidatedItem(stableItemKey(item.registry().taskId(), path, description),
+                    path, description, List.copyOf(distinct), List.of(targetQuote)));
         }
         return List.copyOf(validated);
     }
@@ -75,14 +95,18 @@ public final class FunctionListExtractionValidator {
                     throw new IllegalArgumentException("Merged function-list evidenceKeys exceed 100 rows");
                 }
             }
+            requiredList(item.targetQuotes(), "targetQuotes").stream()
+                    .map(quote -> required(quote, "targetQuote"))
+                    .forEach(state.targetQuotes::add);
         }
         return merged.entrySet().stream()
                 .map(entry -> new ValidatedItem(entry.getKey(), entry.getValue().path, entry.getValue().description,
-                        List.copyOf(entry.getValue().evidenceKeys)))
+                        List.copyOf(entry.getValue().evidenceKeys), List.copyOf(entry.getValue().targetQuotes)))
                 .toList();
     }
 
-    private static String stableKey(String taskId, String path, String description) {
+    /** Returns the task-owned formal function identity shared by legacy and candidate extraction. */
+    public static String stableItemKey(String taskId, String path, String description) {
         return "fli-" + HexFormat.of().formatHex(LengthPrefixedSha256.digest(
                 required(taskId, "taskId"), canonical(path), canonical(description)));
     }
@@ -97,6 +121,27 @@ public final class FunctionListExtractionValidator {
         return ReaderFacingTextPolicy.requireSafe(normalized, field);
     }
 
+    /** Context may supply parent hierarchy, but the target-owned quote must prove the final function leaf. */
+    private static String finalPathLeaf(String path) {
+        String[] segments = Normalizer.normalize(required(path, "path"), Normalizer.Form.NFKC)
+                .split("[/\\\\→>›»|]+");
+        for (int index = segments.length - 1; index >= 0; index--) {
+            if (!segments[index].isBlank()) return segments[index].strip();
+        }
+        throw new IllegalArgumentException("path must contain a non-blank final leaf");
+    }
+
+    /** Ignores layout whitespace only; punctuation and all other source characters remain evidence-bearing. */
+    private static String directEvidenceText(String value) {
+        String normalized = Normalizer.normalize(required(value, "text"), Normalizer.Form.NFKC)
+                .toLowerCase(Locale.ROOT);
+        StringBuilder result = new StringBuilder(normalized.length());
+        normalized.codePoints().filter(codePoint -> !Character.isWhitespace(codePoint)
+                        && !Character.isSpaceChar(codePoint))
+                .forEach(result::appendCodePoint);
+        return result.toString();
+    }
+
     private static <T> List<T> requiredList(List<T> values, String field) {
         if (values == null) throw new IllegalArgumentException(field + " must not be null");
         return List.copyOf(values);
@@ -108,7 +153,8 @@ public final class FunctionListExtractionValidator {
     }
 
     /** Frozen material and slice evidence closure for one extraction invocation. */
-    public record WorkItem(StructuredValidationRegistry registry, String materialKey, List<String> allowedEvidenceKeys) {
+    public record WorkItem(StructuredValidationRegistry registry, String materialKey,
+            List<String> allowedEvidenceKeys, Map<String, String> targetEvidenceTexts) {
         public WorkItem {
             registry = Objects.requireNonNull(registry, "registry must not be null");
             required(materialKey, "materialKey");
@@ -121,6 +167,12 @@ public final class FunctionListExtractionValidator {
                 if (!distinct.add(key)) throw new IllegalArgumentException("allowedEvidenceKeys must be unique");
                 registry.requireEvidence(key, materialKey);
             }
+            targetEvidenceTexts = Map.copyOf(Objects.requireNonNull(
+                    targetEvidenceTexts, "targetEvidenceTexts must not be null"));
+            if (!targetEvidenceTexts.keySet().equals(Set.copyOf(allowedEvidenceKeys))) {
+                throw new IllegalArgumentException("Target evidence text must exactly match allowedEvidenceKeys");
+            }
+            targetEvidenceTexts.values().forEach(text -> required(text, "targetEvidenceText"));
         }
     }
 
@@ -128,15 +180,17 @@ public final class FunctionListExtractionValidator {
     public record Result(List<ModelItem> functionListItems) { }
 
     /** Exact model-produced row; Java assigns its identity only after validation. */
-    public record ModelItem(String path, String description, List<String> evidenceKeys) { }
+    public record ModelItem(String path, String description, List<String> evidenceKeys, String targetQuote) { }
 
     /** Java-validated row ready for atomic persistence. */
-    public record ValidatedItem(String itemKey, String path, String description, List<String> evidenceKeys) { }
+    public record ValidatedItem(String itemKey, String path, String description,
+            List<String> evidenceKeys, List<String> targetQuotes) { }
 
     private static final class MergeState {
         private final String path;
         private final String description;
         private final Set<String> evidenceKeys = new LinkedHashSet<>();
+        private final Set<String> targetQuotes = new LinkedHashSet<>();
 
         private MergeState(String path, String description) {
             this.path = path;

@@ -14,6 +14,47 @@ import org.junit.jupiter.api.Test;
 /** Contract tests for the three fixed structured Skill inputs. [Req-ID]: REQ-SKI-003 */
 class StructuredSkillInputContractTest {
 
+    /** [Req-ID]: REQ-FTG-013 */
+    @Test
+    void serializesOptionalReviewContextWithoutChangingTheLegacyEmptyContextShape() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        var target = List.of(new RequirementMaterialQualityReviewInput.MaterialUnit("unit-9", 9, "目标正文"));
+        var context = List.of(
+                new RequirementMaterialQualityReviewInput.MaterialUnit("unit-8", 8, "前文"),
+                new RequirementMaterialQualityReviewInput.MaterialUnit("unit-10", 10, "后文"));
+
+        var withContext = new RequirementMaterialQualityReviewInput("material-1",
+                MaterialContentTypeKey.WORK_ORDER_PLAN, "工单方案", target, context);
+        var legacy = new RequirementMaterialQualityReviewInput("material-1",
+                MaterialContentTypeKey.WORK_ORDER_PLAN, "工单方案", target);
+
+        assertThat(mapper.writeValueAsString(withContext)).contains("\"context_units\"");
+        assertThat(mapper.writeValueAsString(legacy)).doesNotContain("context_units");
+        assertThat(withContext.contextUnits()).extracting(RequirementMaterialQualityReviewInput.MaterialUnit::ordinal)
+                .containsExactly(8, 10);
+    }
+
+    /** [Req-ID]: REQ-FTG-013 */
+    @Test
+    void rejectsOverlappingOrOverBudgetReviewContext() {
+        var target = java.util.stream.IntStream.rangeClosed(1, 16)
+                .mapToObj(i -> new RequirementMaterialQualityReviewInput.MaterialUnit("target-" + i, i, "目标"))
+                .toList();
+        var overlap = List.of(new RequirementMaterialQualityReviewInput.MaterialUnit("target-1", 1, "重复"));
+        var tooMuchContext = java.util.stream.IntStream.rangeClosed(17, 33)
+                .mapToObj(i -> new RequirementMaterialQualityReviewInput.MaterialUnit("context-" + i, i, "上下文"))
+                .toList();
+
+        assertThatThrownBy(() -> new RequirementMaterialQualityReviewInput("material-1",
+                MaterialContentTypeKey.WORK_ORDER_PLAN, "工单方案", target, overlap))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("overlap");
+        assertThatThrownBy(() -> new RequirementMaterialQualityReviewInput("material-1",
+                MaterialContentTypeKey.WORK_ORDER_PLAN, "工单方案", target, tooMuchContext))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("32");
+    }
+
     /** [Req-ID]: REQ-SKI-003 */
     @Test
     void preservesAContinuousGlobalMaterialSliceWithoutRenumbering() {
@@ -55,7 +96,7 @@ class StructuredSkillInputContractTest {
 
     /** [Req-ID]: REQ-SKI-003 */
     @Test
-    void serializesTheFrozenFeatureAndTestPointEnumsAndFields() throws Exception {
+    void serializesTheFrozenV1FeatureAndTestPointEnumsAndFields() throws Exception {
         ObjectMapper mapper = new ObjectMapper();
         FeatureScopeReconciliationInput reconciliation = new FeatureScopeReconciliationInput(
                 List.of(new FeatureScopeReconciliationInput.FunctionListItem(
@@ -69,7 +110,8 @@ class StructuredSkillInputContractTest {
                         FunctionalTestcaseDesignInput.Basis.GENERAL_EXPERIENCE, List.of("缺少超时阈值")));
 
         assertThat(mapper.writeValueAsString(reconciliation))
-                .contains("\"function_list_items\"", "\"requirement_facts\"", "\"item_key\"", "\"evidence_keys\"");
+                .contains("\"operation\":\"reconcile\"", "\"function_list_items\"", "\"requirement_facts\"",
+                        "\"item_key\"", "\"evidence_keys\"");
         assertThat(mapper.writeValueAsString(testcase))
                 .contains("\"test_point_key\":\"point-1\"", "\"type\":\"dependency_failure\"",
                         "\"basis\":\"general_experience\"", "\"missing_information\"",
@@ -132,6 +174,52 @@ class StructuredSkillInputContractTest {
                 .hasMessageContaining("evidence");
         assertThatThrownBy(() -> new FunctionalTestcaseDesignInput.AuthoringInformation(null, ""))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /** [Req-ID]: REQ-FSC-008 */
+    @Test
+    void acceptsTheExactFrozenReconcilePageV2Shape() throws Exception {
+        ObjectMapper mapper = new ObjectMapper().configure(
+                com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, true);
+        String json = """
+                {
+                  "operation":"reconcile_page",
+                  "protocol_version":"2",
+                  "run":{"run_key":"run-handler","catalog_sha256":"%s","function_item_count":1,"requirement_fact_count":0},
+                  "global_catalog":{
+                    "function_list_items":[{"item_key":"item-1","path":"登录","description":"desc","evidence_keys":["u-item"]}],
+                    "requirement_facts":[]
+                  },
+                  "owner_window":{"page_key":"%s","owner_source_refs":[
+                    {"source_type":"function_list_item","source_key":"item-1"}
+                  ]}
+                }
+                """.formatted("19ad1b939ba1ad03bf5e30772839a0754b789d09e07b048f37638c5e976c7a28",
+                        "975d318e9fc3cb2a8802d25fc43234537e8494987fd31a428a3bb054696ec463");
+
+        Class<?> inputType = Class.forName(
+                "com.testcaseagent.knowledgeagent.FeatureScopeReconciliationPageInput");
+        Object input = mapper.readValue(json, inputType);
+        var roundTrip = mapper.valueToTree(input);
+
+        assertThat(roundTrip.fieldNames()).toIterable().containsExactlyInAnyOrder(
+                "operation", "protocol_version", "run", "global_catalog", "owner_window");
+        assertThat(roundTrip.path("operation").asText()).isEqualTo("reconcile_page");
+        assertThat(roundTrip.path("protocol_version").asText()).isEqualTo("2");
+        assertThat(roundTrip.path("global_catalog").path("function_list_items")).hasSize(1);
+        assertThat(roundTrip.path("owner_window").path("owner_source_refs")).hasSize(1);
+
+        var mixedLegacyShape = ((com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree(json));
+        mixedLegacyShape.putArray("function_list_items");
+        assertThatThrownBy(() -> mapper.treeToValue(mixedLegacyShape, inputType))
+                .isInstanceOf(Exception.class);
+
+        var duplicateCatalogKey = ((com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree(json));
+        ((com.fasterxml.jackson.databind.node.ArrayNode) duplicateCatalogKey.path("global_catalog")
+                .path("function_list_items")).add(duplicateCatalogKey.path("global_catalog")
+                .path("function_list_items").path(0).deepCopy());
+        assertThatThrownBy(() -> mapper.treeToValue(duplicateCatalogKey, inputType))
+                .isInstanceOf(Exception.class);
     }
 
     /** [Req-ID]: REQ-FTG-004 */

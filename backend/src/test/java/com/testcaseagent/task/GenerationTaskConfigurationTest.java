@@ -4,10 +4,12 @@ import com.testcaseagent.export.ApachePoiWorkbookExporter;
 import com.testcaseagent.export.WorkbookExporter;
 import com.testcaseagent.knowledgeagent.KnowledgeAgentPort;
 import com.testcaseagent.scope.RequirementMaterialReaderPort;
+import com.testcaseagent.structuredgeneration.StructuredGenerationAcceptanceStore;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.concurrent.ScheduledExecutorService;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -37,6 +39,21 @@ class GenerationTaskConfigurationTest {
         assertThat(reader).isSameAs(dualPort);
         assertThatThrownBy(() -> new GenerationTaskConfiguration().requirementMaterialReaderPort(mock(KnowledgeAgentPort.class)))
                 .isInstanceOf(IllegalStateException.class).hasMessageContaining("parsed material");
+    }
+
+    /** [Req-ID]: REQ-SEW-002, REQ-SEW-003 */
+    @Test
+    void wiresTheProductionStructuredWorkLeaseHeartbeat() {
+        GenerationTaskConfiguration configuration = new GenerationTaskConfiguration();
+        ScheduledExecutorService scheduler = configuration.structuredWorkLeaseScheduler();
+        try {
+            StructuredWorkLeaseHeartbeat heartbeat = configuration.structuredWorkLeaseHeartbeat(
+                    mock(StructuredGenerationAcceptanceStore.class), scheduler);
+
+            assertThat(heartbeat).isInstanceOf(ScheduledStructuredWorkLeaseHeartbeat.class);
+        } finally {
+            scheduler.shutdownNow();
+        }
     }
 
 }

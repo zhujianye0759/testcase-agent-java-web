@@ -12,6 +12,7 @@ import com.testcaseagent.featureaudit.FeatureSourceCandidate;
 import com.testcaseagent.featureaudit.FrozenFeatureSource;
 import com.testcaseagent.featureaudit.FrozenFeatureTarget;
 import com.testcaseagent.featureaudit.MaterialInventoryDocument;
+import com.testcaseagent.featureaudit.MaterialInventoryPage;
 import com.testcaseagent.featureaudit.MaterialInventoryUnit;
 import com.testcaseagent.fewshot.ExampleScope;
 import com.testcaseagent.scope.RequirementDocumentCoordinate;
@@ -68,6 +69,13 @@ class MaterialInventoryPersistenceIntegrationTest {
 
     @BeforeEach
     void cleanDatabase() {
+        jdbcTemplate.update("DELETE FROM v2_requirement_fact_quote");
+        jdbcTemplate.update("DELETE FROM v2_testability_feedback_quote");
+        jdbcTemplate.update("DELETE FROM v2_generation_outcome");
+        jdbcTemplate.update("DELETE FROM v2_work_publication");
+        jdbcTemplate.update("DELETE FROM v2_requirement_fact");
+        jdbcTemplate.update("DELETE FROM v2_testability_feedback");
+        jdbcTemplate.update("DELETE FROM v2_approved_function");
         jdbcTemplate.update("DELETE FROM feature_review_conclusion_candidate");
         jdbcTemplate.update("DELETE FROM feature_review_conclusion");
         jdbcTemplate.update("DELETE FROM frozen_feature_target");
@@ -175,6 +183,106 @@ class MaterialInventoryPersistenceIntegrationTest {
         AuditWorkClaim requirementPassTwo = repository.claimNextAuditWork("worker-three", Duration.ofSeconds(30)).orElseThrow();
         assertThat(requirementPassTwo.documentId() + "/" + requirementPassTwo.passNumber() + "/" + requirementPassTwo.stage())
                 .isEqualTo("work-order-doc/2/REQUIREMENT_SCAN");
+    }
+
+    /** [Req-ID]: REQ-TGV2-003 */
+    @Test
+    void stagesV2PagesWithoutPublishingAndAtomicallyOpensOnlyACompleteFrozenInventory() {
+        RequirementScope scope = new RequirementScope(
+                "requirement-kb", "system-1", "version-1", "admission_material", "project-1", List.of(
+                new RequirementDocumentCoordinate("function-doc", "function_list"),
+                new RequirementDocumentCoordinate("work-order-doc", "work_order_plan")));
+        String taskId = createV2Task(scope);
+        MaterialInventoryPage functionPage = page("function-doc", "FUNCTION_LIST", 1,
+                List.of(new MaterialInventoryUnit(
+                        "function-doc", "FUNCTION_LIST", "function-unit", 0, 1, "功能", 0, 2)));
+        MaterialInventoryPage requirementPage = page("work-order-doc", "WORK_ORDER_PLAN", 2, List.of(
+                new MaterialInventoryUnit("work-order-doc", "WORK_ORDER_PLAN", "work-1", 0, 1, "需求一", 0, 3),
+                new MaterialInventoryUnit("work-order-doc", "WORK_ORDER_PLAN", "work-2", 1, 2, "需求二", 4, 7)));
+
+        repository.stageMaterialInventoryPage(taskId, functionPage);
+
+        assertThat(repository.hasCompleteMaterialInventory(taskId, scope)).isFalse();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM material_inventory_document WHERE task_id = ? AND complete = FALSE",
+                Integer.class, taskId)).isOne();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM material_audit_work WHERE task_id = ?", Integer.class, taskId)).isZero();
+
+        repository.stageMaterialInventoryPage(taskId, functionPage);
+        repository.stageMaterialInventoryPage(taskId, requirementPage);
+        repository.publishStagedMaterialInventory(taskId, scope);
+        repository.publishStagedMaterialInventory(taskId, scope);
+
+        assertThat(repository.hasCompleteMaterialInventory(taskId, scope)).isTrue();
+        assertThat(repository.formalRequirementMaterials(taskId)).singleElement()
+                .extracting(material -> material.totalUnits()).isEqualTo(2);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM material_audit_work WHERE task_id = ?", Integer.class, taskId)).isZero();
+    }
+
+    /** [Req-ID]: REQ-TGV2-003 */
+    @Test
+    void rejectsAGappedStagingInventoryWithoutOpeningTheCompletionGate() {
+        RequirementScope scope = new RequirementScope(
+                "requirement-kb", "system-1", "version-1", "admission_material", "project-1",
+                List.of(new RequirementDocumentCoordinate("work-order-doc", "work_order_plan")));
+        String taskId = createV2Task(scope);
+        repository.stageMaterialInventoryPage(taskId, page("work-order-doc", "WORK_ORDER_PLAN", 2, List.of(
+                new MaterialInventoryUnit(
+                        "work-order-doc", "WORK_ORDER_PLAN", "work-2", 1, 2, "需求二", 4, 7))));
+
+        assertThatThrownBy(() -> repository.publishStagedMaterialInventory(taskId, scope))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("incomplete");
+
+        assertThat(repository.hasCompleteMaterialInventory(taskId, scope)).isFalse();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT complete FROM material_inventory_document WHERE task_id = ?", Boolean.class, taskId))
+                .isFalse();
+    }
+
+    @Test
+    void readsLargeFormalMaterialsAsDescriptorsAndBoundedPlanningNeighborhoods() {
+        String taskId = createTask();
+        List<MaterialInventoryUnit> units = java.util.stream.IntStream.rangeClosed(1, 53)
+                .mapToObj(ordinal -> new MaterialInventoryUnit("document-1", "WORK_ORDER_PLAN",
+                        "unit-" + ordinal, ordinal - 1, ordinal, "需求单元" + ordinal,
+                        ordinal * 10L, ordinal * 10L + 5))
+                .toList();
+        repository.replaceMaterialInventory(taskId, List.of(new MaterialInventoryDocument(
+                "document-1", "knowledge-1", "WORK_ORDER_PLAN", 53, true, units)), false);
+
+        assertThat(repository.formalRequirementMaterials(taskId)).singleElement().satisfies(material -> {
+            assertThat(material.documentId()).isEqualTo("document-1");
+            assertThat(material.totalUnits()).isEqualTo(53);
+            assertThat(material.firstOrdinal()).isOne();
+            assertThat(material.lastOrdinal()).isEqualTo(53);
+        });
+        assertThat(repository.materialInventoryPlanningSlice(taskId, "document-1", 13, 1, 53))
+                .extracting(MaterialInventoryUnit::ordinal)
+                .containsExactlyElementsOf(java.util.stream.IntStream.rangeClosed(9, 32).boxed().toList());
+        assertThat(repository.materialInventoryPlanningSlice(taskId, "document-1", 45, 1, 53))
+                .extracting(MaterialInventoryUnit::ordinal)
+                .containsExactlyElementsOf(java.util.stream.IntStream.rangeClosed(41, 53).boxed().toList());
+    }
+
+    @Test
+    void rejectsAGappedFormalInventoryInsteadOfPlanningATruncatedMaterial() {
+        String taskId = createTask();
+        List<MaterialInventoryUnit> units = java.util.stream.IntStream.rangeClosed(1, 3)
+                .mapToObj(ordinal -> new MaterialInventoryUnit("document-1", "WORK_ORDER_PLAN",
+                        "unit-" + ordinal, ordinal - 1, ordinal, "需求单元" + ordinal,
+                        ordinal * 10L, ordinal * 10L + 5))
+                .toList();
+        repository.replaceMaterialInventory(taskId, List.of(new MaterialInventoryDocument(
+                "document-1", "knowledge-1", "WORK_ORDER_PLAN", 3, true, units)), false);
+        jdbcTemplate.update("DELETE FROM material_audit_work WHERE task_id = ? AND unit_id = 'unit-2'", taskId);
+        jdbcTemplate.update("DELETE FROM material_inventory_unit WHERE task_id = ? AND ordinal = 2", taskId);
+
+        assertThatThrownBy(() -> repository.formalRequirementMaterials(taskId))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("incomplete");
     }
 
     @Test
@@ -298,6 +406,25 @@ class MaterialInventoryPersistenceIntegrationTest {
                         List.of(new RequirementDocumentCoordinate("document-1"))),
                 new ExampleScope("example-kb", List.of("example-1")), "requirements_spec", "material audit test"));
         return taskId;
+    }
+
+    private String createV2Task(RequirementScope scope) {
+        String taskId = UUID.randomUUID().toString();
+        ApprovedFunctionScope approved = new ApprovedFunctionScope("scope-v2", List.of(
+                new ApprovedFunctionScope.ApprovedFunction("function-a", "提交申请", "业务/提交申请", "")));
+        repository.createTask(taskId, new CreateGenerationTaskRequest(
+                GenerationTaskMode.ALL, "function-a", List.of("function-a"),
+                java.util.Map.of("function-a", "业务/提交申请"), FewShotPolicy.NONE,
+                "2.0", "2.0", "audit-agent", scope,
+                new ExampleScope("example-kb", List.of("example-1")),
+                scope.documents().stream().map(RequirementDocumentCoordinate::materialTypeKey).toList(), "V2 material",
+                new GenerationContractVersions("2.0", "2.0", "2.0"), approved));
+        return taskId;
+    }
+
+    private static MaterialInventoryPage page(
+            String documentId, String role, int totalUnits, List<MaterialInventoryUnit> units) {
+        return new MaterialInventoryPage(documentId, documentId, role, totalUnits, true, units);
     }
 
     private static MaterialInventoryUnit unit(String unitId, String content) {

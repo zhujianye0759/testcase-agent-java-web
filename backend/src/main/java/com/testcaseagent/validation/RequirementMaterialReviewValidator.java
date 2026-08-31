@@ -1,6 +1,7 @@
 package com.testcaseagent.validation;
 
 import java.text.Normalizer;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -11,57 +12,192 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
+import static com.testcaseagent.validation.StructuredValidationFailure.Code;
+
 /** Validates one bounded requirement-review result without accepting partial model output. [Req-ID]: REQ-FTG-005, REQ-FTG-007 */
 public final class RequirementMaterialReviewValidator {
     /** Validates facts, actual quoted source, pending proposals, and bounded duplicate root causes. */
     public void validate(WorkItem workItem, Result result) {
         WorkItem item = Objects.requireNonNull(workItem, "workItem must not be null");
         Result checked = Objects.requireNonNull(result, "result must not be null");
-        List<RequirementFact> facts = requiredList(checked.requirementFacts(), "requirementFacts");
-        List<ReviewFinding> findings = requiredList(checked.reviewFindings(), "reviewFindings");
-        if (facts.size() > 200 || findings.size() > 200 || facts.size() + findings.size() < 1) throw new IllegalArgumentException("Review result must contain 0..200 facts and findings with at least one total row");
-        requireDistinct(facts.stream().map(RequirementFact::factKey).toList(), "factKey");
-        requireDistinct(findings.stream().map(ReviewFinding::findingKey).toList(), "findingKey");
-        Set<RootCauseKind> roots = new HashSet<>();
-        for (RequirementFact fact : facts) validateFact(item, Objects.requireNonNull(fact, "requirement fact must not be null"));
-        for (ReviewFinding finding : findings) { finding = Objects.requireNonNull(finding, "review finding must not be null"); if (finding.rootCauseKind() != null && !roots.add(finding.rootCauseKind())) throw new IllegalArgumentException("rootCauseKind must be unique within one bounded result"); validateFinding(item, finding); }
-    }
-
-    private static void validateFact(WorkItem item, RequirementFact fact) {
-        required(fact.factKey(), "factKey"); ReaderFacingTextPolicy.requireSafe(fact.function(), "function");
-        ReaderFacingTextPolicy.requireSafeItems(requiredList(fact.roles(), "roles"), "role"); ReaderFacingTextPolicy.requireSafeItems(requiredList(fact.triggerConditions(), "triggerConditions"), "triggerCondition"); ReaderFacingTextPolicy.requireSafeItems(requiredList(fact.inputs(), "inputs"), "input"); ReaderFacingTextPolicy.requireSafeItems(requiredList(fact.businessRules(), "businessRules"), "businessRule"); ReaderFacingTextPolicy.requireSafeItems(requiredList(fact.outputs(), "outputs"), "output"); ReaderFacingTextPolicy.requireSafeItems(requiredList(fact.permissions(), "permissions"), "permission"); ReaderFacingTextPolicy.requireSafeItems(requiredList(fact.stateChanges(), "stateChanges"), "stateChange"); ReaderFacingTextPolicy.requireSafeItems(requiredList(fact.exceptionHandling(), "exceptionHandling"), "exceptionHandling"); ReaderFacingTextPolicy.requireSafeItems(requiredList(fact.externalDependencies(), "externalDependencies"), "externalDependency");
-        if (item.supplementaryMaterial()) throw new IllegalArgumentException("Supplementary material cannot independently support a formal requirement fact");
-        List<String> evidence = requiredList(fact.evidenceKeys(), "fact evidenceKeys"); if (evidence.isEmpty()) throw new IllegalArgumentException("A formal requirement fact requires evidence"); requireDistinct(evidence, "fact evidenceKey"); evidence.forEach(item::requireSliceEvidence);
-        item.requireDirectEvidence(fact.function(), "function", evidence); item.requireDirectEvidence(fact.roles(), "role", evidence); item.requireDirectEvidence(fact.triggerConditions(), "triggerCondition", evidence); item.requireDirectEvidence(fact.inputs(), "input", evidence); item.requireDirectEvidence(fact.businessRules(), "businessRule", evidence); item.requireDirectEvidence(fact.outputs(), "output", evidence); item.requireDirectEvidence(fact.permissions(), "permission", evidence); item.requireDirectEvidence(fact.stateChanges(), "stateChange", evidence); item.requireDirectEvidence(fact.exceptionHandling(), "exceptionHandling", evidence); item.requireDirectEvidence(fact.externalDependencies(), "externalDependency", evidence);
-    }
-
-    private static void validateFinding(WorkItem item, ReviewFinding finding) {
-        required(finding.findingKey(), "findingKey"); ReaderFacingTextPolicy.requireSafe(finding.issueType(), "issueType"); ReaderFacingTextPolicy.requireSafe(finding.description(), "description"); ReaderFacingTextPolicy.requireSafe(finding.testDesignImpact(), "testDesignImpact"); ReaderFacingTextPolicy.requireSafe(finding.currentProjectRecommendation(), "currentProjectRecommendation"); ReaderFacingTextPolicy.requireSafe(finding.designCenterGuidelineRecommendation(), "designCenterGuidelineRecommendation"); if (finding.handlingLevel() == null) throw new IllegalArgumentException("handlingLevel must not be null");
-        List<String> evidence = requiredList(finding.evidenceKeys(), "finding evidenceKeys"); requireDistinct(evidence, "finding evidenceKey"); evidence.forEach(item::requireSliceEvidence);
-        if (finding.rootCauseKind() == null) {
-            throw new IllegalArgumentException("review finding must retain frozen root-cause proof");
+        List<RequirementFact> facts = resultList(checked.requirementFacts(), "$.requirement_facts");
+        List<ReviewFinding> findings = resultList(checked.reviewFindings(), "$.review_findings");
+        if (facts.size() > 200 || findings.size() > 200 || facts.size() + findings.size() < 1) {
+            reject(Code.REVIEW_RESULT_INVALID, "$");
         }
-        AffectedScope scope = Objects.requireNonNull(finding.affectedScope(), "affectedScope must not be null"); BadSourceExample bad = Objects.requireNonNull(finding.badSourceExample(), "badSourceExample must not be null"); ProposedGoodExample proposal = Objects.requireNonNull(finding.proposedGoodExample(), "proposedGoodExample must not be null");
-        List<String> units = requiredList(scope.unitKeys(), "affectedScope.unitKeys"); if (units.isEmpty()) throw new IllegalArgumentException("affectedScope.unitKeys must not be empty"); requireSubset(units, evidence, "affectedScope unit");
-        requireChinese(scope.summary(), "affectedScope.summary"); requireChinese(finding.issueType(), "issueType"); requireChinese(finding.description(), "description"); requireChinese(finding.testDesignImpact(), "testDesignImpact"); requireChinese(finding.currentProjectRecommendation(), "currentProjectRecommendation"); requireChinese(finding.designCenterGuidelineRecommendation(), "designCenterGuidelineRecommendation");
-        if (!evidence.contains(bad.evidenceKey())) throw new IllegalArgumentException("bad source evidence must belong to finding evidence"); item.requireSourceQuote(bad.evidenceKey(), bad.quote());
-        if (proposal.status() != ProposalStatus.PENDING_CONFIRMATION || !proposal.text().contains("待需求方确认")) throw new IllegalArgumentException("proposed good example must remain pending_confirmation and explicitly await confirmation"); requireChinese(proposal.text(), "proposedGoodExample.text");
+        Set<RootCauseKind> roots = new HashSet<>();
+        for (int index = 0; index < facts.size(); index++) {
+            String path = "$.requirement_facts[" + index + "]";
+            if (facts.get(index) == null) reject(Code.REVIEW_FIELD_REQUIRED, path);
+        }
+        for (int index = 0; index < findings.size(); index++) {
+            String path = "$.review_findings[" + index + "]";
+            if (findings.get(index) == null) reject(Code.REVIEW_FIELD_REQUIRED, path);
+        }
+        requireResultDistinct(facts.stream().map(RequirementFact::factKey).toList(), "$.requirement_facts");
+        requireResultDistinct(findings.stream().map(ReviewFinding::findingKey).toList(), "$.review_findings");
+        for (int index = 0; index < facts.size(); index++) {
+            validateFact(item, facts.get(index), "$.requirement_facts[" + index + "]");
+        }
+        for (int index = 0; index < findings.size(); index++) {
+            String path = "$.review_findings[" + index + "]";
+            ReviewFinding finding = findings.get(index);
+            if (finding.rootCauseKind() != null && !roots.add(finding.rootCauseKind())) {
+                reject(Code.REVIEW_FINDING_ROOT_CAUSE_DUPLICATE, path + ".root_cause_kind");
+            }
+            validateFinding(item, finding, path);
+        }
     }
 
-    private static void requireChinese(String value, String field) { required(value, field); if (value.codePoints().noneMatch(codePoint -> Character.UnicodeScript.of(codePoint) == Character.UnicodeScript.HAN)) throw new IllegalArgumentException(field + " must contain Chinese analysis"); }
-    private static void requireSubset(List<String> values, List<String> expected, String field) { for (String value : values) if (!expected.contains(required(value, field))) throw new IllegalArgumentException(field + " is outside finding evidence"); }
+    private static void validateFact(WorkItem item, RequirementFact fact, String path) {
+        resultRequired(fact.factKey(), path + ".fact_key");
+        resultSafe(fact.function(), path + ".function");
+        List<String> roles = resultSafeItems(fact.roles(), path + ".roles");
+        List<String> triggers = resultSafeItems(fact.triggerConditions(), path + ".trigger_conditions");
+        List<String> inputs = resultSafeItems(fact.inputs(), path + ".inputs");
+        List<String> rules = resultSafeItems(fact.businessRules(), path + ".business_rules");
+        List<String> outputs = resultSafeItems(fact.outputs(), path + ".outputs");
+        List<String> permissions = resultSafeItems(fact.permissions(), path + ".permissions");
+        List<String> states = resultSafeItems(fact.stateChanges(), path + ".state_changes");
+        List<String> exceptions = resultSafeItems(fact.exceptionHandling(), path + ".exception_handling");
+        List<String> dependencies = resultSafeItems(fact.externalDependencies(), path + ".external_dependencies");
+        if (item.supplementaryMaterial()) reject(Code.REVIEW_FACT_SUPPLEMENTARY_SOURCE, path);
+        List<String> evidence = resultList(fact.evidenceKeys(), path + ".evidence_keys");
+        if (evidence.isEmpty()) reject(Code.REVIEW_FACT_EVIDENCE_REQUIRED, path + ".evidence_keys");
+        requireResultDistinct(evidence, path + ".evidence_keys");
+        for (int index = 0; index < evidence.size(); index++) {
+            item.requireSliceEvidence(evidence.get(index), path + ".evidence_keys[" + index + "]");
+        }
+        item.requireDirectEvidence(fact.function(), path + ".function", evidence);
+        item.requireDirectEvidence(roles, path + ".roles", evidence);
+        item.requireDirectEvidence(triggers, path + ".trigger_conditions", evidence);
+        item.requireDirectEvidence(inputs, path + ".inputs", evidence);
+        item.requireDirectEvidence(rules, path + ".business_rules", evidence);
+        item.requireDirectEvidence(outputs, path + ".outputs", evidence);
+        item.requireDirectEvidence(permissions, path + ".permissions", evidence);
+        item.requireDirectEvidence(states, path + ".state_changes", evidence);
+        item.requireDirectEvidence(exceptions, path + ".exception_handling", evidence);
+        item.requireDirectEvidence(dependencies, path + ".external_dependencies", evidence);
+    }
+
+    private static void validateFinding(WorkItem item, ReviewFinding finding, String path) {
+        resultRequired(finding.findingKey(), path + ".finding_key");
+        resultSafe(finding.issueType(), path + ".issue_type");
+        resultSafe(finding.description(), path + ".description");
+        resultSafe(finding.testDesignImpact(), path + ".test_design_impact");
+        resultSafe(finding.currentProjectRecommendation(), path + ".current_project_recommendation");
+        resultSafe(finding.designCenterGuidelineRecommendation(), path + ".design_center_guideline_recommendation");
+        if (finding.handlingLevel() == null) reject(Code.REVIEW_FINDING_HANDLING_LEVEL_REQUIRED, path + ".handling_level");
+        List<String> evidence = resultList(finding.evidenceKeys(), path + ".evidence_keys");
+        requireResultDistinct(evidence, path + ".evidence_keys");
+        for (int index = 0; index < evidence.size(); index++) {
+            item.requireSliceEvidence(evidence.get(index), path + ".evidence_keys[" + index + "]");
+        }
+        if (finding.rootCauseKind() == null) reject(Code.REVIEW_FINDING_ROOT_CAUSE_REQUIRED, path + ".root_cause_kind");
+        if (finding.affectedScope() == null) reject(Code.REVIEW_FINDING_AFFECTED_SCOPE_INVALID, path + ".affected_scope");
+        if (finding.badSourceExample() == null) reject(Code.REVIEW_FINDING_BAD_SOURCE_INVALID, path + ".bad_source_example");
+        if (finding.proposedGoodExample() == null) reject(Code.REVIEW_FINDING_PENDING_PROPOSAL_INVALID, path + ".proposed_good_example");
+        AffectedScope scope = finding.affectedScope();
+        BadSourceExample bad = finding.badSourceExample();
+        ProposedGoodExample proposal = finding.proposedGoodExample();
+        List<String> units = resultList(scope.unitKeys(), path + ".affected_scope.unit_keys");
+        if (units.isEmpty()) reject(Code.REVIEW_FINDING_AFFECTED_SCOPE_INVALID, path + ".affected_scope.unit_keys");
+        requireResultSubset(units, evidence, path + ".affected_scope.unit_keys");
+        requireResultChinese(scope.summary(), path + ".affected_scope.summary");
+        requireResultChinese(finding.issueType(), path + ".issue_type");
+        requireResultChinese(finding.description(), path + ".description");
+        requireResultChinese(finding.testDesignImpact(), path + ".test_design_impact");
+        requireResultChinese(finding.currentProjectRecommendation(), path + ".current_project_recommendation");
+        requireResultChinese(finding.designCenterGuidelineRecommendation(), path + ".design_center_guideline_recommendation");
+        if (!evidence.contains(bad.evidenceKey())) reject(Code.REVIEW_FINDING_BAD_SOURCE_INVALID, path + ".bad_source_example.evidence_key");
+        item.requireSourceQuote(bad.evidenceKey(), bad.quote(), path + ".bad_source_example.quote");
+        if (proposal.status() != ProposalStatus.PENDING_CONFIRMATION || proposal.text() == null
+                || !proposal.text().contains("待需求方确认")) {
+            reject(Code.REVIEW_FINDING_PENDING_PROPOSAL_INVALID, path + ".proposed_good_example");
+        }
+        requireResultChinese(proposal.text(), path + ".proposed_good_example.text");
+    }
+
+    private static String resultRequired(String value, String path) {
+        if (value == null || value.isBlank()) reject(Code.REVIEW_FIELD_REQUIRED, path);
+        return value;
+    }
+
+    private static String resultSafe(String value, String path) {
+        resultRequired(value, path);
+        try {
+            return ReaderFacingTextPolicy.requireSafe(value, path);
+        } catch (IllegalArgumentException exception) {
+            reject(Code.REVIEW_READER_TEXT_UNSAFE, path);
+            throw new AssertionError("unreachable");
+        }
+    }
+
+    private static List<String> resultSafeItems(List<String> values, String path) {
+        List<String> checked = resultList(values, path);
+        for (int index = 0; index < checked.size(); index++) resultSafe(checked.get(index), path + "[" + index + "]");
+        return checked;
+    }
+
+    private static void requireResultChinese(String value, String path) {
+        resultRequired(value, path);
+        if (value.codePoints().noneMatch(codePoint -> Character.UnicodeScript.of(codePoint) == Character.UnicodeScript.HAN)) {
+            reject(Code.REVIEW_FINDING_CHINESE_ANALYSIS_REQUIRED, path);
+        }
+    }
+
+    private static void requireResultSubset(List<String> values, List<String> expected, String path) {
+        for (int index = 0; index < values.size(); index++) {
+            String value = resultRequired(values.get(index), path + "[" + index + "]");
+            if (!expected.contains(value)) reject(Code.REVIEW_FINDING_AFFECTED_SCOPE_INVALID, path + "[" + index + "]");
+        }
+    }
+
+    private static void requireResultDistinct(List<String> values, String path) {
+        Set<String> distinct = new HashSet<>();
+        for (int index = 0; index < values.size(); index++) {
+            String value = resultRequired(values.get(index), path + "[" + index + "]");
+            if (!distinct.add(value)) reject(path.endsWith("evidence_keys") ? Code.REVIEW_EVIDENCE_DUPLICATE
+                    : Code.REVIEW_KEY_DUPLICATE, path + "[" + index + "]");
+        }
+    }
+
+    private static <T> List<T> resultList(List<T> values, String path) {
+        if (values == null) reject(Code.REVIEW_FIELD_REQUIRED, path);
+        return Collections.unmodifiableList(new ArrayList<>(values));
+    }
+
+    private static void reject(Code code, String path) {
+        throw new StructuredValidationException(StructuredValidationFailure.of(code, path));
+    }
+
     private static void requireDistinct(List<String> values, String field) { Set<String> distinct = new HashSet<>(); for (String value : values) if (!distinct.add(required(value, field))) throw new IllegalArgumentException(field + " must be unique"); }
     private static <T> List<T> requiredList(List<T> values, String field) { if (values == null) throw new IllegalArgumentException(field + " must not be null"); return List.copyOf(values); }
     private static String required(String value, String field) { if (value == null || value.isBlank()) throw new IllegalArgumentException(field + " must not be blank"); return value; }
-    private static String normalize(String value) { return Normalizer.normalize(required(value, "grounding text"), Normalizer.Form.NFKC).toLowerCase(Locale.ROOT).replaceAll("\\s+", " ").strip(); }
+    private static String normalizeFactGrounding(String value) {
+        String normalized = Normalizer.normalize(required(value, "grounding text"), Normalizer.Form.NFKC)
+                .toLowerCase(Locale.ROOT);
+        StringBuilder withoutLayoutWhitespace = new StringBuilder(normalized.length());
+        normalized.codePoints()
+                .filter(codePoint -> !Character.isWhitespace(codePoint) && !Character.isSpaceChar(codePoint))
+                .forEach(withoutLayoutWhitespace::appendCodePoint);
+        return withoutLayoutWhitespace.toString();
+    }
+
+    private static String normalizeSourceQuote(String value) {
+        return Normalizer.normalize(required(value, "grounding text"), Normalizer.Form.NFKC)
+                .toLowerCase(Locale.ROOT)
+                .replaceAll("\\s+", " ")
+                .strip();
+    }
 
     /** Frozen material coordinates and parsed-unit text for exactly one review invocation. */
     public record WorkItem(StructuredValidationRegistry registry, String materialKey, String contentTypeKey, List<String> allowedEvidenceKeys, Map<String, String> evidenceTexts) {
         public WorkItem { registry = Objects.requireNonNull(registry, "registry must not be null"); required(materialKey, "materialKey"); if (!("requirements_spec".equals(contentTypeKey) || "work_order_plan".equals(contentTypeKey) || "prototype".equals(contentTypeKey) || "requirement_list".equals(contentTypeKey))) throw new IllegalArgumentException("Unsupported requirement material content type"); registry.require(StructuredKeyType.MATERIAL, materialKey); List<String> evidence = requiredList(allowedEvidenceKeys, "allowedEvidenceKeys"); if (evidence.isEmpty()) throw new IllegalArgumentException("allowedEvidenceKeys must not be empty"); requireDistinct(evidence, "allowedEvidenceKey"); for (String key : evidence) registry.requireEvidence(key, materialKey); allowedEvidenceKeys = evidence; Map<String,String> supplied = Objects.requireNonNull(evidenceTexts, "evidenceTexts must not be null"); if (!supplied.keySet().equals(new LinkedHashSet<>(evidence))) throw new IllegalArgumentException("evidenceTexts must exactly match allowedEvidenceKeys"); Map<String,String> checked = new LinkedHashMap<>(); for (String key : evidence) checked.put(key, required(supplied.get(key), "evidenceText")); evidenceTexts = Collections.unmodifiableMap(checked); }
-        private void requireSliceEvidence(String key) { if (!allowedEvidenceKeys.contains(key)) throw new IllegalArgumentException("Review evidence is outside the current parsed-unit slice"); registry.requireEvidence(key, materialKey); }
-        private void requireDirectEvidence(String value, String field, List<String> cited) { String claim = normalize(value); boolean supported = cited.stream().map(evidenceTexts::get).map(RequirementMaterialReviewValidator::normalize).anyMatch(source -> source.contains(claim)); if (!supported) throw new IllegalArgumentException(field + " is not directly supported by its cited parsed-unit evidence"); }
-        private void requireDirectEvidence(List<String> values, String field, List<String> cited) { values.forEach(value -> requireDirectEvidence(value, field, cited)); }
-        private void requireSourceQuote(String key, String quote) { required(quote, "badSourceExample.quote"); if (!normalize(evidenceTexts.get(key)).contains(normalize(quote))) throw new IllegalArgumentException("bad source quote must be a continuous fragment of its cited parsed unit"); }
+        private void requireSliceEvidence(String key, String path) { if (!allowedEvidenceKeys.contains(key)) reject(Code.REVIEW_EVIDENCE_OUT_OF_SLICE, path); try { registry.requireEvidence(key, materialKey); } catch (IllegalArgumentException exception) { reject(Code.REVIEW_EVIDENCE_OUT_OF_SLICE, path); } }
+        private void requireDirectEvidence(String value, String path, List<String> cited) { String claim = normalizeFactGrounding(value); boolean supported = cited.stream().map(evidenceTexts::get).map(RequirementMaterialReviewValidator::normalizeFactGrounding).anyMatch(source -> source.contains(claim)); if (!supported) reject(Code.REVIEW_FACT_DIRECT_EVIDENCE_UNSUPPORTED, path); }
+        private void requireDirectEvidence(List<String> values, String path, List<String> cited) { for (int index = 0; index < values.size(); index++) requireDirectEvidence(values.get(index), path + "[" + index + "]", cited); }
+        private void requireSourceQuote(String key, String quote, String path) { if (quote == null || quote.isBlank()) reject(Code.REVIEW_FINDING_BAD_SOURCE_INVALID, path); if (!normalizeSourceQuote(evidenceTexts.get(key)).contains(normalizeSourceQuote(quote))) reject(Code.REVIEW_FINDING_BAD_SOURCE_INVALID, path); }
         boolean supplementaryMaterial() { return "prototype".equals(contentTypeKey) || "requirement_list".equals(contentTypeKey); }
     }
 

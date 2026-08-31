@@ -6,10 +6,19 @@ const payload: CreateTaskPayload = {
   taskMode: 'FEATURE',
   featureDescription: '用户登录',
   fewShotPolicy: 'NONE',
-  schemaVersion: '1.0',
-  promptVersion: '1.0',
+  schemaVersion: '2.0',
+  promptVersion: '2.0',
   scopeSelectionIds: ['scope-1', 'scope-2'],
   prompt: '生成测试用例',
+  workflowVersion: '2.0',
+  inputVersion: '2.0',
+  artifactVersion: '2.0',
+  approvedFunctionScope: {
+    scopeVersion: 'scope-v2',
+    functions: [{
+      functionKey: 'function-login', name: '用户登录', path: '账号/登录', description: '',
+    }],
+  },
 }
 
 describe('task API client', () => {

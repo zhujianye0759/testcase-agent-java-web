@@ -1,0 +1,32 @@
+{
+  "source_assessments": [
+    {
+      "unit_key": "unit-0010",
+      "assessment": "functional",
+      "candidates": [
+        {
+          "path": "用户中心 → 账号登录",
+          "description": "已注册且状态正常的用户 使用正确账号和密码登录系统。",
+          "target_quote": "用户输入正确账号和密码后，系统进入首页并显示用户名",
+          "evidence_keys": [
+            "unit-0010",
+            "unit-0011"
+          ],
+          "recommended_status": "accepted",
+          "reason_code": "grounded_function",
+          "missing_information": []
+        }
+      ]
+    },
+    {
+      "unit_key": "unit-0011",
+      "assessment": "functional",
+      "candidates": []
+    },
+    {
+      "unit_key": "unit-0012",
+      "assessment": "non_functional",
+      "candidates": []
+    }
+  ]
+}

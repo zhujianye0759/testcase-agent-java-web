@@ -17,7 +17,11 @@ public record CreateGenerationTaskCommand(
         String schemaVersion,
         String promptVersion,
         List<String> scopeSelectionIds,
-        String prompt) {
+        String prompt,
+        String workflowVersion,
+        String inputVersion,
+        String artifactVersion,
+        ApprovedFunctionScope approvedFunctionScope) {
 
     public CreateGenerationTaskCommand {
         taskMode = Objects.requireNonNull(taskMode, "taskMode must not be null");
@@ -36,6 +40,20 @@ public record CreateGenerationTaskCommand(
             throw new IllegalArgumentException("材料范围不能重复选择");
         }
         prompt = prompt == null ? "" : prompt.trim();
+    }
+
+    /** Historical JSON/test constructor; the public resolver rejects it for every newly created task. */
+    public CreateGenerationTaskCommand(GenerationTaskMode taskMode, String featureDescription,
+            FewShotPolicy fewShotPolicy, String schemaVersion, String promptVersion,
+            List<String> scopeSelectionIds, String prompt) {
+        this(taskMode, featureDescription, fewShotPolicy, schemaVersion, promptVersion, scopeSelectionIds, prompt,
+                null, null, null, null);
+    }
+
+    /** Returns the independently versioned V2 coordinates after the resolver has checked them. */
+    public GenerationContractVersions contractVersions() {
+        return workflowVersion == null && inputVersion == null && artifactVersion == null
+                ? null : new GenerationContractVersions(workflowVersion, inputVersion, artifactVersion);
     }
 
     private static String requireText(String value, String field) {

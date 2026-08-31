@@ -1,0 +1,52 @@
+{
+  "source_assessments": [
+    {
+      "unit_key": "unit-0010",
+      "assessment": "functional",
+      "candidates": [
+        {
+          "path": "  用户中心　→　账号登录  ",
+          "description": "已注册且状态正常的用户\t使用正确账号和密码登录系统。",
+          "target_quote": "\n用户输入正确账号和密码后，系统进入首页并显示用户名\r\n",
+          "evidence_keys": [
+            "unit-0011",
+            "unit-0010"
+          ],
+          "recommended_status": "accepted",
+          "reason_code": "grounded_function",
+          "missing_information": []
+        }
+      ]
+    },
+    {
+      "unit_key": "unit-0011",
+      "assessment": "functional",
+      "candidates": []
+    },
+    {
+      "unit_key": "unit-0012",
+      "assessment": "non_functional",
+      "candidates": []
+    },
+    {
+      "unit_key": "unit-0013",
+      "assessment": "functional",
+      "candidates": [
+        {
+          "path": "用户中心 → 登录策略",
+          "description": "系统支持配置登录策略。",
+          "target_quote": "支持管理员配置登录策略",
+          "evidence_keys": [
+            "unit-0013"
+          ],
+          "recommended_status": "pending_confirmation",
+          "reason_code": "insufficient_detail",
+          "missing_information": [
+            "配置主体的角色与权限范围",
+            "可配置的策略参数及取值约束"
+          ]
+        }
+      ]
+    }
+  ]
+}

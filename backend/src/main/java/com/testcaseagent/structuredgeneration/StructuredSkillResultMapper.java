@@ -39,7 +39,7 @@ public final class StructuredSkillResultMapper {
     public static FunctionListExtractionValidator.Result extraction(FunctionListExtractionResult result) {
         return new FunctionListExtractionValidator.Result(result.functionListItems().stream()
                 .map(row -> new FunctionListExtractionValidator.ModelItem(
-                        row.path(), row.description(), row.evidenceKeys()))
+                        row.path(), row.description(), row.evidenceKeys(), row.targetQuote()))
                 .toList());
     }
 

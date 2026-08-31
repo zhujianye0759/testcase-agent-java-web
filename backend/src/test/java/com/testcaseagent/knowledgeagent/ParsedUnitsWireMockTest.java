@@ -14,6 +14,8 @@ import static org.assertj.core.groups.Tuple.tuple;
 import com.github.tomakehurst.wiremock.junit5.WireMockExtension;
 import com.github.tomakehurst.wiremock.stubbing.Scenario;
 import com.testcaseagent.scope.ParsedMaterial;
+import com.testcaseagent.scope.ParsedMaterialPage;
+import com.testcaseagent.scope.ParsedMaterialSummary;
 import com.testcaseagent.scope.ParsedMaterialUnit;
 import com.testcaseagent.scope.RequirementDocumentCoordinate;
 import com.testcaseagent.scope.RequirementMaterialReaderPort;
@@ -22,6 +24,7 @@ import com.testcaseagent.scope.ScopeViolation;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
+import java.util.ArrayList;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
@@ -65,6 +68,24 @@ class ParsedUnitsWireMockTest {
         knowledgeEngine.verify(getRequestedFor(urlPathEqualTo(path()))
                 .withQueryParam("limit", equalTo("50"))
                 .withQueryParam("cursor", equalTo(CURSOR)));
+    }
+
+    /** [Req-ID]: REQ-TGV2-003 */
+    @Test
+    void streamsValidatedPagesWithoutAccumulatingTheDocumentContentInTheAdapter() {
+        stubPage(1, null, page(DOCUMENT_ID, 2, List.of(
+                unit("chunk-1", 0, 1, "第一段", 0, 3)), CURSOR, false));
+        stubPage(1, CURSOR, page(DOCUMENT_ID, 2, List.of(
+                unit("chunk-2", 1, 2, "第二段", 4, 7)), null, true));
+        List<ParsedMaterialPage> pages = new ArrayList<>();
+
+        ParsedMaterialSummary summary = reader().scanAll(scope(), DOCUMENT_ID, 1, pages::add);
+
+        assertThat(summary).isEqualTo(new ParsedMaterialSummary(DOCUMENT_ID, 2));
+        assertThat(pages).extracting(page -> page.units().size(), ParsedMaterialPage::complete)
+                .containsExactly(tuple(1, false), tuple(1, true));
+        assertThat(pages).flatExtracting(ParsedMaterialPage::units)
+                .extracting(ParsedMaterialUnit::ordinal).containsExactly(1, 2);
     }
 
     /** [Req-ID]: REQ-SMR-001, REQ-SMR-004 */

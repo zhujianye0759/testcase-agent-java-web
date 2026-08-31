@@ -1,0 +1,64 @@
+{
+  "success": true,
+  "data": {
+    "schema_version": "1.0",
+    "skill_name": "feature-scope-reconciliation",
+    "repair_attempted": false,
+    "result": {
+      "operation": "extract_function_candidates",
+      "protocol_version": "1",
+      "window_key": "365b565a76db3fe91166af3dd1606113f064e63967f3baaeac8002d95245447d",
+      "source_outcomes": [
+        {
+          "unit_key": "unit-0010",
+          "disposition": "linked",
+          "candidate_refs": [
+            "5126c6322d99dc312683675603c45be4025d27e6607ce161378fbccec3ad67f3"
+          ],
+          "reason_code": "candidate_linked"
+        },
+        {
+          "unit_key": "unit-0011",
+          "disposition": "linked",
+          "candidate_refs": [
+            "5126c6322d99dc312683675603c45be4025d27e6607ce161378fbccec3ad67f3"
+          ],
+          "reason_code": "candidate_linked"
+        },
+        {
+          "unit_key": "unit-0012",
+          "disposition": "no_function",
+          "candidate_refs": [],
+          "reason_code": "non_functional_content"
+        },
+        {
+          "unit_key": "unit-0013",
+          "disposition": "unresolved",
+          "candidate_refs": [],
+          "reason_code": "model_omitted_unit"
+        }
+      ],
+      "candidates": [
+        {
+          "candidate_ref": "5126c6322d99dc312683675603c45be4025d27e6607ce161378fbccec3ad67f3",
+          "path": "用户中心 → 账号登录",
+          "description": "已注册且状态正常的用户 使用正确账号和密码登录系统。",
+          "target_quote": "用户输入正确账号和密码后,系统进入首页并显示用户名",
+          "evidence_keys": [
+            "unit-0010",
+            "unit-0011"
+          ],
+          "recommended_status": "accepted",
+          "reason_code": "grounded_function",
+          "missing_information": []
+        }
+      ],
+      "normalization_summary": {
+        "model_candidate_count": 1,
+        "downgraded_candidate_count": 0,
+        "discarded_candidate_count": 0,
+        "auto_unresolved_unit_count": 1
+      }
+    }
+  }
+}

@@ -4,10 +4,25 @@ export interface CreateTaskPayload {
   taskMode: 'FEATURE' | 'ALL'
   featureDescription: string
   fewShotPolicy: FewShotPolicy
-  schemaVersion: '1.0'
-  promptVersion: '1.0'
+  schemaVersion: '2.0'
+  promptVersion: '2.0'
   scopeSelectionIds: string[]
   prompt: string
+  workflowVersion: '2.0'
+  inputVersion: '2.0'
+  artifactVersion: '2.0'
+  approvedFunctionScope: ApprovedFunctionScopePayload
+}
+
+/** Versioned result of the independent admission review; the generation UI freezes it without rediscovery. */
+export interface ApprovedFunctionScopePayload {
+  scopeVersion: string
+  functions: Array<{
+    functionKey: string
+    name: string
+    path: string
+    description: string
+  }>
 }
 
 export interface MaterialTypeOption {
@@ -78,11 +93,32 @@ export interface GenerationTaskBusinessProgress {
 
 /** Java-validated and persisted business projection; it contains no KEE/model payload or internal keys. */
 export interface StructuredGenerationResult {
-  processingStatus: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
-  coverageStatus: 'PENDING' | 'COMPLETE' | 'PARTIAL' | 'UNABLE_TO_GENERATE'
+  workflowVersion: '1.0' | '2.0'
+  processingStatus: string
+  coverageStatus: string
+  retryEligibility?: {
+    canRetry: boolean
+    unavailableReason: string
+  }
   pendingCandidateCaseCount: number
+  /** Reader-safe candidate audit; absent for legacy structured responses that predate candidate protocol V1. */
+  functionCandidateSummary?: {
+    acceptedCandidateCount: number
+    pendingCandidateCount: number
+    rejectedCandidateCount: number
+    noFunctionSourceCount: number
+    unresolvedSourceCount: number
+    incompleteWindowCount: number
+    issues: Array<{
+      subject: string
+      status: string
+      description: string
+      missingInformation: string[]
+    }>
+  }
   phaseProgress: {
     materialTraversal: StructuredPhaseCount
+    factExtraction: StructuredPhaseCount
     requirementReview: StructuredPhaseCount
     featureReconciliation: StructuredPhaseCount
     testcaseDesign: StructuredPhaseCount
@@ -92,7 +128,7 @@ export interface StructuredGenerationResult {
     subject: string
     issueType: string
     description: string
-    handlingLevel: 'BLOCKING' | 'CONTINUE_INCOMPLETE' | 'IMPROVEMENT'
+    handlingLevel: string
     affectedScope: string
     badSourceExample: string
     proposedGoodExample: string
@@ -100,25 +136,33 @@ export interface StructuredGenerationResult {
     currentProjectRecommendation: string
     designCenterGuidelineRecommendation: string
   }>
+  testabilityFeedback: Array<{
+    functionName: string
+    observationType: string
+    description: string
+    affectedFactTypes: string[]
+  }>
   reconciliations: Array<{
     functionListPaths: string[]
     requirementFunctions: string[]
-    classification: 'EXACT_MATCH' | 'FUNCTION_LIST_ONLY' | 'REQUIREMENTS_ONLY' | 'CONFLICT' | 'DUPLICATE' | 'SPLIT' | 'MERGE' | 'INSUFFICIENT_EVIDENCE'
+    classification: string
     scopeRecommendation: string
-    confirmationStatus: 'CONFIRMED' | 'PENDING_CONFIRMATION'
+    confirmationStatus: string
   }>
   testPoints: Array<{
     functionName: string
-    type: 'NORMAL_BEHAVIOR' | 'INPUT_VALIDATION' | 'BOUNDARY_VALUE' | 'PERMISSION' | 'STATE_TRANSITION' | 'BUSINESS_EXCEPTION' | 'DEPENDENCY_FAILURE'
+    type: string
     description: string
-    basis: 'FORMAL_REQUIREMENT' | 'GENERAL_EXPERIENCE'
+    basis: string
+    generationOutcome: string
+    generationMissingInformation: string[]
     missingInformation: string[]
     formalCoverageSatisfied: boolean
     testcases: Array<{
       name: string
       title: string
       priority: string
-      status: 'FORMAL' | 'PENDING_CONFIRMATION'
+      status: string
       preconditions: string[]
       initialization: {
         hardwareConfiguration: string[]
@@ -152,6 +196,27 @@ export interface StructuredGenerationResult {
       missingInformation: string[]
     }>
   }>
+  /** V2-only bounded collections. V1 responses intentionally omit this field. */
+  v2Collections?: {
+    testabilityFeedback: StructuredDetailPage<StructuredGenerationResult['testabilityFeedback'][number]>
+    testPoints: StructuredDetailPage<StructuredGenerationResult['testPoints'][number]>
+    testcases: StructuredDetailPage<StructuredGenerationResult['testPoints'][number]['testcases'][number]>
+  }
+}
+
+export interface StructuredDetailPage<T> {
+  items: T[]
+  page: number
+  size: number
+  totalItems: number
+  hasNext: boolean
+}
+
+export interface StructuredDetailQuery {
+  feedbackPage: number
+  testPointPage: number
+  testcasePage: number
+  size: number
 }
 
 export interface StructuredPhaseCount {
@@ -221,7 +286,7 @@ export interface TaskApi {
   getTaskOptions(refresh?: boolean): Promise<ScopeCatalog>
   createTask(payload: CreateTaskPayload): Promise<TaskCreated>
   listTasks(pagination: TaskListQuery): Promise<GenerationTaskPage>
-  getTask(taskId: string): Promise<GenerationTaskDetail>
+  getTask(taskId: string, query?: StructuredDetailQuery): Promise<GenerationTaskDetail>
   cancelTask(taskId: string): Promise<void>
   retryTask(taskId: string): Promise<void>
   artifactDownloadUrl(artifactId: string): string
@@ -248,8 +313,14 @@ export function createTaskApi(fetcher: typeof fetch = fetch): TaskApi {
       })
       return request<GenerationTaskPage>(fetcher, `/api/tasks?${parameters.toString()}`)
     },
-    async getTask(taskId) {
-      return request<GenerationTaskDetail>(fetcher, `/api/tasks/${encodeURIComponent(taskId)}`)
+    async getTask(taskId, query) {
+      const parameters = query ? `?${new URLSearchParams({
+        feedbackPage: String(query.feedbackPage),
+        testPointPage: String(query.testPointPage),
+        testcasePage: String(query.testcasePage),
+        size: String(query.size),
+      }).toString()}` : ''
+      return request<GenerationTaskDetail>(fetcher, `/api/tasks/${encodeURIComponent(taskId)}${parameters}`)
     },
     async cancelTask(taskId) {
       await request<void>(fetcher, `/api/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' })

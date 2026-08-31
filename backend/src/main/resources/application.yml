@@ -15,7 +15,9 @@ app:
     enabled: ${TESTCASE_KNOWLEDGE_AGENT_ENABLED:false}
     api-base-url: ${TESTCASE_KNOWLEDGE_AGENT_API_BASE_URL:}
     api-key: ${TESTCASE_KNOWLEDGE_AGENT_API_KEY:}
-    timeout: ${TESTCASE_KNOWLEDGE_AGENT_TIMEOUT:5m}
+    timeout: ${TESTCASE_KNOWLEDGE_AGENT_TIMEOUT:3060s}
+    feature-reconciliation-v2-request-max-bytes: ${TESTCASE_RECONCILIATION_V2_REQUEST_MAX_BYTES:16777216}
+    feature-reconciliation-v2-response-max-bytes: ${TESTCASE_RECONCILIATION_V2_RESPONSE_MAX_BYTES:4194304}
   task-generation-profile:
     agent-id: ${TESTCASE_TASK_AGENT_ID:005876e2-a62f-41f3-8807-29bfd3f1e257}
     example-knowledge-base-id: ${TESTCASE_EXAMPLE_KNOWLEDGE_BASE_ID:1a2f0a98-546e-4cd0-a437-b17e866a21ac}

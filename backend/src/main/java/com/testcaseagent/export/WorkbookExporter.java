@@ -6,4 +6,7 @@ public interface WorkbookExporter {
 
     /** Exports Java-validated structured business records without a Markdown conversion step. */
     WorkbookArtifact exportStructured(StructuredWorkbookExportRequest request);
+
+    /** Exports a bounded row source without loading all task-owned rows into memory. [Req-ID]: REQ-TGV2-009 */
+    WorkbookArtifact exportStructuredRows(StructuredWorkbookRowSource source);
 }

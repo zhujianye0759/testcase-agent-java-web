@@ -34,6 +34,8 @@ const form = reactive({
   scopeSelectionIds: [] as string[],
   fewShotPolicy: 'AUTO' as CreateTaskPayload['fewShotPolicy'],
   prompt: '',
+  approvedScopeVersion: '',
+  approvedFunctions: [{ functionKey: '', name: '', path: '', description: '' }],
 })
 
 const knowledgeBases = computed(() => scopeCatalog.value.knowledgeBases)
@@ -60,7 +62,12 @@ const materialChoices = computed(() => materialTypes.value.flatMap(material => {
   }]
 }))
 const hasCatalog = computed(() => knowledgeBases.value.length > 0)
-const canSubmit = computed(() => !submitting.value && !loadingOptions.value && form.scopeSelectionIds.length > 0)
+const approvedScopeComplete = computed(() => form.approvedScopeVersion.trim().length > 0
+  && form.approvedFunctions.length > 0
+  && form.approvedFunctions.every(item => item.functionKey.trim() && item.name.trim() && item.path.trim())
+  && (form.taskMode !== 'FEATURE' || form.approvedFunctions.length === 1))
+const canSubmit = computed(() => !submitting.value && !loadingOptions.value
+  && form.scopeSelectionIds.length > 0 && approvedScopeComplete.value)
 
 async function loadOptions(refresh = false) {
   const requestSequence = ++loadSequence
@@ -107,10 +114,26 @@ function resetMaterialSelection() {
   form.scopeSelectionIds = materialChoices.value.length === 1 ? [materialChoices.value[0].id] : []
 }
 
+function addApprovedFunction() {
+  form.approvedFunctions.push({ functionKey: '', name: '', path: '', description: '' })
+}
+
+function removeApprovedFunction(index: number) {
+  if (form.approvedFunctions.length > 1) form.approvedFunctions.splice(index, 1)
+}
+
 async function submitTask() {
   if (!canSubmit.value) return
   if (form.taskMode === 'FEATURE' && !form.featureDescription.trim()) {
     submitError.value = '请填写要生成的功能名称或功能描述。'
+    await nextTick()
+    submitErrorElement.value?.focus()
+    return
+  }
+  if (!approvedScopeComplete.value) {
+    submitError.value = form.taskMode === 'FEATURE' && form.approvedFunctions.length !== 1
+      ? '指定功能生成时，已审核功能范围必须恰好包含一个功能。'
+      : '请完整填写已审核功能范围版本、功能标识、名称和路径。'
     await nextTick()
     submitErrorElement.value?.focus()
     return
@@ -123,10 +146,22 @@ async function submitTask() {
       taskMode: form.taskMode,
       featureDescription: form.featureDescription.trim(),
       fewShotPolicy: form.fewShotPolicy,
-      schemaVersion: '1.0',
-      promptVersion: '1.0',
+      schemaVersion: '2.0',
+      promptVersion: '2.0',
       scopeSelectionIds: [...form.scopeSelectionIds],
       prompt: form.prompt.trim(),
+      workflowVersion: '2.0',
+      inputVersion: '2.0',
+      artifactVersion: '2.0',
+      approvedFunctionScope: {
+        scopeVersion: form.approvedScopeVersion.trim(),
+        functions: form.approvedFunctions.map(item => ({
+          functionKey: item.functionKey.trim(),
+          name: item.name.trim(),
+          path: item.path.trim(),
+          description: item.description.trim(),
+        })),
+      },
     })
     await router.push({ name: 'task-detail', params: { taskId: task.id } })
   } catch (error) {
@@ -200,7 +235,7 @@ async function submitTask() {
           >
           <span>
             <strong>生成全部测试用例</strong>
-            <small>推荐 · 自动识别材料中的功能并分批生成</small>
+            <small>推荐 · 按已审核功能范围分批生成</small>
           </span>
         </label>
         <label
@@ -221,7 +256,7 @@ async function submitTask() {
           </span>
         </label>
         <p class="task-form__help">
-          系统将从已授权材料中识别功能并分批生成。
+          系统将以已审核功能范围为目标，并从已授权材料中提取需求依据。
         </p>
         <label v-if="form.taskMode === 'FEATURE'">
           功能名称或功能描述
@@ -362,6 +397,77 @@ async function submitTask() {
         >
           当前没有可选材料范围。
         </p>
+      </fieldset>
+
+      <fieldset :disabled="submitting">
+        <legend>已审核功能范围</legend>
+        <p class="task-form__help">
+          使用测试准入审核已发布的版本化功能范围。这里不会重新比对或扩张功能清单。
+        </p>
+        <label>
+          审核范围版本
+          <input
+            v-model="form.approvedScopeVersion"
+            name="approvedScopeVersion"
+            placeholder="例如：scope-v2-20260831"
+            required
+          >
+        </label>
+        <div
+          v-for="(approvedFunction, index) in form.approvedFunctions"
+          :key="index"
+          class="task-form__approved-function"
+          data-testid="approved-function"
+        >
+          <label>
+            功能标识（由准入审核结果提供）
+            <input
+              v-model="approvedFunction.functionKey"
+              :name="`approvedFunctionKey-${index}`"
+              required
+            >
+          </label>
+          <label>
+            功能名称
+            <input
+              v-model="approvedFunction.name"
+              :name="`approvedFunctionName-${index}`"
+              required
+            >
+          </label>
+          <label>
+            功能路径
+            <input
+              v-model="approvedFunction.path"
+              :name="`approvedFunctionPath-${index}`"
+              required
+            >
+          </label>
+          <label>
+            功能说明（可选）
+            <textarea
+              v-model="approvedFunction.description"
+              :name="`approvedFunctionDescription-${index}`"
+            />
+          </label>
+          <button
+            v-if="form.approvedFunctions.length > 1"
+            type="button"
+            class="task-form__secondary-action"
+            :aria-label="`移除第 ${index + 1} 个已审核功能`"
+            @click="removeApprovedFunction(index)"
+          >
+            移除此功能
+          </button>
+        </div>
+        <button
+          v-if="form.taskMode === 'ALL'"
+          type="button"
+          class="task-form__secondary-action"
+          @click="addApprovedFunction"
+        >
+          添加已审核功能
+        </button>
       </fieldset>
 
       <!-- Execution rail: strategy, notes, and launch actions grouped for the two-column console layout. -->

@@ -46,11 +46,19 @@ public final class GenerationTaskController {
     }
 
     @GetMapping("/{taskId}")
-    public GenerationTaskDetailResponse detail(@PathVariable String taskId) {
+    public GenerationTaskDetailResponse detail(
+            @PathVariable String taskId,
+            @RequestParam(defaultValue = "0") int feedbackPage,
+            @RequestParam(defaultValue = "0") int testPointPage,
+            @RequestParam(defaultValue = "0") int testcasePage,
+            @RequestParam(defaultValue = "10") int size) {
         try {
-            return GenerationTaskDetailResponse.from(workflow.detail(taskId));
+            return GenerationTaskDetailResponse.from(workflow.detail(
+                    taskId, new StructuredDetailQuery(feedbackPage, testPointPage, testcasePage, size)));
         } catch (GenerationTaskNotFoundException exception) {
             throw new ResponseStatusException(NOT_FOUND, "Task not found");
+        } catch (IllegalArgumentException exception) {
+            throw new ResponseStatusException(org.springframework.http.HttpStatus.BAD_REQUEST, exception.getMessage());
         }
     }
 
@@ -73,6 +81,8 @@ public final class GenerationTaskController {
             return ResponseEntity.noContent().build();
         } catch (GenerationTaskNotFoundException exception) {
             throw new ResponseStatusException(NOT_FOUND, "Task not found");
+        } catch (IllegalStateException exception) {
+            throw new ResponseStatusException(CONFLICT, "Historical task is read-only");
         }
     }
 
@@ -83,6 +93,8 @@ public final class GenerationTaskController {
             return ResponseEntity.noContent().build();
         } catch (GenerationTaskNotFoundException exception) {
             throw new ResponseStatusException(NOT_FOUND, "Task not found");
+        } catch (GenerationTaskRetryConflictException exception) {
+            throw new ResponseStatusException(CONFLICT, "Task retry is not currently eligible");
         }
     }
 

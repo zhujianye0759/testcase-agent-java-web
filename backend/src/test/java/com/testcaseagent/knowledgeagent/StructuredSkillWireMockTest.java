@@ -79,6 +79,25 @@ class StructuredSkillWireMockTest {
                 .withRequestBody(notMatching(".*\\\"function-document\\\".*")));
     }
 
+    /** [Req-ID]: REQ-FTG-013 */
+    @Test
+    void sendsAdjacentContextSeparatelyFromTheReviewTargetOwnership() {
+        kee.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill")).willReturn(okJson(success())));
+        RequirementMaterialQualityReviewInput input = new RequirementMaterialQualityReviewInput(
+                "material-1", MaterialContentTypeKey.REQUIREMENTS_SPEC, "需求",
+                List.of(new RequirementMaterialQualityReviewInput.MaterialUnit("unit-33", 33, "目标内容")),
+                List.of(
+                        new RequirementMaterialQualityReviewInput.MaterialUnit("unit-32", 32, "前置上下文"),
+                        new RequirementMaterialQualityReviewInput.MaterialUnit("unit-34", 34, "后置上下文")));
+
+        adapter().reviewRequirementMaterial(invocation(input));
+
+        kee.verify(postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill"))
+                .withRequestBody(matchingJsonPath("$.input.units[0].unit_key", equalTo("unit-33")))
+                .withRequestBody(matchingJsonPath("$.input.context_units[0].unit_key", equalTo("unit-32")))
+                .withRequestBody(matchingJsonPath("$.input.context_units[1].unit_key", equalTo("unit-34"))));
+    }
+
     /** [Req-ID]: REQ-SKI-002, REQ-SKI-003, REQ-SKI-004 */
     @Test
     void callsTheExtractOperationWithGlobalOrdinalsAndRejectsAMismatchedOperationResult() {
@@ -100,6 +119,80 @@ class StructuredSkillWireMockTest {
         assertThatThrownBy(() -> adapter().extractFunctionList(extractionInvocation()))
                 .isInstanceOfSatisfying(StructuredSkillExecutionException.class,
                         failure -> assertThat(failure.type()).isEqualTo(StructuredSkillErrorType.STRUCTURED_OUTPUT_INVALID));
+    }
+
+    /** [Req-ID]: REQ-FSC-008 */
+    @Test
+    void callsReconcilePageV2ThroughTheSameStrictEnvelopeAndKeepsNon2xxFailClosed() {
+        kee.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill"))
+                .inScenario("v2-status").whenScenarioStateIs(com.github.tomakehurst.wiremock.stubbing.Scenario.STARTED)
+                .willSetStateTo("forged").willReturn(okJson(v2Success())));
+        kee.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill"))
+                .inScenario("v2-status").whenScenarioStateIs("forged")
+                .willReturn(com.github.tomakehurst.wiremock.client.WireMock.aResponse().withStatus(502)
+                        .withHeader("Content-Type", "application/json").withBody(v2Success())));
+
+        StructuredSkillSuccessEnvelope<FeatureScopeReconciliationPageResult> response = adapter()
+                .reconcileFeatureScopePage(v2Invocation());
+
+        assertThat(response.data().result().operation()).isEqualTo("reconcile_page");
+        assertThat(response.data().result().reconciliations()).hasSize(1);
+        kee.verify(postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill"))
+                .withRequestBody(matchingJsonPath("$.input.protocol_version", equalTo("2")))
+                .withRequestBody(matchingJsonPath("$.input.run.catalog_sha256",
+                        equalTo("19ad1b939ba1ad03bf5e30772839a0754b789d09e07b048f37638c5e976c7a28")))
+                .withRequestBody(matchingJsonPath("$.input.owner_window.page_key",
+                        equalTo("975d318e9fc3cb2a8802d25fc43234537e8494987fd31a428a3bb054696ec463"))));
+        assertThatThrownBy(() -> adapter().reconcileFeatureScopePage(v2Invocation()))
+                .isInstanceOfSatisfying(StructuredSkillExecutionException.class,
+                        failure -> assertThat(failure.type())
+                                .isEqualTo(StructuredSkillErrorType.STRUCTURED_OUTPUT_INVALID));
+    }
+
+    /** [Req-ID]: REQ-FSC-008 */
+    @Test
+    void mapsV2LengthCapacityErrorsFromHttp400AndPreservesTheRepairStage() {
+        kee.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill"))
+                .inScenario("v2-length-capacity")
+                .whenScenarioStateIs(com.github.tomakehurst.wiremock.stubbing.Scenario.STARTED)
+                .willSetStateTo("repair-length")
+                .willReturn(com.github.tomakehurst.wiremock.client.WireMock.aResponse().withStatus(400)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("{\"success\":false,\"error\":{\"details\":{\"type\":\"response_too_large\"}}}")));
+        kee.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill"))
+                .inScenario("v2-length-capacity").whenScenarioStateIs("repair-length")
+                .willReturn(com.github.tomakehurst.wiremock.client.WireMock.aResponse().withStatus(400)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("{\"success\":false,\"error\":{\"details\":{\"type\":\"response_too_large\","
+                                + "\"repair_attempted\":true}}}")));
+
+        assertThatThrownBy(() -> adapter().reconcileFeatureScopePage(v2Invocation()))
+                .isInstanceOfSatisfying(StructuredSkillExecutionException.class, failure -> {
+                    assertThat(failure.type()).isEqualTo(StructuredSkillErrorType.RESPONSE_TOO_LARGE);
+                    assertThat(failure.repairAttempted()).isFalse();
+                });
+        assertThatThrownBy(() -> adapter().reconcileFeatureScopePage(v2Invocation()))
+                .isInstanceOfSatisfying(StructuredSkillExecutionException.class, failure -> {
+                    assertThat(failure.type()).isEqualTo(StructuredSkillErrorType.RESPONSE_TOO_LARGE);
+                    assertThat(failure.repairAttempted()).isTrue();
+                });
+    }
+
+    /** [Req-ID]: REQ-FSC-008 */
+    @Test
+    void appliesV2RequestAndResponseBudgetsWithoutChangingOtherSkillLimits() {
+        WebClientKnowledgeAgentAdapter requestLimited = v2Adapter(100, 4 * 1024 * 1024);
+        assertThatThrownBy(() -> requestLimited.reconcileFeatureScopePage(v2Invocation()))
+                .isInstanceOfSatisfying(StructuredSkillExecutionException.class,
+                        failure -> assertThat(failure.type()).isEqualTo(StructuredSkillErrorType.REQUEST_TOO_LARGE));
+        kee.verify(0, postRequestedFor(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill")));
+
+        kee.stubFor(post(urlEqualTo("/api/v1/agent-chat/session-1/isolated-skill"))
+                .willReturn(okJson(v2Success())));
+        WebClientKnowledgeAgentAdapter responseLimited = v2Adapter(16 * 1024 * 1024, 100);
+        assertThatThrownBy(() -> responseLimited.reconcileFeatureScopePage(v2Invocation()))
+                .isInstanceOfSatisfying(StructuredSkillExecutionException.class,
+                        failure -> assertThat(failure.type()).isEqualTo(StructuredSkillErrorType.RESPONSE_TOO_LARGE));
     }
 
     /** [Req-ID]: REQ-FTG-004 */
@@ -273,6 +366,27 @@ class StructuredSkillWireMockTest {
     }
 
     private static WebClientKnowledgeAgentAdapter adapter() { return new WebClientKnowledgeAgentAdapter(kee.baseUrl() + "/api/v1", "test-key", Duration.ofSeconds(5), 1, 20_000); }
+    private static WebClientKnowledgeAgentAdapter v2Adapter(int requestMaxBytes, int responseMaxBytes) {
+        return new WebClientKnowledgeAgentAdapter(kee.baseUrl() + "/api/v1", "test-key",
+                Duration.ofSeconds(5), 1, 20_000, requestMaxBytes, responseMaxBytes);
+    }
+
+    private static FeatureScopeReconciliationPageInvocation v2Invocation() {
+        var catalog = new FeatureScopeReconciliationPageInput.GlobalCatalog(
+                List.of(new FeatureScopeReconciliationPageInput.FunctionListItem(
+                        "item-1", "登录", "desc", List.of("u-item"))), List.of());
+        var owners = List.of(new FeatureScopeReconciliationPageInput.SourceRef(
+                FeatureScopeReconciliationPageInput.SourceType.FUNCTION_LIST_ITEM, "item-1"));
+        var input = new FeatureScopeReconciliationPageInput(
+                new FeatureScopeReconciliationPageInput.Run("run-handler",
+                        "19ad1b939ba1ad03bf5e30772839a0754b789d09e07b048f37638c5e976c7a28", 1, 0),
+                catalog,
+                new FeatureScopeReconciliationPageInput.OwnerWindow(
+                        "975d318e9fc3cb2a8802d25fc43234537e8494987fd31a428a3bb054696ec463", owners));
+        return new FeatureScopeReconciliationPageInvocation("session-1", "agent-1",
+                new RequirementScope("kb-1", "system-1", "version-1", "requirements_spec", "project-1",
+                        List.of(new RequirementDocumentCoordinate("doc-1"))), input);
+    }
     private static RequirementMaterialQualityReviewInvocation invocation() {
         return invocation(new RequirementMaterialQualityReviewInput("material-1",
                 MaterialContentTypeKey.REQUIREMENTS_SPEC, "需求",
@@ -292,7 +406,8 @@ class StructuredSkillWireMockTest {
                         new FunctionListExtractionInput.Unit("unit-34", 34, "功能二"))));
     }
     private static String success() { return "{\"success\":true,\"data\":{\"schema_version\":\"1.0\",\"skill_name\":\"requirement-material-quality-review\",\"repair_attempted\":false,\"result\":{\"requirement_facts\":[],\"review_findings\":[{\"finding_key\":\"finding-1\",\"root_cause_kind\":\"missing_exception_handling\",\"issue_type\":\"异常处理缺失\",\"affected_scope\":{\"unit_keys\":[\"unit-33\"],\"summary\":\"当前材料范围\"},\"bad_source_example\":{\"evidence_key\":\"unit-33\",\"quote\":\"需求内容\"},\"proposed_good_example\":{\"status\":\"pending_confirmation\",\"text\":\"建议需求写法（待需求方确认）\"},\"description\":\"材料未说明异常处理。\",\"evidence_keys\":[\"unit-33\"],\"test_design_impact\":\"无法形成异常场景。\",\"current_project_recommendation\":\"请补充异常处理。\",\"design_center_guideline_recommendation\":\"建议补充失败结果。\",\"handling_level\":\"improvement\"}]}}}"; }
-    private static String extractSuccess() { return "{\"success\":true,\"data\":{\"schema_version\":\"1.0\",\"skill_name\":\"feature-scope-reconciliation\",\"repair_attempted\":false,\"result\":{\"operation\":\"extract_function_list\",\"function_list_items\":[{\"path\":\"订单/提交\",\"description\":\"提交订单\",\"evidence_keys\":[\"unit-33\"]}]}}}"; }
+    private static String extractSuccess() { return "{\"success\":true,\"data\":{\"schema_version\":\"1.0\",\"skill_name\":\"feature-scope-reconciliation\",\"repair_attempted\":false,\"result\":{\"operation\":\"extract_function_list\",\"function_list_items\":[{\"path\":\"订单/提交\",\"description\":\"提交订单\",\"target_quote\":\"功能一\",\"evidence_keys\":[\"unit-33\"]}]}}}"; }
+    private static String v2Success() { return "{\"success\":true,\"data\":{\"schema_version\":\"1.0\",\"skill_name\":\"feature-scope-reconciliation\",\"repair_attempted\":false,\"result\":{\"operation\":\"reconcile_page\",\"protocol_version\":\"2\",\"run_key\":\"run-handler\",\"page_key\":\"975d318e9fc3cb2a8802d25fc43234537e8494987fd31a428a3bb054696ec463\",\"completed_owner_source_refs\":[{\"source_type\":\"function_list_item\",\"source_key\":\"item-1\"}],\"reconciliations\":[{\"reconciliation_key\":\"7bfe836f7b4f18eda3ef69d1e22c2cb2aa5fa0dfcb0d907613a1e7bc12a1b03e\",\"owner_source_ref\":{\"source_type\":\"function_list_item\",\"source_key\":\"item-1\"},\"function_list_item_keys\":[\"item-1\"],\"requirement_fact_keys\":[],\"classification\":\"function_list_only\",\"evidence_keys\":[\"u-item\"],\"scope_recommendation\":\"保留范围\",\"confirmation_status\":\"confirmed\"}]}}}"; }
     private static String reconcileOperationWithExtractResult() { return "{\"success\":true,\"data\":{\"schema_version\":\"1.0\",\"skill_name\":\"feature-scope-reconciliation\",\"repair_attempted\":false,\"result\":{\"operation\":\"reconcile\",\"function_list_items\":[]}}}"; }
     private static String testcaseSuccess() { return "{\"success\":true,\"data\":{\"schema_version\":\"1.0\",\"skill_name\":\"functional-testcase-design\",\"repair_attempted\":false,\"result\":{\"function_key\":\"function-1\",\"test_point_key\":\"point-1\",\"testcases\":[{\"case_key\":\"case-1\",\"name\":\"账号登录\",\"title\":\"账号登录\",\"priority\":\"high\",\"preconditions\":[\"已注册用户\"],\"initialization\":{\"hardware_configuration\":[],\"software_configuration\":[],\"test_configuration\":[],\"parameter_configuration\":[]},\"inputs\":[{\"content\":\"账号\",\"nature\":\"valid\",\"source\":\"manual\",\"method\":\"equivalence_partitioning\",\"authenticity\":\"real\",\"sequence\":\"\"}],\"steps\":[{\"step_no\":1,\"action\":\"用户提交账号和正确密码\",\"expected\":\"进入首页\",\"evaluation_criteria\":\"实际结果满足本步骤预期结果。\",\"termination_or_error\":\"系统服务终止，或执行过程中无法执行下一步操作。\",\"result_collection\":\"记录实际结果、提示信息及必要证据。\"}],\"expected_results\":[\"进入首页\"],\"evaluation_criteria\":\"满足前提和约束且未触发终止条件，逐步执行并记录结果。\",\"result_evaluation_criteria\":\"全部预期结果满足则通过，任一不满足则不通过。\",\"termination_conditions\":[],\"result_collection\":\"记录实际结果、提示信息及必要证据。\",\"authoring_information\":{\"author\":\"\",\"date\":\"\"},\"requirement_fact_keys\":[\"fact-1\"],\"evidence_keys\":[\"unit-1\",\"unit-2\"],\"case_status\":\"formal\",\"missing_information\":[]}]}}}"; }
     private static String formalSupportInputJson() { return """

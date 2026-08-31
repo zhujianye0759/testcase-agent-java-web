@@ -1,5 +1,7 @@
 package com.testcaseagent.scope;
 
+import java.util.function.Consumer;
+
 /**
  * Enumerates every persisted parsed unit for one document inside a frozen requirement scope.
  *
@@ -23,4 +25,17 @@ public interface ParsedUnitCatalogPort {
      * [Req-ID]: REQ-SKI-001
      */
     ParsedMaterial readAll(RequirementScope scope, String knowledgeId, int requestedLimit);
+
+    /**
+     * Scans one frozen document page by page and emits no terminal summary until every remote invariant passes.
+     *
+     * <p>Implementations must be genuinely page-bounded. Historical V1 readers retain the separate
+     * {@link #readAll} contract; an adapter may not silently implement this method by materializing that result.</p>
+     *
+     * [Req-ID]: REQ-TGV2-003
+     */
+    default ParsedMaterialSummary scanAll(RequirementScope scope, String knowledgeId, int requestedLimit,
+            Consumer<ParsedMaterialPage> pageConsumer) {
+        throw new UnsupportedOperationException("Page-bounded parsed-unit scanning is not implemented");
+    }
 }

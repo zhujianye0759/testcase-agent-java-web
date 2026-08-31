@@ -59,3 +59,61 @@
 - [x] 10.1 运行 DTO/Wire/validator/coordinator/acceptance/export/detail 聚焦测试及 MySQL/Testcontainers/Flyway 回归。 `[Req-ID]: REQ-FTG-006~009`
 - [x] 10.2 运行受影响后端回归、前端 unit/typecheck/lint/build、OpenSpec strict、git diff --check、敏感形态和主任务事务/权限/泄漏复审。 `[Req-ID]: all`
 - [x] 10.3 本地提交、不推送不归档；从干净 worktree 构建并替换 Java 8082 和 5173，保存页面证据。不得创建或重试最终业务任务。 `[Req-ID]: all`
+
+## 11. Requirement fact PDF 布局空白容错
+
+- [x] 11.1 增加 validator RED：PDF 换行拆词和普通空格差异可接受；删除标点、跨 evidence 拼接仍拒绝；bad-source quote 删除内部空格仍拒绝。 `[Req-ID]: REQ-FTG-005`
+- [x] 11.2 拆分 fact 与 bad-source quote normalizer；fact 使用 NFKC、`Locale.ROOT` 小写并移除 Unicode whitespace/space chars，quote 保持默认 `\s+` 压缩与 `strip`。 `[Req-ID]: REQ-FTG-005`
+- [x] 11.3 运行 validator 聚焦及相关 package 回归、OpenSpec strict、`git diff --check` 和 hunk 级主任务复审；不构建、部署或执行业务 retry。 `[Req-ID]: REQ-FTG-005`
+
+## 12. 材料评审 response-too-large 原地二分
+
+- [x] 12.1 增加协调器 RED：32-unit `response_too_large` 只执行两个确定性连续子窗口；覆盖 33/64/65 边界、原样 unit 字段、最小窗口失败和重启跳过父/已完成子项。 `[Req-ID]: REQ-FTG-010`
+- [x] 12.2 增加 MySQL RED 与增量迁移：父 attempt、父 `SPLIT` 和两个子 work 原子提交；验证回滚、并发唯一、冻结闭包冲突拒绝、既有 accepted rows/hash 不变。 `[Req-ID]: REQ-FTG-010`
+- [x] 12.3 实现 split-aware review coordinator/store 与完整 inventory 恢复；聚合、材料阶段完成和显式 retry 只以叶子 work 判断，不把 `response_too_large` 加入自动模型重试。 `[Req-ID]: REQ-FTG-010`
+- [x] 12.4 运行协调器、store、Flyway、retry/heartbeat/recovery 相关测试，OpenSpec strict、diff/sensitive 门禁和完整差异复审；KEE length 映射部署前不得调用真实 task retry。 `[Req-ID]: REQ-FTG-010`
+
+## 13. 拆分树失败叶子的显式恢复
+
+- [x] 13.1 增加 MySQL RED：一个零写入 FAILED 叶子与多个 QUEUED 兄弟并存时，当前资格判断错误拒绝；恢复只重置失败叶子并保留兄弟、成功哈希和历史 attempt。 `[Req-ID]: REQ-FTG-011`
+- [x] 13.2 最小修改 `structuredRetryEligibility`：锁定全部未完成 work，要求唯一 FAILED、其余仅 QUEUED，且全部无 accepted hash/八类业务行；多个失败、RUNNING、部分写入和并发漂移继续拒绝。 `[Req-ID]: REQ-FTG-011, REQ-ESR-001~003`
+- [x] 13.3 运行显式 retry、拆分、并发/事务、协调器恢复聚焦测试，证明不重跑 COMPLETED/SPLIT、不新增 task、不重新解析材料。 `[Req-ID]: REQ-FTG-010, REQ-FTG-011`
+- [x] 13.4 运行 OpenSpec strict、diff/sensitive、构建与部署门禁；部署后只读确认原 task 可恢复，才允许发送一次同 task 官方 retry。 `[Req-ID]: REQ-FTG-011`
+
+## 14. 功能清单提取 response-too-large 原地二分
+
+- [x] 14.1 增加协调器 RED：`extract_function_list` 连续窗口收到 `response_too_large` 时只执行两个确定性连续子窗口；证明原样 unit 字段、重启跳过父/已完成子项、单 unit 失败关闭且 `structured_output_invalid` 不触发拆分。 `[Req-ID]: REQ-FTG-012`
+- [x] 14.2 增加 MySQL RED：父 attempt、父 `SPLIT` 和两个功能清单子 work 原子提交；验证 operation/Skill/冻结闭包、回滚、并发唯一、父项零业务行以及既有 accepted hash/业务行不变。 `[Req-ID]: REQ-FTG-012`
+- [x] 14.3 复用耐久拆分事务并接入 extraction coordinator；父/子稳定 identity 继续由完整冻结输入计算，恢复不得重新读取或解析材料。 `[Req-ID]: REQ-FTG-012`
+- [x] 14.4 运行协调器、store、retry/heartbeat/recovery、MySQL/Flyway 相关回归以及 OpenSpec strict、diff/sensitive、构建门禁；KEE 将 `extract_function_list` 的 length 稳定映射为 `response_too_large` 前不得恢复真实任务。 `[Req-ID]: REQ-FTG-012`
+
+## 15. 语义目标窗口与耐久上下文
+
+- [x] 15.1 增加规划器/DTO RED：8~16 正常目标、短尾、章节/表格/功能路径边界、相邻不重叠 context、总数不超过32及 target-only evidence。 `[Req-ID]: REQ-FTG-013`
+- [x] 15.2 新增 V17 RED/迁移：持久化 material document、context keys、parent lineage/depth；事务内验证同一 inventory、目标闭包和上下文相邻性，旧 NULL 记录兼容。 `[Req-ID]: REQ-FTG-013`
+- [x] 15.3 接入 review/extraction coordinator：首次调用前注册计划，恢复优先读取耐久根/子窗口，完成兄弟不重跑；functional testcase 调用粒度保持不变。 `[Req-ID]: REQ-FTG-013`
+- [x] 15.4 容量拆分 RED→GREEN：只二分目标并从 inventory 重算左右 context，父/子 lineage 原子提交、并发单赢家、普通错误/单目标失败关闭。 `[Req-ID]: REQ-FTG-013`
+- [x] 15.5 运行 DTO/Wire、规划器、协调器、真实 MySQL/Flyway、retry/lease/recovery 和旧任务兼容回归；证明 context 不进入正式业务行。 `[Req-ID]: REQ-FTG-013`
+- [x] 15.6 运行 OpenSpec strict、`git diff --check`、敏感新增行检查和构建；只报告仍待 KEE 部署及真实同任务验收，不部署、不发送业务 POST。 `[Req-ID]: REQ-FTG-013`
+
+## 16. 功能清单目标原文闭包
+
+- [x] 16.1 增加 DTO/validator RED：`target_quote` 必填且最多 512 code points；上下文冒充、未引用目标原文、伪造 evidence、最终 path 叶子不在 quote 中均整批拒绝；合法目标连续原文及布局空白正控通过。 `[Req-ID]: REQ-FTG-014`
+- [x] 16.2 将 coordinator 的目标 unit 正文闭包传给 validator，context 不进入；mapper/validated row 保留 quote，正式 evidence 仍只取目标 keys。 `[Req-ID]: REQ-FTG-014`
+- [x] 16.3 新增 V18 及 MySQL RED：任务级稳定功能项原子合并 quote，重启恢复相同列表，历史 NULL 记录兼容，失败批次 function item/binding 零写入。 `[Req-ID]: REQ-FTG-014`
+- [x] 16.4 运行 extraction DTO/Wire/validator/coordinator、MySQL/Flyway、重启/并发/旧任务回归以及 strict/diff/sensitive/build 门禁；KEE 部署前不得业务 POST。 `[Req-ID]: REQ-FTG-014`
+
+## 17. 逐材料调用的单文档授权
+
+- [x] 17.1 增加协调器 RED：完整任务范围包含多文档时，功能清单提取旧实现错误发送全部范围；需求评审逐份调用、持久窗口恢复与已完成兄弟跳过均锁定为当前材料单文档授权。 `[Req-ID]: REQ-FTG-015`
+- [x] 17.2 最小修改 extraction 公开编排接缝，复用 `singleDocumentAuthorization(material.documentId())`；不得改变任务快照、材料 inventory、reconcile/testcase 全量范围或 `material_key`。 `[Req-ID]: REQ-FTG-015`
+- [x] 17.3 运行协调器聚焦、MySQL 事务/显式恢复/拆分/租约相关回归、必要普通路径测试、OpenSpec strict、diff/sensitive 与构建门禁，并完成 hunk 级复审。 `[Req-ID]: REQ-FTG-015`
+- [x] 17.4 构建不可变验收 JAR，精确替换唯一 8082；只读确认运行构件、API、Flyway、任务与八类业务表不变后，只执行一次零业务写入重放，不调用官方 retry。 `[Req-ID]: REQ-FTG-015`
+
+## 18. 历史功能清单大窗口调用前迁移
+
+- [x] 18.1 增加协调器 RED：历史 1..32 窗口必须在任何 KEE 调用前形成 1..16/17..32，32 个目标单元全部且仅归属一次；完成兄弟和新语义窗口保持不变。 `[Req-ID]: REQ-FTG-016`
+- [x] 18.2 增加真实 MySQL RED：排队父项、两个稳定子项和完整 evidence 分区原子发布；覆盖并发单赢家、第二子项失败回滚、accepted hash/八类部分业务行拒绝。 `[Req-ID]: REQ-FTG-016`
+- [x] 18.3 最小实现历史 extraction 预拆分事务与协调器接缝；不新增迁移、不改父 attempt、不按 `model_execution_failed` 推断容量、不扩张其他 operation。 `[Req-ID]: REQ-FTG-016`
+- [x] 18.4 运行协调器、MySQL 事务/并发、显式恢复、租约和旧记录兼容回归，以及 OpenSpec strict、diff/sensitive、构建门禁。 `[Req-ID]: REQ-FTG-016`
+- [x] 18.5 构建新不可变 JAR并替换唯一 8082；只读证明 task、attempt、artifact 和八类业务表未变化后，只报告可以进行一次零写入小窗口重放，不实际发送重放或官方 retry。 `[Req-ID]: REQ-FTG-016`

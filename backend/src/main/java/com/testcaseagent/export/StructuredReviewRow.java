@@ -16,7 +16,12 @@ public record StructuredReviewRow(
     /** Origin of a reader-facing first-sheet row. */
     public enum Source {
         REQUIREMENT_MATERIAL_REVIEW("材料审查"),
-        FEATURE_RECONCILIATION("功能核对");
+        FUNCTION_CANDIDATE_AUDIT("功能候选审查"),
+        FEATURE_RECONCILIATION("功能核对"),
+        /** V2 generation-time feedback is non-blocking and replaces the old admission-review projection. */
+        TESTABILITY_FEEDBACK("需求可测性反馈"),
+        /** V2 pending-only and unable outcomes remain visible without entering the formal testcase sheet. */
+        GENERATION_OUTCOME("用例生成结果");
 
         private final String display;
 

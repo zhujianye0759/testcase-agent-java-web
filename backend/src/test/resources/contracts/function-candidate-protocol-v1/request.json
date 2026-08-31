@@ -1,0 +1,56 @@
+{
+  "agent_id": "agent-contract-001",
+  "skill_name": "feature-scope-reconciliation",
+  "knowledge_base_ids": [
+    "7c0f5fdd-980d-4389-8105-ec97f675dac1"
+  ],
+  "knowledge_ids": [
+    "knowledge-contract-001"
+  ],
+  "system_scopes": [
+    {
+      "knowledge_base_id": "7c0f5fdd-980d-4389-8105-ec97f675dac1",
+      "version_id": "version-contract-001",
+      "project_id": "project-contract-001",
+      "knowledge_ids": [
+        "knowledge-contract-001"
+      ]
+    }
+  ],
+  "input": {
+    "operation": "extract_function_candidates",
+    "protocol_version": "1",
+    "window_key": "365b565a76db3fe91166af3dd1606113f064e63967f3baaeac8002d95245447d",
+    "material_key": "material-meizhou-v1",
+    "source_label": "功能候选协议合成样例",
+    "units": [
+      {
+        "unit_key": "unit-0010",
+        "ordinal": 10,
+        "content": "3.1 用户中心 账号登录"
+      },
+      {
+        "unit_key": "unit-0011",
+        "ordinal": 11,
+        "content": "已注册且状态正常的用户输入正确账号和密码后，系统进入首页并显示用户名。"
+      },
+      {
+        "unit_key": "unit-0012",
+        "ordinal": 12,
+        "content": "本节仅说明文档编制范围，不包含生产功能。"
+      },
+      {
+        "unit_key": "unit-0013",
+        "ordinal": 13,
+        "content": "支持管理员配置登录策略。具体角色、权限和策略参数待确认。"
+      }
+    ],
+    "context_units": [
+      {
+        "unit_key": "unit-0009",
+        "ordinal": 9,
+        "content": "3 用户中心"
+      }
+    ]
+  }
+}

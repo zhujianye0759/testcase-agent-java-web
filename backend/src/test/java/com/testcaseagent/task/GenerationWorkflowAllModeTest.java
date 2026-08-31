@@ -15,6 +15,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.testcaseagent.export.WorkbookExporter;
 import com.testcaseagent.export.WorkbookArtifact;
 import com.testcaseagent.export.StructuredWorkbookExportRequest;
+import com.testcaseagent.export.StructuredWorkbookRowSource;
 import com.testcaseagent.featureaudit.FeatureAuditResult;
 import com.testcaseagent.featureaudit.FeatureAuditService;
 import com.testcaseagent.featureaudit.FinalReconciliationPageException;
@@ -77,19 +78,21 @@ class GenerationWorkflowAllModeTest {
     }
 
     @Test
-    void regeneratesStructuredArtifactFromPersistedProjectionWithoutCallingKee() {
+    void regeneratesV2StructuredArtifactFromPersistedProjectionWithoutCallingKee() {
         StructuredWorkbookExportRequest rows = new StructuredWorkbookExportRequest(TASK_ID, List.of(), List.of());
+        StructuredWorkbookRowSource rowSource = StructuredWorkbookRowSource.from(rows);
         WorkbookArtifact artifact = new WorkbookArtifact("artifact-safe", "a".repeat(64), Path.of("safe.xlsx"));
+        when(repository.isV2Task(TASK_ID)).thenReturn(true);
         when(repository.structuredArtifactRegenerationBaseline(TASK_ID)).thenReturn("artifact-old");
-        when(repository.structuredWorkbookRequest(TASK_ID)).thenReturn(rows);
-        when(workbookExporter.exportStructured(rows)).thenReturn(artifact);
+        when(repository.structuredWorkbookRows(TASK_ID)).thenReturn(rowSource);
+        when(workbookExporter.exportStructuredRows(rowSource)).thenReturn(artifact);
 
         assertThat(workflow.regenerateStructuredArtifact(TASK_ID)).isEqualTo(artifact);
 
         InOrder order = inOrder(repository, workbookExporter);
         order.verify(repository).structuredArtifactRegenerationBaseline(TASK_ID);
-        order.verify(repository).structuredWorkbookRequest(TASK_ID);
-        order.verify(workbookExporter).exportStructured(rows);
+        order.verify(repository).structuredWorkbookRows(TASK_ID);
+        order.verify(workbookExporter).exportStructuredRows(rowSource);
         order.verify(repository).replaceStructuredArtifact(TASK_ID, "artifact-old", artifact);
         verify(knowledgeAgentPort, never()).invoke(any());
     }

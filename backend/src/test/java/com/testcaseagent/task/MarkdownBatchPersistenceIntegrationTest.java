@@ -430,7 +430,7 @@ class MarkdownBatchPersistenceIntegrationTest {
 
     @Test
     // [Req-ID]: REQ-CWR-004
-    void projectsOnlyTheSafeFinalReconciliationPageSummaryToTaskDetailAndList() {
+    void projectsOnlyTheSafeFinalReconciliationPageSummaryToTaskDetailAndList() throws Exception {
         String taskId = taskId();
         repository.createTask(taskId, request());
         repository.transitionTask(taskId, GenerationTaskStatus.AUDITING);
@@ -444,9 +444,10 @@ class MarkdownBatchPersistenceIntegrationTest {
                 .doesNotContain("internal.invalid", "red-team-only", "documentId", "unitId");
         assertThat(repository.findPage(0, 1, taskId).items()).singleElement()
                 .extracting(GenerationTaskListItem::failureSummary).isEqualTo(expected);
-        assertThat(jdbcTemplate.queryForObject("SELECT result_snapshot FROM generation_task WHERE id = ?", String.class, taskId))
-                .isEqualTo("{\"failureSummary\":\"" + expected + "\"}")
-                .doesNotContain("internal.invalid", "red-team-only", "documentId", "unitId");
+        String resultSnapshot = jdbcTemplate.queryForObject(
+                "SELECT result_snapshot FROM generation_task WHERE id = ?", String.class, taskId);
+        assertThat(new ObjectMapper().readTree(resultSnapshot).path("failureSummary").asText()).isEqualTo(expected);
+        assertThat(resultSnapshot).doesNotContain("internal.invalid", "red-team-only", "documentId", "unitId");
     }
 
     @Test

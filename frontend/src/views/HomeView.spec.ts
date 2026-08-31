@@ -32,6 +32,10 @@ async function mountPage(options: {
     attachTo: document.body,
   })
   await flushPromises()
+  await wrapper.get('input[name="approvedScopeVersion"]').setValue('scope-v2-fixture')
+  await wrapper.get('input[name="approvedFunctionKey-0"]').setValue('function-fixture')
+  await wrapper.get('input[name="approvedFunctionName-0"]').setValue('订单提交')
+  await wrapper.get('input[name="approvedFunctionPath-0"]').setValue('订单/提交')
   return { wrapper, router }
 }
 
@@ -70,7 +74,35 @@ describe('generation task form', () => {
       fewShotPolicy: 'AUTO',
       scopeSelectionIds: ['scope-1'],
       prompt: '',
+      workflowVersion: '2.0',
+      inputVersion: '2.0',
+      artifactVersion: '2.0',
+      schemaVersion: '2.0',
+      promptVersion: '2.0',
+      approvedFunctionScope: {
+        scopeVersion: 'scope-v2-fixture',
+        functions: [{
+          functionKey: 'function-fixture',
+          name: '订单提交',
+          path: '订单/提交',
+          description: '',
+        }],
+      },
     }))
+  })
+
+  // [Req-ID]: REQ-TGV2-001, REQ-TGV2-002
+  it('fails closed without a complete versioned approved function scope and retains the entered fields', async () => {
+    const createTask = vi.fn().mockResolvedValue({ id: 'task-123' })
+    const { wrapper } = await mountPage({ createTask })
+
+    await wrapper.get('input[name="approvedFunctionPath-0"]').setValue('')
+    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('form').trigger('submit.prevent')
+
+    expect(createTask).not.toHaveBeenCalled()
+    expect((wrapper.get('input[name="approvedScopeVersion"]').element as HTMLInputElement).value)
+      .toBe('scope-v2-fixture')
   })
 
   it('asks for a natural-language feature description only in specified-feature mode', async () => {
@@ -116,7 +148,7 @@ describe('generation task form', () => {
     const { wrapper } = await mountPage({ loadTaskOptions: vi.fn().mockResolvedValue({ knowledgeBases: [] }) })
 
     expect(wrapper.get('[role="alert"]').text()).toContain('暂时没有可用于生成测试用例的材料范围')
-    expect(wrapper.get('button[type="button"]').text()).toContain('重新加载')
+    expect(wrapper.findAll('button[type="button"]').some((button) => button.text().includes('重新加载'))).toBe(true)
     expect(wrapper.text()).not.toContain('project_id')
   })
 

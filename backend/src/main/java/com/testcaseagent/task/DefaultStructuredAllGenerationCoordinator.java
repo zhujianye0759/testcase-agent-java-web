@@ -2,6 +2,7 @@ package com.testcaseagent.task;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.testcaseagent.diagnostics.WorkflowDiagnostics;
 import com.testcaseagent.export.StructuredWorkbookExportRequest;
 import com.testcaseagent.export.WorkbookArtifact;
 import com.testcaseagent.export.WorkbookExporter;
@@ -11,8 +12,13 @@ import com.testcaseagent.featureaudit.RequirementMaterialTraversalService;
 import com.testcaseagent.identity.LengthPrefixedSha256;
 import com.testcaseagent.knowledgeagent.FeatureScopeReconciliationInput;
 import com.testcaseagent.knowledgeagent.FeatureScopeReconciliationInvocation;
+import com.testcaseagent.knowledgeagent.FeatureScopeReconciliationPageInput;
+import com.testcaseagent.knowledgeagent.FeatureScopeReconciliationPageInvocation;
+import com.testcaseagent.knowledgeagent.FeatureScopeReconciliationPageResult;
 import com.testcaseagent.knowledgeagent.FunctionListExtractionInput;
 import com.testcaseagent.knowledgeagent.FunctionListExtractionInvocation;
+import com.testcaseagent.knowledgeagent.FunctionCandidateExtractionInput;
+import com.testcaseagent.knowledgeagent.FunctionCandidateExtractionInvocation;
 import com.testcaseagent.knowledgeagent.FunctionalTestcaseDesignInput;
 import com.testcaseagent.knowledgeagent.FunctionalTestcaseDesignInvocation;
 import com.testcaseagent.knowledgeagent.FormalSupport;
@@ -20,6 +26,7 @@ import com.testcaseagent.knowledgeagent.MaterialContentTypeKey;
 import com.testcaseagent.knowledgeagent.RequirementMaterialQualityReviewInput;
 import com.testcaseagent.knowledgeagent.RequirementMaterialQualityReviewInvocation;
 import com.testcaseagent.knowledgeagent.StructuredSkillExecutionException;
+import com.testcaseagent.knowledgeagent.StructuredSkillErrorType;
 import com.testcaseagent.knowledgeagent.StructuredSkillExecutionPort;
 import com.testcaseagent.knowledgeagent.StructuredSkillSessionPort;
 import com.testcaseagent.scope.RequirementScope;
@@ -28,15 +35,20 @@ import com.testcaseagent.structuredgeneration.StructuredCoverageStatus;
 import com.testcaseagent.structuredgeneration.StructuredGenerationAcceptanceStore;
 import com.testcaseagent.structuredgeneration.StructuredMaterialSlicePlanner;
 import com.testcaseagent.structuredgeneration.StructuredProcessingStatus;
+import com.testcaseagent.structuredgeneration.StructuredReconciliationV2Planner;
+import com.testcaseagent.structuredgeneration.StructuredReconciliationV2Validator;
 import com.testcaseagent.structuredgeneration.StructuredSkillResultMapper;
 import com.testcaseagent.structuredgeneration.StructuredTestPointPlanner;
 import com.testcaseagent.validation.FeatureReconciliationValidator;
 import com.testcaseagent.validation.FunctionListExtractionValidator;
+import com.testcaseagent.validation.FunctionCandidateExtractionValidator;
 import com.testcaseagent.validation.FunctionalTestcaseResultValidator;
 import com.testcaseagent.validation.RequirementMaterialReviewValidator;
 import com.testcaseagent.validation.StructuredEvidence;
 import com.testcaseagent.validation.StructuredKeyType;
 import com.testcaseagent.validation.StructuredValidationRegistry;
+import com.testcaseagent.validation.StructuredValidationException;
+import com.testcaseagent.validation.StructuredValidationFailure;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -46,6 +58,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
+import java.util.function.BiConsumer;
+import java.util.function.BiPredicate;
 import java.util.function.Function;
 
 /** Production implementation of the parsed-units to structured two-sheet ALL workflow. [Req-ID]: REQ-STG-001~007, REQ-FTG-003, REQ-FTG-006~009 */
@@ -58,8 +72,13 @@ public final class DefaultStructuredAllGenerationCoordinator implements Structur
     private final StructuredGenerationAcceptanceStore store;
     private final WorkbookExporter exporter;
     private final ObjectMapper objectMapper;
+    private final StructuredWorkLeaseHeartbeat leaseHeartbeat;
+    private final StructuredReconciliationV2Planner reconciliationV2Planner;
+    private final StructuredReconciliationV2Validator reconciliationV2Validator;
     private final StructuredMaterialSlicePlanner materialPlanner = new StructuredMaterialSlicePlanner();
     private final FunctionListExtractionValidator extractionValidator = new FunctionListExtractionValidator();
+    private final FunctionCandidateExtractionValidator candidateExtractionValidator =
+            new FunctionCandidateExtractionValidator();
     private final RequirementMaterialReviewValidator reviewValidator = new RequirementMaterialReviewValidator();
     private final FeatureReconciliationValidator reconciliationValidator = new FeatureReconciliationValidator();
     private final FunctionalTestcaseResultValidator testcaseValidator = new FunctionalTestcaseResultValidator();
@@ -70,7 +89,8 @@ public final class DefaultStructuredAllGenerationCoordinator implements Structur
     public DefaultStructuredAllGenerationCoordinator(GenerationTaskRepository repository,
             RequirementMaterialTraversalService traversal, StructuredSkillExecutionPort skills,
             StructuredSkillSessionPort sessions, StructuredGenerationAcceptanceStore store,
-            WorkbookExporter exporter, ObjectMapper objectMapper) {
+            WorkbookExporter exporter, ObjectMapper objectMapper,
+            StructuredWorkLeaseHeartbeat leaseHeartbeat) {
         this.repository = Objects.requireNonNull(repository, "repository must not be null");
         this.traversal = Objects.requireNonNull(traversal, "traversal must not be null");
         this.skills = Objects.requireNonNull(skills, "skills must not be null");
@@ -78,43 +98,95 @@ public final class DefaultStructuredAllGenerationCoordinator implements Structur
         this.store = Objects.requireNonNull(store, "store must not be null");
         this.exporter = Objects.requireNonNull(exporter, "exporter must not be null");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper must not be null");
+        this.leaseHeartbeat = Objects.requireNonNull(leaseHeartbeat, "leaseHeartbeat must not be null");
+        this.reconciliationV2Planner = new StructuredReconciliationV2Planner();
+        this.reconciliationV2Validator = new StructuredReconciliationV2Validator(objectMapper);
     }
 
     @Override
     public void execute(String taskId, CreateGenerationTaskRequest request) {
         Objects.requireNonNull(request, "request must not be null");
-        store.updateTaskState(taskId, new StructuredGenerationAcceptanceStore.StructuredTaskState(
-                StructuredProcessingStatus.RUNNING, StructuredCoverageStatus.PENDING));
+        StructuredCoordinatorFailure.Stage stage = StructuredCoordinatorFailure.Stage.TASK_START_STATE_RESUME;
         try {
+            store.updateTaskState(taskId, new StructuredGenerationAcceptanceStore.StructuredTaskState(
+                    StructuredProcessingStatus.RUNNING, StructuredCoverageStatus.PENDING));
             cancellationCheckpoint(taskId);
-            List<MaterialInventoryDocument> materials = traversal.traverse(taskId, request, false).documents();
+            stage = StructuredCoordinatorFailure.Stage.INVENTORY_RESUME_TRAVERSAL;
+            boolean resumeMaterialStages = store.hasCompletedMaterialStages(taskId);
+            boolean candidateProtocol = resumeMaterialStages && store.hasFunctionCandidateAudit(taskId);
+            // Review and extraction are separate durable stages. A queued extraction must not make recovery
+            // reconstruct historical review split trees whose accepted facts and findings are already immutable.
+            // Full material-stage completion implies review completion and preserves legacy restart tests/callers.
+            boolean resumeReviewStage = resumeMaterialStages || store.hasCompletedReviewStage(taskId);
+            boolean hasFrozenInventory = repository.hasCompleteMaterialInventory(taskId, request.requirementScope());
+            StructuredValidationRegistry registry;
+            List<MaterialInventoryDocument> materials = List.of();
+            if (resumeMaterialStages) {
+                // Recovery trusts only the complete application-owned snapshot; it must not repeat
+                // remote parsed-unit traversal or any already accepted review/extraction call.
+                registry = store.persistedValidationRegistry(taskId);
+            } else {
+                if (resumeReviewStage && !hasFrozenInventory) {
+                    throw new IllegalStateException("Completed review recovery requires its complete frozen inventory");
+                }
+                // A partially completed structured task must resume from the task-owned frozen source.
+                // Re-reading the remote catalog here could silently change a child split identity after a restart.
+                materials = hasFrozenInventory
+                        ? repository.materialInventoryDocuments(taskId)
+                        : traversal.traverse(taskId, request, false).documents();
+                cancellationCheckpoint(taskId);
+                registry = resumeReviewStage
+                        ? store.persistedValidationRegistry(taskId)
+                        : inventoryRegistry(taskId, materials);
+            }
             cancellationCheckpoint(taskId);
-            StructuredValidationRegistry registry = inventoryRegistry(taskId, materials);
+            stage = StructuredCoordinatorFailure.Stage.SESSION_OPEN;
             String sessionId = sessions.openStructuredSession();
-            executeReviews(taskId, request, sessionId, registry, materials);
-            executeExtractions(taskId, request, sessionId, registry, materials);
+            if (!resumeReviewStage) {
+                stage = StructuredCoordinatorFailure.Stage.MATERIAL_REVIEW;
+                executeReviews(taskId, request, sessionId, registry, materials);
+            }
+            if (!resumeMaterialStages) {
+                stage = StructuredCoordinatorFailure.Stage.FUNCTION_EXTRACTION_PRE_SPLIT;
+                candidateProtocol = executeExtractions(taskId, request, sessionId, registry, materials);
+            }
 
             cancellationCheckpoint(taskId);
+            stage = StructuredCoordinatorFailure.Stage.RECONCILIATION;
             StructuredGenerationAcceptanceStore.AcceptedInputs accepted = store.acceptedInputs(taskId);
             accepted.facts().forEach(fact -> registry.requireOrRegister(StructuredKeyType.REQUIREMENT_FACT, fact.factKey()));
             accepted.functionItems().forEach(item -> registry.requireOrRegister(StructuredKeyType.FUNCTION_LIST_ITEM, item.itemKey()));
             if (accepted.functionItems().isEmpty()) {
-                complete(taskId, false, true);
+                stage = StructuredCoordinatorFailure.Stage.TESTCASE_EXPORT;
+                complete(taskId, false, true, candidateProtocol);
                 return;
             }
-            if (accepted.functionItems().size() > 200 || accepted.facts().size() > 200) {
-                throw new IllegalArgumentException("Structured reconciliation input exceeds the frozen per-call boundary");
+            if (!store.hasCompletedReconciliationWork(taskId)) {
+                executeReconciliationV2(taskId, request, sessionId, accepted);
             }
-            executeReconciliation(taskId, request, sessionId, registry, accepted);
             cancellationCheckpoint(taskId);
+            stage = StructuredCoordinatorFailure.Stage.TESTCASE_EXPORT;
             executeTestcases(taskId, request, sessionId, registry, store.acceptedConfirmedFunctions(taskId));
-            complete(taskId, true, false);
+            complete(taskId, true, false, candidateProtocol);
         } catch (CancellationException exception) {
             repository.cancelStructuredTask(taskId, StructuredCoverageStatus.PENDING);
         } catch (RuntimeException exception) {
-            store.updateTaskState(taskId, new StructuredGenerationAcceptanceStore.StructuredTaskState(
-                    StructuredProcessingStatus.FAILED, StructuredCoverageStatus.PENDING));
-            repository.failStructuredTask(taskId, StructuredCoverageStatus.PENDING);
+            if (exception instanceof StructuredValidationException validationException) {
+                repository.failStructuredTask(taskId, StructuredCoverageStatus.PENDING, validationException.failure());
+                WorkflowDiagnostics.structuredValidationFailure(taskId, null, null, 0,
+                        validationException.failure());
+            } else {
+                StructuredValidationFailure failure = StructuredCoordinatorFailure.from(stage, exception);
+                repository.failStructuredTask(taskId, StructuredCoverageStatus.PENDING, failure);
+                WorkflowDiagnostics.structuredCoordinatorFailure(taskId, failure);
+                // These two exceptions already carry only fixed enum state needed by the existing capacity and
+                // lease control flow. Every arbitrary RuntimeException is replaced by a safe exception without
+                // retaining its message, cause, or stack-bearing object.
+                if (!(exception instanceof StructuredSkillExecutionException)
+                        && !(exception instanceof StructuredWorkLeaseLostException)) {
+                    throw new StructuredValidationException(failure);
+                }
+            }
             throw exception;
         }
     }
@@ -125,59 +197,315 @@ public final class DefaultStructuredAllGenerationCoordinator implements Structur
             if ("FUNCTION_LIST".equals(material.documentRole())) continue;
             MaterialContentTypeKey contentType = contentType(material.documentRole());
             String sourceLabel = sourceLabel(material);
-            for (RequirementMaterialQualityReviewInput input : materialPlanner.plan(
-                    material.documentId(), contentType, sourceLabel, material.units())) {
-                cancellationCheckpoint(taskId);
-                List<String> evidence = input.units().stream().map(RequirementMaterialQualityReviewInput.MaterialUnit::unitKey).toList();
-                Map<String, String> evidenceTexts = new LinkedHashMap<>();
-                input.units().forEach(unit -> {
-                    if (evidenceTexts.putIfAbsent(unit.unitKey(), unit.content()) != null) {
-                        throw new IllegalArgumentException("Review slice unit keys must be unique");
-                    }
-                });
-                String identity = identity(taskId, "REQUIREMENT_MATERIAL_REVIEW", input);
-                RequirementScope reviewScope = request.requirementScope().singleDocumentAuthorization(material.documentId());
-                var registration = new StructuredGenerationAcceptanceStore.WorkRegistration(taskId, identity,
-                        "requirement-material-quality-review", "REQUIREMENT_MATERIAL_REVIEW",
-                        input.units().get(0).ordinal(), input.units().get(input.units().size() - 1).ordinal(),
-                        input.materialKey(), input.sourceLabel(), evidence, null, null);
-                executeWork(registration, claim -> {
-                    var result = StructuredSkillResultMapper.review(skills.reviewRequirementMaterial(
-                            new RequirementMaterialQualityReviewInvocation(sessionId, request.agentId(), reviewScope, input)).data().result());
-                    RequirementMaterialReviewValidator.Result namespaced = namespaceReview(taskId, identity, result);
-                    store.acceptReview(claim, reviewValidator, new RequirementMaterialReviewValidator.WorkItem(
-                            registry, input.materialKey(), input.contentTypeKey().wireValue(), evidence, evidenceTexts), namespaced);
-                    return null;
-                });
+            List<StructuredGenerationAcceptanceStore.MaterialWindowPlan> durable = store.materialWindowPlans(
+                    taskId, "REQUIREMENT_MATERIAL_REVIEW", material.documentId());
+            boolean historical = durable.stream().anyMatch(window -> window.materialDocumentId() == null);
+            List<RequirementMaterialQualityReviewInput> inputs = historical
+                    ? materialPlanner.legacyReviewPlan(material.documentId(), contentType, sourceLabel, material.units())
+                    : materialPlanner.plan(material.documentId(), contentType, sourceLabel, material.units());
+            for (RequirementMaterialQualityReviewInput input : inputs) {
+                executeReviewWindow(taskId, request, sessionId, registry, material, input,
+                        historical ? null : material.documentId(), null, 0);
             }
         }
     }
 
-    private void executeExtractions(String taskId, CreateGenerationTaskRequest request, String sessionId,
+    /**
+     * Executes one frozen review leaf or resumes its deterministic children after a capacity split.
+     * The recursion follows persisted SPLIT markers, so it never depends on an in-memory retry tree.
+     * [Req-ID]: REQ-FTG-010
+     */
+    private void executeReviewWindow(String taskId, CreateGenerationTaskRequest request, String sessionId,
+            StructuredValidationRegistry registry, MaterialInventoryDocument material,
+            RequirementMaterialQualityReviewInput input, String materialDocumentId,
+            String parentWorkItemId, int splitDepth) {
+        cancellationCheckpoint(taskId);
+        List<String> evidence = input.units().stream()
+                .map(RequirementMaterialQualityReviewInput.MaterialUnit::unitKey).toList();
+        Map<String, String> evidenceTexts = new LinkedHashMap<>();
+        input.units().forEach(unit -> {
+            if (evidenceTexts.putIfAbsent(unit.unitKey(), unit.content()) != null) {
+                throw new IllegalArgumentException("Review slice unit keys must be unique");
+            }
+        });
+        String identity = identity(taskId, "REQUIREMENT_MATERIAL_REVIEW", input);
+        RequirementScope reviewScope = request.requirementScope().singleDocumentAuthorization(material.documentId());
+        var registration = reviewRegistration(taskId, identity, input, evidence,
+                materialDocumentId, parentWorkItemId, splitDepth);
+        String workId = store.register(registration);
+        if (store.isCompleted(workId)) return;
+        List<RequirementMaterialQualityReviewInput> children = input.units().size() < 2 ? List.of()
+                : materialPlanner.bisect(material.units(), materialPlanner.restoreWindow(
+                                material.units(), evidence, input.contextUnits().stream()
+                                        .map(RequirementMaterialQualityReviewInput.MaterialUnit::unitKey).toList()))
+                        .stream().map(window -> materialPlanner.reviewInput(input.materialKey(),
+                                input.contentTypeKey(), input.sourceLabel(), window)).toList();
+        if (store.isSplit(workId)) {
+            children.forEach(child -> executeReviewWindow(taskId, request, sessionId, registry, material, child,
+                    materialDocumentId, materialDocumentId == null ? null : workId, splitDepth + 1));
+            return;
+        }
+        executeRegisteredWork(registration, workId, claim -> {
+            var result = StructuredSkillResultMapper.review(skills.reviewRequirementMaterial(
+                    new RequirementMaterialQualityReviewInvocation(sessionId, request.agentId(), reviewScope, input)).data().result());
+            return namespaceReview(taskId, identity, result);
+        }, (claim, namespaced) -> store.acceptReview(claim, reviewValidator,
+                new RequirementMaterialReviewValidator.WorkItem(
+                        registry, input.materialKey(), input.contentTypeKey().wireValue(), evidence, evidenceTexts), namespaced),
+                (claim, failure) -> {
+                    if (!isResponseTooLarge(failure) || children.isEmpty()) return false;
+                    cancellationCheckpoint(taskId);
+                    store.splitReviewWork(claim,
+                            reviewRegistration(taskId,
+                                    identity(taskId, "REQUIREMENT_MATERIAL_REVIEW", children.get(0)),
+                                    children.get(0), children.get(0).units().stream()
+                                            .map(RequirementMaterialQualityReviewInput.MaterialUnit::unitKey).toList(),
+                                    materialDocumentId, materialDocumentId == null ? null : workId, splitDepth + 1),
+                            reviewRegistration(taskId,
+                                    identity(taskId, "REQUIREMENT_MATERIAL_REVIEW", children.get(1)),
+                                    children.get(1), children.get(1).units().stream()
+                                            .map(RequirementMaterialQualityReviewInput.MaterialUnit::unitKey).toList(),
+                                    materialDocumentId, materialDocumentId == null ? null : workId, splitDepth + 1));
+                    return true;
+                });
+        if (store.isSplit(workId)) {
+            children.forEach(child -> executeReviewWindow(taskId, request, sessionId, registry, material, child,
+                    materialDocumentId, materialDocumentId == null ? null : workId, splitDepth + 1));
+        }
+    }
+
+    private static StructuredGenerationAcceptanceStore.WorkRegistration reviewRegistration(
+            String taskId, String identity, RequirementMaterialQualityReviewInput input, List<String> evidence,
+            String materialDocumentId, String parentWorkItemId, int splitDepth) {
+        return new StructuredGenerationAcceptanceStore.WorkRegistration(taskId, identity,
+                "requirement-material-quality-review", "REQUIREMENT_MATERIAL_REVIEW",
+                input.units().get(0).ordinal(), input.units().get(input.units().size() - 1).ordinal(),
+                input.materialKey(), input.sourceLabel(), evidence, null, null, materialDocumentId,
+                input.contextUnits().stream().map(RequirementMaterialQualityReviewInput.MaterialUnit::unitKey).toList(),
+                parentWorkItemId, splitDepth);
+    }
+
+    private static boolean isResponseTooLarge(RuntimeException failure) {
+        return failure instanceof StructuredSkillExecutionException structured
+                && structured.type() == StructuredSkillErrorType.RESPONSE_TOO_LARGE;
+    }
+
+    private static boolean isCandidateSplitFailure(RuntimeException failure, int targetCount) {
+        if (!(failure instanceof StructuredSkillExecutionException structured) || targetCount < 2) return false;
+        return structured.type() == StructuredSkillErrorType.REQUEST_TOO_LARGE
+                || structured.type() == StructuredSkillErrorType.RESPONSE_TOO_LARGE
+                || structured.type() == StructuredSkillErrorType.STRUCTURED_OUTPUT_INVALID;
+    }
+
+    private boolean executeExtractions(String taskId, CreateGenerationTaskRequest request, String sessionId,
             StructuredValidationRegistry registry, List<MaterialInventoryDocument> materials) {
+        boolean candidateProtocol = false;
         for (MaterialInventoryDocument material : materials) {
             if (!"FUNCTION_LIST".equals(material.documentRole())) continue;
-            for (FunctionListExtractionInput input : extractionSlices(material)) {
-                cancellationCheckpoint(taskId);
-                List<String> evidence = input.units().stream().map(FunctionListExtractionInput.Unit::unitKey).toList();
-                String identity = identity(taskId, "FEATURE_SCOPE_EXTRACT", input);
-                var registration = new StructuredGenerationAcceptanceStore.WorkRegistration(taskId, identity,
-                        "feature-scope-reconciliation", "FEATURE_SCOPE_EXTRACT",
-                        input.units().get(0).ordinal(), input.units().get(input.units().size() - 1).ordinal(),
-                        input.materialKey(), input.sourceLabel(), evidence, null, null);
-                executeWork(registration, claim -> {
-                    FunctionListExtractionValidator.Result mapped = StructuredSkillResultMapper.extraction(skills.extractFunctionList(
-                            new FunctionListExtractionInvocation(sessionId, request.agentId(), request.requirementScope(), input)).data().result());
-                    List<FunctionListExtractionValidator.ValidatedItem> validated = extractionValidator.mergeSlices(
-                            extractionValidator.validate(new FunctionListExtractionValidator.WorkItem(
-                                    registry, input.materialKey(), evidence), mapped));
-                    store.acceptFunctionListItems(claim, registry, validated.stream().map(row ->
-                            new StructuredGenerationAcceptanceStore.FunctionListItem(
-                                    row.itemKey(), row.path(), row.description(), row.evidenceKeys())).toList());
-                    return null;
-                });
+            List<StructuredGenerationAcceptanceStore.MaterialWindowPlan> durable = store.materialWindowPlans(
+                    taskId, "FEATURE_SCOPE_EXTRACT", material.documentId());
+            boolean historical = durable.stream().anyMatch(window -> window.materialDocumentId() == null);
+            if (historical) {
+                for (FunctionListExtractionInput input : materialPlanner.legacyExtractionPlan(
+                        material.documentId(), sourceLabel(material), material.units())) {
+                    executeLegacyExtractionWindow(taskId, request, sessionId, registry, material, input,
+                            null, null, 0);
+                }
+            } else {
+                candidateProtocol = true;
+                for (FunctionCandidateExtractionInput input : materialPlanner.planCandidateExtraction(
+                        taskId, material.documentId(), sourceLabel(material), material.units())) {
+                    executeCandidateExtractionWindow(taskId, request, sessionId, material, input,
+                            material.documentId(), null, 0);
+                }
             }
         }
+        return candidateProtocol;
+    }
+
+    /**
+     * Executes one auditable protocol V1 window and persists only Java-validated candidate decisions.
+     * Capacity failures and malformed multi-target results split target ownership at the deterministic midpoint;
+     * context is recomputed from the same frozen inventory and never becomes output evidence.
+     * [Req-ID]: REQ-AFCE-001, REQ-AFCE-005, REQ-AFCE-007, REQ-AFCE-008
+     */
+    private void executeCandidateExtractionWindow(String taskId, CreateGenerationTaskRequest request,
+            String sessionId, MaterialInventoryDocument material, FunctionCandidateExtractionInput input,
+            String materialDocumentId, String parentWorkItemId, int splitDepth) {
+        cancellationCheckpoint(taskId);
+        List<String> evidence = input.units().stream()
+                .map(FunctionCandidateExtractionInput.Unit::unitKey).toList();
+        RequirementScope extractionScope = request.requirementScope()
+                .singleDocumentAuthorization(material.documentId());
+        var registration = candidateExtractionRegistration(
+                taskId, input, evidence, materialDocumentId, parentWorkItemId, splitDepth);
+        String workId = store.register(registration);
+        if (store.isCompleted(workId)) return;
+        List<FunctionCandidateExtractionInput> children = input.units().size() < 2 ? List.of()
+                : materialPlanner.bisect(material.units(), materialPlanner.restoreWindow(
+                                material.units(), evidence, input.contextUnits().stream()
+                                        .map(FunctionCandidateExtractionInput.Unit::unitKey).toList()))
+                        .stream().map(window -> materialPlanner.candidateExtractionInput(
+                                taskId, input.materialKey(), input.sourceLabel(), window)).toList();
+        if (store.isSplit(workId)) {
+            children.forEach(child -> executeCandidateExtractionWindow(taskId, request, sessionId, material, child,
+                    materialDocumentId, workId, splitDepth + 1));
+            return;
+        }
+        try {
+            executeRegisteredWork(registration, workId, claim -> {
+                var result = skills.extractFunctionCandidates(new FunctionCandidateExtractionInvocation(
+                        sessionId, request.agentId(), extractionScope, input)).data().result();
+                return candidateExtractionValidator.validate(taskId, input, result);
+            }, store::acceptFunctionCandidates, (claim, failure) -> {
+                if (!isCandidateSplitFailure(failure, input.units().size()) || children.isEmpty()) return false;
+                cancellationCheckpoint(taskId);
+                store.splitFunctionListExtractionWork(claim,
+                        candidateExtractionRegistration(taskId, children.get(0),
+                                children.get(0).units().stream()
+                                        .map(FunctionCandidateExtractionInput.Unit::unitKey).toList(),
+                                materialDocumentId, workId, splitDepth + 1),
+                        candidateExtractionRegistration(taskId, children.get(1),
+                                children.get(1).units().stream()
+                                        .map(FunctionCandidateExtractionInput.Unit::unitKey).toList(),
+                                materialDocumentId, workId, splitDepth + 1));
+                return true;
+            });
+        } catch (StructuredSkillExecutionException failure) {
+            if (!isPartialEligibleCandidateFailure(failure)) throw failure;
+            // A terminal protocol/capacity leaf is durable and may produce a truthful PARTIAL delivery only when
+            // other accepted candidates later support formal cases. Authorization and business validation failures
+            // never enter this branch.
+            return;
+        }
+        if (store.isSplit(workId)) {
+            children.forEach(child -> executeCandidateExtractionWindow(taskId, request, sessionId, material, child,
+                    materialDocumentId, workId, splitDepth + 1));
+        }
+    }
+
+    private static boolean isPartialEligibleCandidateFailure(StructuredSkillExecutionException failure) {
+        return switch (failure.type()) {
+            case REQUEST_TOO_LARGE, RESPONSE_TOO_LARGE, STRUCTURED_OUTPUT_INVALID,
+                    MODEL_UNAVAILABLE, MODEL_EXECUTION_FAILED -> true;
+            default -> false;
+        };
+    }
+
+    private static StructuredGenerationAcceptanceStore.WorkRegistration candidateExtractionRegistration(
+            String taskId, FunctionCandidateExtractionInput input, List<String> evidence,
+            String materialDocumentId, String parentWorkItemId, int splitDepth) {
+        return new StructuredGenerationAcceptanceStore.WorkRegistration(taskId, input.windowKey(),
+                "feature-scope-reconciliation", "FEATURE_SCOPE_EXTRACT",
+                input.units().get(0).ordinal(), input.units().get(input.units().size() - 1).ordinal(),
+                input.materialKey(), input.sourceLabel(), evidence, null, null, materialDocumentId,
+                input.contextUnits().stream().map(FunctionCandidateExtractionInput.Unit::unitKey).toList(),
+                parentWorkItemId, splitDepth);
+    }
+
+    /**
+     * Executes one frozen function-list leaf or resumes its deterministic children after a split.
+     * New semantic windows split only after an explicit KEE capacity signal, so malformed structured output is never
+     * hidden by progressively smaller requests. The one migration exception is a queued pre-V17 no-context window:
+     * it is durably divided before claim because its former 32-target shape is no longer a valid outbound request.
+     * Each remote call derives a one-document authorization without mutating the task's complete frozen scope.
+     * [Req-ID]: REQ-FTG-012, REQ-FTG-015, REQ-FTG-016
+     */
+    private void executeLegacyExtractionWindow(String taskId, CreateGenerationTaskRequest request, String sessionId,
+            StructuredValidationRegistry registry, MaterialInventoryDocument material, FunctionListExtractionInput input,
+            String materialDocumentId, String parentWorkItemId, int splitDepth) {
+        cancellationCheckpoint(taskId);
+        List<String> evidence = input.units().stream().map(FunctionListExtractionInput.Unit::unitKey).toList();
+        Map<String, String> targetEvidenceTexts = new LinkedHashMap<>();
+        input.units().forEach(unit -> {
+            if (targetEvidenceTexts.putIfAbsent(unit.unitKey(), unit.content()) != null) {
+                throw new IllegalArgumentException("Function-list target unit keys must be unique");
+            }
+        });
+        String identity = identity(taskId, "FEATURE_SCOPE_EXTRACT", input);
+        RequirementScope extractionScope = request.requirementScope()
+                .singleDocumentAuthorization(material.documentId());
+        var registration = extractionRegistration(taskId, identity, input, evidence,
+                materialDocumentId, parentWorkItemId, splitDepth);
+        String workId = store.register(registration);
+        if (store.isCompleted(workId)) return;
+        boolean historical = materialDocumentId == null;
+        List<FunctionListExtractionInput> children = input.units().size() < 2 ? List.of()
+                : historical ? historicalExtractionChildren(input)
+                : materialPlanner.bisect(material.units(), materialPlanner.restoreWindow(
+                                material.units(), evidence, input.contextUnits().stream()
+                                        .map(FunctionListExtractionInput.Unit::unitKey).toList()))
+                        .stream().map(window -> materialPlanner.extractionInput(
+                                input.materialKey(), input.sourceLabel(), window)).toList();
+        if (store.isSplit(workId)) {
+            children.forEach(child -> executeLegacyExtractionWindow(taskId, request, sessionId, registry, material, child,
+                    materialDocumentId, historical ? null : workId, historical ? 0 : splitDepth + 1));
+            return;
+        }
+        if (historical && input.units().size() > 16) {
+            store.splitQueuedHistoricalFunctionListExtractionWork(workId,
+                    extractionRegistration(taskId,
+                            identity(taskId, "FEATURE_SCOPE_EXTRACT", children.get(0)), children.get(0),
+                            children.get(0).units().stream().map(FunctionListExtractionInput.Unit::unitKey).toList(),
+                            null, null, 0),
+                    extractionRegistration(taskId,
+                            identity(taskId, "FEATURE_SCOPE_EXTRACT", children.get(1)), children.get(1),
+                            children.get(1).units().stream().map(FunctionListExtractionInput.Unit::unitKey).toList(),
+                            null, null, 0));
+            children.forEach(child -> executeLegacyExtractionWindow(taskId, request, sessionId, registry, material, child,
+                    null, null, 0));
+            return;
+        }
+        executeRegisteredWork(registration, workId, claim -> {
+            FunctionListExtractionValidator.Result mapped = StructuredSkillResultMapper.extraction(
+                    skills.extractFunctionList(new FunctionListExtractionInvocation(
+                            sessionId, request.agentId(), extractionScope, input)).data().result());
+            return extractionValidator.mergeSlices(extractionValidator.validate(
+                    new FunctionListExtractionValidator.WorkItem(
+                            registry, input.materialKey(), evidence, targetEvidenceTexts), mapped));
+        }, (claim, validated) -> store.acceptFunctionListItems(claim, registry, validated.stream().map(row ->
+                        new StructuredGenerationAcceptanceStore.FunctionListItem(
+                                row.itemKey(), row.path(), row.description(),
+                                row.evidenceKeys(), row.targetQuotes())).toList()),
+                (claim, failure) -> {
+                    if (!isResponseTooLarge(failure) || children.isEmpty()) return false;
+                    cancellationCheckpoint(taskId);
+                    store.splitFunctionListExtractionWork(claim,
+                            extractionRegistration(taskId,
+                                    identity(taskId, "FEATURE_SCOPE_EXTRACT", children.get(0)), children.get(0),
+                                    children.get(0).units().stream().map(FunctionListExtractionInput.Unit::unitKey).toList(),
+                                    materialDocumentId, historical ? null : workId, historical ? 0 : splitDepth + 1),
+                            extractionRegistration(taskId,
+                                    identity(taskId, "FEATURE_SCOPE_EXTRACT", children.get(1)), children.get(1),
+                                    children.get(1).units().stream().map(FunctionListExtractionInput.Unit::unitKey).toList(),
+                                    materialDocumentId, historical ? null : workId, historical ? 0 : splitDepth + 1));
+                    return true;
+                });
+        if (store.isSplit(workId)) {
+            children.forEach(child -> executeLegacyExtractionWindow(taskId, request, sessionId, registry, material, child,
+                    materialDocumentId, historical ? null : workId, historical ? 0 : splitDepth + 1));
+        }
+    }
+
+    private static List<FunctionListExtractionInput> historicalExtractionChildren(
+            FunctionListExtractionInput parent) {
+        int middle = parent.units().size() / 2;
+        return List.of(
+                new FunctionListExtractionInput(parent.materialKey(), parent.sourceLabel(),
+                        parent.units().subList(0, middle)),
+                new FunctionListExtractionInput(parent.materialKey(), parent.sourceLabel(),
+                        parent.units().subList(middle, parent.units().size())));
+    }
+
+    private static StructuredGenerationAcceptanceStore.WorkRegistration extractionRegistration(
+            String taskId, String identity, FunctionListExtractionInput input, List<String> evidence,
+            String materialDocumentId, String parentWorkItemId, int splitDepth) {
+        return new StructuredGenerationAcceptanceStore.WorkRegistration(taskId, identity,
+                "feature-scope-reconciliation", "FEATURE_SCOPE_EXTRACT",
+                input.units().get(0).ordinal(), input.units().get(input.units().size() - 1).ordinal(),
+                input.materialKey(), input.sourceLabel(), evidence, null, null, materialDocumentId,
+                input.contextUnits().stream().map(FunctionListExtractionInput.Unit::unitKey).toList(),
+                parentWorkItemId, splitDepth);
     }
 
     private void executeReconciliation(String taskId, CreateGenerationTaskRequest request, String sessionId,
@@ -196,14 +524,13 @@ public final class DefaultStructuredAllGenerationCoordinator implements Structur
         executeWork(registration, claim -> {
             FeatureReconciliationValidator.Result mapped = StructuredSkillResultMapper.reconciliation(skills.reconcileFeatureScope(
                     new FeatureScopeReconciliationInvocation(sessionId, request.agentId(), request.requirementScope(), input)).data().result());
-            FeatureReconciliationValidator.Result namespaced = namespaceReconciliation(taskId, identity, mapped);
-            store.acceptReconciliation(claim, reconciliationValidator, new FeatureReconciliationValidator.WorkItem(
+            return namespaceReconciliation(taskId, identity, mapped);
+        }, (claim, namespaced) -> store.acceptReconciliation(claim, reconciliationValidator,
+                new FeatureReconciliationValidator.WorkItem(
                     registry, input.functionListItems().stream().map(FeatureScopeReconciliationInput.FunctionListItem::itemKey).toList(),
                     input.requirementFacts().stream().map(FeatureScopeReconciliationInput.RequirementFact::factKey).toList(),
                     evidenceByFunctionListItem(input), evidenceByRequirementFact(input)),
-                    namespaced);
-            return null;
-        });
+                    namespaced));
     }
 
     private void executeTestcases(String taskId, CreateGenerationTaskRequest request, String sessionId,
@@ -229,15 +556,14 @@ public final class DefaultStructuredAllGenerationCoordinator implements Structur
                 executeWork(registration, claim -> {
                     FunctionalTestcaseResultValidator.Result mapped = StructuredSkillResultMapper.testcases(skills.designFunctionalTestcases(
                             new FunctionalTestcaseDesignInvocation(sessionId, request.agentId(), request.requirementScope(), input)).data().result());
-                    FunctionalTestcaseResultValidator.Result namespaced = namespaceTestcases(taskId, identity, mapped);
-                    store.acceptTestcases(claim, testcaseValidator, new FunctionalTestcaseResultValidator.WorkItem(
+                    return namespaceTestcases(taskId, identity, mapped);
+                }, (claim, namespaced) -> store.acceptTestcases(claim, testcaseValidator,
+                        new FunctionalTestcaseResultValidator.WorkItem(
                             registry, input.functionKey(), input.functionName(), input.testPoint().testPointKey(), input.testPoint().description(),
                             FunctionalTestcaseResultValidator.TestPointType.valueOf(input.testPoint().type().name()),
                             FunctionalTestcaseResultValidator.Basis.valueOf(input.testPoint().basis().name()),
                             input.testPoint().requirementFactKeys(), evidence, input.testPoint().missingInformation(),
-                            formalSupports(confirmed, input.testPoint().requirementFactKeys())), namespaced);
-                    return null;
-                });
+                            formalSupports(confirmed, input.testPoint().requirementFactKeys())), namespaced));
             }
         }
     }
@@ -251,6 +577,117 @@ public final class DefaultStructuredAllGenerationCoordinator implements Structur
                 StructuredGenerationAcceptanceStore.AcceptedFact::function).distinct().sorted().toList();
         if (factFunctions.isEmpty()) throw new IllegalStateException("Confirmed function has no reader-facing identity");
         return String.join(" / ", factFunctions);
+    }
+
+    /**
+     * Executes one durable V2 run whose pages share the complete comparison catalog.
+     *
+     * <p>Page staging is deliberately not business acceptance. A process restart resumes only
+     * missing owner windows; relations become visible only after the validator proves global
+     * closure and the store publishes all relations, bindings, and source terminals atomically.</p>
+     *
+     * [Req-ID]: REQ-FSC-008
+     */
+    private void executeReconciliationV2(String taskId, CreateGenerationTaskRequest request, String sessionId,
+            StructuredGenerationAcceptanceStore.AcceptedInputs accepted) {
+        cancellationCheckpoint(taskId);
+        StructuredReconciliationV2Planner.RunPlan plan;
+        try {
+            plan = reconciliationV2Planner.plan(taskId, accepted);
+        } catch (IllegalArgumentException exception) {
+            throw validationFailure(StructuredValidationFailure.Code.RECONCILIATION_V2_PLANNING_INVALID,
+                    "$.reconciliation_run");
+        }
+        // Read evidence directly from the frozen catalog rows. Looking each source up again would
+        // make a large (1000+ page) reconciliation plan quadratic before the first KEE call.
+        List<String> evidence = java.util.stream.Stream.concat(
+                        plan.catalog().functionListItems().stream().flatMap(item -> item.evidenceKeys().stream()),
+                        plan.catalog().requirementFacts().stream().flatMap(fact -> fact.evidenceKeys().stream()))
+                .distinct()
+                .sorted(com.testcaseagent.knowledgeagent.FeatureScopeReconciliationV2Canonicalizer.utf8Order())
+                .toList();
+        var registration = new StructuredGenerationAcceptanceStore.WorkRegistration(
+                taskId, plan.runKey(), "feature-scope-reconciliation", "FEATURE_SCOPE_RECONCILIATION_V2",
+                null, null, null, "功能范围全量核对", evidence, null, null);
+        String workId = store.register(registration);
+        if (store.isCompleted(workId)) return;
+
+        while (true) {
+            cancellationCheckpoint(taskId);
+            StructuredGenerationAcceptanceStore.WorkClaim claim = store.claimRegistered(taskId, workId, OWNER)
+                    .orElseThrow(() -> new IllegalStateException("Registered V2 reconciliation work could not be claimed"));
+            try (StructuredWorkLeaseHeartbeat.ActiveLease activeLease = leaseHeartbeat.start(
+                    claim, () -> repository.isCancellationRequested(taskId))) {
+                store.initializeReconciliationRun(claim, new StructuredGenerationAcceptanceStore.ReconciliationRunPlan(
+                        storeRun(plan), plan.ownerWindows().stream()
+                                .map(DefaultStructuredAllGenerationCoordinator::storeWindow).toList()));
+                processReconciliationPages(taskId, request, sessionId, claim, activeLease, plan);
+                activeLease.requireActive();
+                cancellationCheckpoint(taskId);
+                var publication = reconciliationV2Validator.validateRun(plan,
+                        store.stagedReconciliationPages(workId, plan.runKey(), plan.catalogSha256()));
+                store.publishReconciliationRun(claim, publication);
+                return;
+            } catch (CancellationException exception) {
+                store.fail(claim, "model_execution_failed");
+                throw exception;
+            } catch (StructuredWorkLeaseLostException exception) {
+                throw exception;
+            } catch (RuntimeException exception) {
+                RuntimeException safe = exception;
+                if (exception instanceof IllegalArgumentException
+                        && !(exception instanceof StructuredValidationException)) {
+                    safe = validationFailure(StructuredValidationFailure.Code.RECONCILIATION_V2_RESULT_INVALID,
+                            "$.reconciliation_run");
+                }
+                String failureType = failureType(safe);
+                if (safe instanceof StructuredValidationException validationException) {
+                    store.fail(claim, failureType, validationException.failure());
+                    WorkflowDiagnostics.structuredValidationFailure(taskId, claim.workItemId(), claim.attemptId(),
+                            claim.attemptNumber(), validationException.failure());
+                } else {
+                    store.fail(claim, failureType);
+                }
+                if (isTransient(failureType)
+                        && claim.attemptNumber() < StructuredGenerationAcceptanceStore.MAX_ATTEMPTS) continue;
+                throw safe;
+            }
+        }
+    }
+
+    private void processReconciliationPages(String taskId, CreateGenerationTaskRequest request, String sessionId,
+            StructuredGenerationAcceptanceStore.WorkClaim claim,
+            StructuredWorkLeaseHeartbeat.ActiveLease activeLease,
+            StructuredReconciliationV2Planner.RunPlan plan) {
+        while (true) {
+            cancellationCheckpoint(taskId);
+            List<StructuredGenerationAcceptanceStore.ReconciliationOwnerWindow> pending =
+                    store.pendingReconciliationPages(claim.workItemId(), plan.runKey(), plan.catalogSha256());
+            if (pending.isEmpty()) return;
+            FeatureScopeReconciliationPageInput.OwnerWindow window = wireWindow(pending.get(0));
+            FeatureScopeReconciliationPageResult result;
+            try {
+                result = skills.reconcileFeatureScopePage(new FeatureScopeReconciliationPageInvocation(
+                        sessionId, request.agentId(), request.requirementScope(), plan.input(window))).data().result();
+            } catch (StructuredSkillExecutionException exception) {
+                if (exception.type() != StructuredSkillErrorType.RESPONSE_TOO_LARGE
+                        || window.ownerSourceRefs().size() < 2) throw exception;
+                activeLease.requireActive();
+                List<FeatureScopeReconciliationPageInput.OwnerWindow> children =
+                        reconciliationV2Planner.bisect(plan, window);
+                store.splitReconciliationPage(claim, storeRun(plan), window.pageKey(),
+                        storeWindow(children.get(0)), storeWindow(children.get(1)));
+                continue;
+            }
+            activeLease.requireActive();
+            cancellationCheckpoint(taskId);
+            try {
+                store.stageReconciliationPage(claim, reconciliationV2Validator.validatePage(plan, window, result));
+            } catch (IllegalArgumentException exception) {
+                throw validationFailure(StructuredValidationFailure.Code.RECONCILIATION_V2_RESULT_INVALID,
+                        "$.reconciliation_page");
+            }
+        }
     }
 
     private static FunctionalTestcaseDesignInput attachFormalSupports(
@@ -298,25 +735,47 @@ public final class DefaultStructuredAllGenerationCoordinator implements Structur
                 planned.functionKey(), planned.functionName(), planned.testPoint(), supports);
     }
 
-    private void complete(String taskId, boolean reconciled, boolean noFunctionItems) {
+    private void complete(String taskId, boolean reconciled, boolean noFunctionItems, boolean candidateProtocol) {
         cancellationCheckpoint(taskId);
         repository.transitionTask(taskId, GenerationTaskStatus.GENERATING);
         cancellationCheckpoint(taskId);
         repository.transitionTask(taskId, GenerationTaskStatus.VALIDATING);
         cancellationCheckpoint(taskId);
         StructuredGenerationAcceptanceStore.AggregateState aggregate = store.aggregateState(taskId);
+        if (candidateProtocol && (aggregate.acceptedFunctionCandidateCount() == 0
+                || aggregate.coveredFormalPointCount() == 0)) {
+            var outcome = completionGate.evaluate(completionSnapshot(
+                    aggregate, reconciled, noFunctionItems, false, candidateProtocol));
+            store.updateTaskState(taskId, new StructuredGenerationAcceptanceStore.StructuredTaskState(
+                    outcome.processingStatus(), outcome.coverageStatus()));
+            repository.failStructuredTask(taskId, outcome.coverageStatus());
+            return;
+        }
         StructuredWorkbookExportRequest rows = repository.structuredWorkbookRequest(taskId);
         cancellationCheckpoint(taskId);
         WorkbookArtifact artifact = exporter.exportStructured(rows);
         cancellationCheckpoint(taskId);
-        var outcome = completionGate.evaluate(new StructuredCompletionGate.Snapshot(true,
-                aggregate.totalReviewWork(), aggregate.completedReviewWork(), reconciled || noFunctionItems, true,
-                aggregate.formalPointTotal(), aggregate.coveredFormalPointCount(), aggregate.pendingCandidateCount(),
-                true, aggregate.acceptedWorkCount(),
-                aggregate.failedWorkCount(), aggregate.allWorkTerminal(), false));
+        var outcome = completionGate.evaluate(completionSnapshot(
+                aggregate, reconciled, noFunctionItems, true, candidateProtocol));
         store.updateTaskState(taskId, new StructuredGenerationAcceptanceStore.StructuredTaskState(
                 outcome.processingStatus(), outcome.coverageStatus()));
-        repository.completeStructuredTask(taskId, artifact, outcome.processingStatus(), outcome.coverageStatus());
+        if (!outcome.artifactPublishable()) {
+            repository.failStructuredTask(taskId, outcome.coverageStatus());
+            return;
+        }
+        repository.completeStructuredTask(taskId, artifact, outcome.processingStatus(), outcome.coverageStatus(),
+                candidateProtocol);
+    }
+
+    private static StructuredCompletionGate.Snapshot completionSnapshot(
+            StructuredGenerationAcceptanceStore.AggregateState aggregate, boolean reconciled,
+            boolean noFunctionItems, boolean artifactValidated, boolean candidateProtocol) {
+        return new StructuredCompletionGate.Snapshot(true,
+                aggregate.totalReviewWork(), aggregate.completedReviewWork(), reconciled || noFunctionItems, true,
+                aggregate.formalPointTotal(), aggregate.coveredFormalPointCount(), aggregate.pendingCandidateCount(),
+                artifactValidated, aggregate.acceptedWorkCount(), aggregate.failedWorkCount(),
+                aggregate.allWorkTerminal(), candidateProtocol, aggregate.acceptedFunctionCandidateCount(),
+                aggregate.incompleteFunctionScopeCount(), aggregate.failedFunctionCandidateWorkCount(), false);
     }
 
     private void cancellationCheckpoint(String taskId) {
@@ -324,22 +783,55 @@ public final class DefaultStructuredAllGenerationCoordinator implements Structur
     }
 
     private <T> T executeWork(StructuredGenerationAcceptanceStore.WorkRegistration registration,
-            Function<StructuredGenerationAcceptanceStore.WorkClaim, T> action) {
+            Function<StructuredGenerationAcceptanceStore.WorkClaim, T> invocation,
+            BiConsumer<StructuredGenerationAcceptanceStore.WorkClaim, T> acceptance) {
         String workId = store.register(registration);
         if (store.isCompleted(workId)) return null;
+        return executeRegisteredWork(registration, workId, invocation, acceptance, (claim, failure) -> false);
+    }
+
+    private <T> T executeRegisteredWork(StructuredGenerationAcceptanceStore.WorkRegistration registration,
+            String workId, Function<StructuredGenerationAcceptanceStore.WorkClaim, T> invocation,
+            BiConsumer<StructuredGenerationAcceptanceStore.WorkClaim, T> acceptance,
+            BiPredicate<StructuredGenerationAcceptanceStore.WorkClaim, RuntimeException> recovery) {
         while (true) {
             cancellationCheckpoint(registration.taskId());
             StructuredGenerationAcceptanceStore.WorkClaim claim = store.claimRegistered(
                     registration.taskId(), workId, OWNER)
                     .orElseThrow(() -> new IllegalStateException("Registered structured work could not be claimed"));
-            try {
-                return action.apply(claim);
+            try (StructuredWorkLeaseHeartbeat.ActiveLease activeLease = leaseHeartbeat.start(
+                    claim, () -> repository.isCancellationRequested(registration.taskId()))) {
+                T result = invocation.apply(claim);
+                activeLease.requireActive();
+                cancellationCheckpoint(registration.taskId());
+                acceptance.accept(claim, result);
+                return result;
+            } catch (CancellationException exception) {
+                store.fail(claim, "model_execution_failed");
+                throw exception;
+            } catch (StructuredWorkLeaseLostException exception) {
+                throw exception;
             } catch (RuntimeException exception) {
-                String failureType = failureType(exception);
-                store.fail(claim, failureType);
+                RuntimeException failure = exception;
+                try {
+                    if (recovery.test(claim, exception)) return null;
+                } catch (RuntimeException recoveryFailure) {
+                    // A failed split transaction leaves the claim running; route it through the same durable
+                    // failure boundary instead of abandoning it until lease expiry.
+                    failure = recoveryFailure;
+                }
+                String failureType = failureType(failure);
+                if (failure instanceof StructuredValidationException validationException) {
+                    var validationFailure = validationException.failure();
+                    store.fail(claim, failureType, validationFailure);
+                    WorkflowDiagnostics.structuredValidationFailure(registration.taskId(), claim.workItemId(),
+                            claim.attemptId(), claim.attemptNumber(), validationFailure);
+                } else {
+                    store.fail(claim, failureType);
+                }
                 if (isTransient(failureType)
                         && claim.attemptNumber() < StructuredGenerationAcceptanceStore.MAX_ATTEMPTS) continue;
-                throw exception;
+                throw failure;
             }
         }
     }
@@ -356,18 +848,6 @@ public final class DefaultStructuredAllGenerationCoordinator implements Structur
                     unit.unitId(), taskId, material.documentId(), false, false, material.complete()));
         }
         return registry;
-    }
-
-    private List<FunctionListExtractionInput> extractionSlices(MaterialInventoryDocument material) {
-        List<FunctionListExtractionInput> slices = new ArrayList<>();
-        for (int offset = 0; offset < material.units().size(); offset += 32) {
-            List<FunctionListExtractionInput.Unit> units = material.units().subList(offset,
-                            Math.min(offset + 32, material.units().size())).stream()
-                    .map(unit -> new FunctionListExtractionInput.Unit(unit.unitId(), unit.ordinal(), unit.content())).toList();
-            slices.add(new FunctionListExtractionInput(material.documentId(), sourceLabel(material), units));
-        }
-        if (slices.isEmpty()) throw new IllegalArgumentException("Function-list material must contain parsed units");
-        return slices;
     }
 
     private static MaterialContentTypeKey contentType(String role) {
@@ -448,6 +928,34 @@ public final class DefaultStructuredAllGenerationCoordinator implements Structur
         accepted.functionItems().forEach(item -> evidence.addAll(item.evidenceKeys()));
         accepted.facts().forEach(fact -> evidence.addAll(fact.evidenceKeys()));
         return List.copyOf(evidence);
+    }
+
+    private static StructuredGenerationAcceptanceStore.ReconciliationRunIdentity storeRun(
+            StructuredReconciliationV2Planner.RunPlan plan) {
+        return new StructuredGenerationAcceptanceStore.ReconciliationRunIdentity(
+                plan.runKey(), plan.catalogSha256(), plan.catalog().functionListItems().size(),
+                plan.catalog().requirementFacts().size());
+    }
+
+    private static StructuredGenerationAcceptanceStore.ReconciliationOwnerWindow storeWindow(
+            FeatureScopeReconciliationPageInput.OwnerWindow window) {
+        return new StructuredGenerationAcceptanceStore.ReconciliationOwnerWindow(window.pageKey(),
+                window.ownerSourceRefs().stream().map(ref ->
+                        new StructuredGenerationAcceptanceStore.ReconciliationSourceRef(
+                                ref.sourceType().wireValue(), ref.sourceKey())).toList());
+    }
+
+    private static FeatureScopeReconciliationPageInput.OwnerWindow wireWindow(
+            StructuredGenerationAcceptanceStore.ReconciliationOwnerWindow window) {
+        return new FeatureScopeReconciliationPageInput.OwnerWindow(window.pageKey(),
+                window.ownerSourceRefs().stream().map(ref -> new FeatureScopeReconciliationPageInput.SourceRef(
+                        FeatureScopeReconciliationPageInput.SourceType.fromWire(ref.sourceType()), ref.sourceKey()))
+                        .toList());
+    }
+
+    private static StructuredValidationException validationFailure(
+            StructuredValidationFailure.Code code, String path) {
+        return new StructuredValidationException(StructuredValidationFailure.of(code, path));
     }
 
     private static Map<String, List<String>> evidenceByFunctionListItem(FeatureScopeReconciliationInput input) {

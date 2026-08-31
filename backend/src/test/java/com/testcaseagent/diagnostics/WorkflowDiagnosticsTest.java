@@ -14,6 +14,7 @@ import ch.qos.logback.core.read.ListAppender;
 import org.slf4j.LoggerFactory;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import com.testcaseagent.validation.StructuredValidationFailure;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.LoggerContext;
 
@@ -71,6 +72,64 @@ class WorkflowDiagnosticsTest {
                             "unitId=unit-2", "candidateIds=candidate-3", "业务正文：材料审查结果")
                     .doesNotContain("task-secret", "event-secret", "generation-task-secret", "batch-secret",
                             "attempt-secret", "event-proxy-secret");
+        } finally {
+            logger.detachAppender(events);
+            logger.setLevel(previousLevel);
+            events.stop();
+        }
+    }
+
+    /** [Req-ID]: REQ-FSC-007 */
+    @Test
+    void correlatesOnlyEnumeratedStructuredValidationFieldsWithoutRejectedContent() {
+        Logger logger = (Logger) LoggerFactory.getLogger("workflow.diagnostics");
+        ch.qos.logback.classic.Level previousLevel = logger.getLevel();
+        ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> events = new ListAppender<>();
+        events.start();
+        logger.setLevel(ch.qos.logback.classic.Level.INFO);
+        logger.addAppender(events);
+        try {
+            StructuredValidationFailure failure = StructuredValidationFailure.of(
+                    StructuredValidationFailure.Code.REVIEW_FACT_DIRECT_EVIDENCE_UNSUPPORTED,
+                    "$.requirement_facts[0].business_rules[0]");
+
+            WorkflowDiagnostics.structuredValidationFailure(
+                    "task-1", "work-1", "attempt-1", 1, failure);
+
+            assertThat(events.list).hasSize(1);
+            assertThat(events.list.get(0).getFormattedMessage())
+                    .contains("taskId=task-1", "workId=work-1", "attemptId=attempt-1", "attempt=1",
+                            failure.code(), failure.path(), failure.message())
+                    .doesNotContain("payload", "model response", "material content", "password=secret");
+        } finally {
+            logger.detachAppender(events);
+            logger.setLevel(previousLevel);
+            events.stop();
+        }
+    }
+
+    /** [Req-ID]: REQ-ESR-006 */
+    @Test
+    void coordinatorDiagnosticsAcceptOnlyFixedFieldsAndNeverAnExceptionPayload() {
+        Logger logger = (Logger) LoggerFactory.getLogger("workflow.diagnostics");
+        ch.qos.logback.classic.Level previousLevel = logger.getLevel();
+        ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> events = new ListAppender<>();
+        events.start();
+        logger.setLevel(ch.qos.logback.classic.Level.INFO);
+        logger.addAppender(events);
+        try {
+            StructuredValidationFailure failure = StructuredValidationFailure.of(
+                    StructuredValidationFailure.Code.STRUCTURED_COORDINATOR_STATE_FAILURE,
+                    "$.function_extraction_pre_split");
+
+            WorkflowDiagnostics.structuredCoordinatorFailure("task-safe-stage", failure);
+
+            assertThat(events.list).hasSize(1);
+            assertThat(events.list.get(0).getFormattedMessage())
+                    .contains("taskId=task-safe-stage", "stage=structured-coordinator-failure",
+                            failure.code(), failure.path(), failure.message())
+                    .doesNotContain("stack", "payload", "request", "response", "material content",
+                            "Authorization", "password", "credential");
         } finally {
             logger.detachAppender(events);
             logger.setLevel(previousLevel);

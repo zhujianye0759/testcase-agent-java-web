@@ -1,0 +1,81 @@
+{
+  "success": true,
+  "data": {
+    "schema_version": "1.0",
+    "skill_name": "feature-scope-reconciliation",
+    "repair_attempted": false,
+    "result": {
+      "operation": "extract_function_candidates",
+      "protocol_version": "1",
+      "window_key": "365b565a76db3fe91166af3dd1606113f064e63967f3baaeac8002d95245447d",
+      "source_outcomes": [
+        {
+          "unit_key": "unit-0010",
+          "disposition": "linked",
+          "candidate_refs": [
+            "5126c6322d99dc312683675603c45be4025d27e6607ce161378fbccec3ad67f3"
+          ],
+          "reason_code": "candidate_linked"
+        },
+        {
+          "unit_key": "unit-0011",
+          "disposition": "linked",
+          "candidate_refs": [
+            "5126c6322d99dc312683675603c45be4025d27e6607ce161378fbccec3ad67f3"
+          ],
+          "reason_code": "candidate_linked"
+        },
+        {
+          "unit_key": "unit-0012",
+          "disposition": "no_function",
+          "candidate_refs": [],
+          "reason_code": "non_functional_content"
+        },
+        {
+          "unit_key": "unit-0013",
+          "disposition": "linked",
+          "candidate_refs": [
+            "1a3e42020a240393654bedabdb2065f7ec66c4dec14a2035dfc2a094595ae604"
+          ],
+          "reason_code": "candidate_linked"
+        }
+      ],
+      "candidates": [
+        {
+          "candidate_ref": "5126c6322d99dc312683675603c45be4025d27e6607ce161378fbccec3ad67f3",
+          "path": "用户中心 → 账号登录",
+          "description": "已注册且状态正常的用户 使用正确账号和密码登录系统。",
+          "target_quote": "用户输入正确账号和密码后,系统进入首页并显示用户名",
+          "evidence_keys": [
+            "unit-0010",
+            "unit-0011"
+          ],
+          "recommended_status": "accepted",
+          "reason_code": "grounded_function",
+          "missing_information": []
+        },
+        {
+          "candidate_ref": "1a3e42020a240393654bedabdb2065f7ec66c4dec14a2035dfc2a094595ae604",
+          "path": "用户中心 → 登录策略",
+          "description": "系统支持配置登录策略。",
+          "target_quote": "支持管理员配置登录策略",
+          "evidence_keys": [
+            "unit-0013"
+          ],
+          "recommended_status": "pending_confirmation",
+          "reason_code": "insufficient_detail",
+          "missing_information": [
+            "配置主体的角色与权限范围",
+            "可配置的策略参数及取值约束"
+          ]
+        }
+      ],
+      "normalization_summary": {
+        "model_candidate_count": 3,
+        "downgraded_candidate_count": 0,
+        "discarded_candidate_count": 1,
+        "auto_unresolved_unit_count": 0
+      }
+    }
+  }
+}

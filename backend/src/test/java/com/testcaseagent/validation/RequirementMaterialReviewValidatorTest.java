@@ -2,7 +2,8 @@ package com.testcaseagent.validation;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.List;
 import java.util.Map;
@@ -25,8 +26,10 @@ class RequirementMaterialReviewValidatorTest {
         RequirementMaterialReviewValidator.WorkItem workItem = workItem("prototype");
         RequirementMaterialReviewValidator.Result result = new RequirementMaterialReviewValidator.Result(List.of(fact()), List.of());
 
-        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () -> validator.validate(workItem, result));
-        assertTrue(failure.getMessage().toLowerCase(java.util.Locale.ROOT).contains("supplementary"));
+        StructuredValidationException failure = assertThrows(StructuredValidationException.class,
+                () -> validator.validate(workItem, result));
+        assertThat(failure.failure().code()).isEqualTo("REVIEW_FACT_SUPPLEMENTARY_SOURCE");
+        assertThat(failure.failure().path()).isEqualTo("$.requirement_facts[0]");
     }
 
     @Test
@@ -123,6 +126,77 @@ class RequirementMaterialReviewValidatorTest {
 
     /** [Req-ID]: REQ-FTG-005 */
     @Test
+    void acceptsRequirementFactSplitByPdfLayoutWhitespace() {
+        RequirementMaterialReviewValidator.WorkItem item = workItemWithEvidence(
+                Map.of("evidence-1", "系统支持电表智\n能\u3000验收。"));
+        RequirementMaterialReviewValidator.RequirementFact fact = factWithFunction("电表智能验收");
+
+        assertDoesNotThrow(() -> validator.validate(
+                item, new RequirementMaterialReviewValidator.Result(List.of(fact), List.of())));
+    }
+
+    /** [Req-ID]: REQ-FTG-005 */
+    @Test
+    void acceptsRequirementFactAcrossOrdinarySpaceDifferences() {
+        RequirementMaterialReviewValidator.WorkItem item = workItemWithEvidence(
+                Map.of("evidence-1", "系统支持 电表 智能 验收。"));
+        RequirementMaterialReviewValidator.RequirementFact fact = factWithFunction("电表智能验收");
+
+        assertDoesNotThrow(() -> validator.validate(
+                item, new RequirementMaterialReviewValidator.Result(List.of(fact), List.of())));
+    }
+
+    /** [Req-ID]: REQ-FTG-005 */
+    @Test
+    void rejectsBadSourceQuoteWhenItsInternalSpaceIsMissing() {
+        RequirementMaterialReviewValidator.WorkItem item = workItemWithEvidence(
+                Map.of("evidence-1", "材料说明账号 登录入口。"));
+        RequirementMaterialReviewValidator.ReviewFinding finding = findingWithBadSourceQuote("账号登录入口");
+
+        StructuredValidationException failure = assertThrows(StructuredValidationException.class,
+                () -> validator.validate(item,
+                        new RequirementMaterialReviewValidator.Result(List.of(), List.of(finding))));
+
+        assertThat(failure.failure().code()).isEqualTo("REVIEW_FINDING_BAD_SOURCE_INVALID");
+        assertThat(failure.failure().path()).isEqualTo("$.review_findings[0].bad_source_example.quote");
+    }
+
+    /** [Req-ID]: REQ-FSC-007 */
+    @Test
+    void reportsTheUnsupportedFactFieldWithoutRetainingRejectedText() {
+        RequirementMaterialReviewValidator.RequirementFact unsupported =
+                new RequirementMaterialReviewValidator.RequirementFact(
+                        "fact-1", "submit application", List.of(), List.of(), List.of(),
+                        List.of("password=do-not-persist"), List.of(), List.of(), List.of(), List.of(), List.of(),
+                        List.of("evidence-1"));
+
+        StructuredValidationException failure = assertThrows(StructuredValidationException.class,
+                () -> validator.validate(workItem("requirements_spec"),
+                        new RequirementMaterialReviewValidator.Result(List.of(unsupported), List.of())));
+
+        assertThat(failure.failure().code()).isEqualTo("REVIEW_FACT_DIRECT_EVIDENCE_UNSUPPORTED");
+        assertThat(failure.failure().path()).isEqualTo("$.requirement_facts[0].business_rules[0]");
+        assertThat(failure.failure().message()).isEqualTo("正式需求事实未在引用材料单元中直接出现");
+        assertThat(failure.failure().toString()).doesNotContain("do-not-persist", "submit application");
+    }
+
+    @Test
+    void reportsMissingRequiredTextWithoutMisclassifyingItAsUnsafe() {
+        RequirementMaterialReviewValidator.RequirementFact missingFunction =
+                new RequirementMaterialReviewValidator.RequirementFact(
+                        "fact-1", null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(),
+                        List.of(), List.of(), List.of(), List.of("evidence-1"));
+
+        StructuredValidationException failure = assertThrows(StructuredValidationException.class,
+                () -> validator.validate(workItem("requirements_spec"),
+                        new RequirementMaterialReviewValidator.Result(List.of(missingFunction), List.of())));
+
+        assertThat(failure.failure().code()).isEqualTo("REVIEW_FIELD_REQUIRED");
+        assertThat(failure.failure().path()).isEqualTo("$.requirement_facts[0].function");
+    }
+
+    /** [Req-ID]: REQ-FTG-005 */
+    @Test
     void acceptsACompletePendingChineseFindingAndRejectsItsDuplicateRootCause() {
         RequirementMaterialReviewValidator.ReviewFinding finding = new RequirementMaterialReviewValidator.ReviewFinding(
                 "finding-1", RequirementMaterialReviewValidator.RootCauseKind.MISSING_EXCEPTION_HANDLING,
@@ -170,6 +244,35 @@ class RequirementMaterialReviewValidatorTest {
         return StructuredValidationRegistry.forTask("task-1")
                 .register(StructuredKeyType.MATERIAL, "material-1")
                 .registerEvidence(new StructuredEvidence("evidence-1", "task-1", "material-1", false, false, true));
+    }
+
+    private static RequirementMaterialReviewValidator.WorkItem workItemWithEvidence(Map<String, String> evidenceTexts) {
+        StructuredValidationRegistry registry = StructuredValidationRegistry.forTask("task-1")
+                .register(StructuredKeyType.MATERIAL, "material-1");
+        evidenceTexts.keySet().forEach(key -> registry.registerEvidence(
+                new StructuredEvidence(key, "task-1", "material-1", false, false, true)));
+        return new RequirementMaterialReviewValidator.WorkItem(registry, "material-1", "requirements_spec",
+                evidenceTexts.keySet().stream().toList(), evidenceTexts);
+    }
+
+    private static RequirementMaterialReviewValidator.RequirementFact factWithFunction(String function) {
+        return new RequirementMaterialReviewValidator.RequirementFact(
+                "fact-1", function, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(),
+                List.of(), List.of(), List.of(), List.of("evidence-1"));
+    }
+
+    private static RequirementMaterialReviewValidator.ReviewFinding findingWithBadSourceQuote(String quote) {
+        return new RequirementMaterialReviewValidator.ReviewFinding(
+                "finding-1", RequirementMaterialReviewValidator.RootCauseKind.AMBIGUOUS_REQUIREMENT,
+                "需求表述存在歧义", new RequirementMaterialReviewValidator.AffectedScope(
+                        List.of("evidence-1"), "账号登录入口范围"),
+                new RequirementMaterialReviewValidator.BadSourceExample("evidence-1", quote),
+                new RequirementMaterialReviewValidator.ProposedGoodExample(
+                        RequirementMaterialReviewValidator.ProposalStatus.PENDING_CONFIRMATION,
+                        "建议明确账号登录入口（待需求方确认）。"),
+                "材料中的账号登录入口表述存在歧义。", List.of("evidence-1"),
+                "影响账号登录入口测试设计。", "请确认账号登录入口。", "建议明确账号登录入口规则。",
+                RequirementMaterialReviewValidator.HandlingLevel.CONTINUE_INCOMPLETE);
     }
 
     private static RequirementMaterialReviewValidator.RequirementFact fact() {

@@ -108,7 +108,7 @@
 
 ## 6. 收口验证与风险决策
 
-- [x] 6.1 执行确定性 golden fixture（新建 `backend/src/test/java/com/testcaseagent/task/AllCompletenessGoldenFixtureTest.java`）：30 个清单条目、两个清单遗漏、一个需求遗漏、一个冲突、一个重复、一个拆分和一个证据不足，断言 100% 单元处置、稳定 `N` 和精确 `2N`。直接调用方为完整 `GenerationWorkflow`；前置：2.3、3.5、4.5、5.2。验证：`./mvnw.cmd -pl backend -Dtest=AllCompletenessGoldenFixtureTest test`。 `[Req-ID]: REQ-BFA-001~005, REQ-CAG-004`
+- [x] 6.1 历史执行过确定性 golden fixture；该固定 `2N` 执行夹具已由 `realign-testcase-generation-v2` 的动态测试点与三态结果合同取代并退役。当前只保留 V1 详情、制品和公开写入口的只读兼容回归，不再重新执行旧功能清单/需求材料双向审核。 `[Req-ID]: REQ-BFA-001~005, REQ-CAG-004, REQ-TGV2-006, REQ-TGV2-010`
 
 - [x] 6.2 决定并记录全量回归风险：在执行前确认 MySQL 8/Testcontainers、前端依赖和临时 KEE 部署可用；若条件具备，执行 `./mvnw.cmd -pl backend test`、`npm --prefix frontend run typecheck`、`npm --prefix frontend run lint`、`npm --prefix frontend run build`；若任一外部条件不具备，记录未执行原因及对发布的影响。直接调用方为发布验收；前置：6.1。验证：上述命令及 `openspec validate all-completeness-cross-audit --strict`。 `[Req-ID]: all`
 

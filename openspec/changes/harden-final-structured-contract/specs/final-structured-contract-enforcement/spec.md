@@ -62,3 +62,63 @@ Java SHALL expose an opaque selection ID for every eligible completed and enable
 #### Scenario: Legacy type selection remains compatible
 - **WHEN** an older caller submits the existing opaque material-type selection ID
 - **THEN** Java SHALL freeze the same aggregate document set as before this capability
+
+### Requirement: [REQ-FSC-007] Business-validation failures retain safe field diagnostics
+
+When Java rejects a structured requirement-review result after KEE returns, Java SHALL retain one enumerated validation error code, one bounded field path, and one fixed reader-safe Chinese message on the failed attempt, work item, and task. The three levels SHALL be updated atomically with the work failure. The task detail SHALL expose only the same safe diagnostic. Logs SHALL correlate task, work item, and attempt with the same code/path/message. Java MUST NOT persist or log the rejected model response, material text, credentials, URLs, stack traces, arbitrary exception messages, or business keys through this diagnostic path. `business_validation_failed` SHALL remain non-retryable.
+
+#### Scenario: Unsupported fact wording identifies its field without retaining content
+- **WHEN** one requirement fact business-rule item is not a continuous fragment of any cited parsed unit
+- **THEN** Java SHALL fail the whole work as `business_validation_failed` and retain a diagnostic whose path identifies that business-rule item while its code and message reveal no source or model text
+
+#### Scenario: Unknown runtime text cannot become a diagnostic payload
+- **WHEN** a non-enumerated runtime exception contains credential-like or material-like text
+- **THEN** Java SHALL NOT copy that exception message into the attempt, work item, task, task detail, or dedicated diagnostic log
+
+### Requirement: [REQ-FSC-008] Protocol V2 preserves global comparison while paging output ownership
+
+Java SHALL retain strict V1 `operation=reconcile` DTO/result parsing and previously committed task reads. New reconciliation work and a stage-gap recovery with no reconciliation work/result SHALL use `operation=reconcile_page` and `protocol_version=2`; they MUST NOT invoke V1. A completed V1 reconciliation SHALL remain unchanged and SHALL resume downstream processing from committed rows with zero KEE calls.
+
+Every V2 page request SHALL carry the same complete canonical `global_catalog` and `run`; only `owner_window` SHALL vary. The catalog SHALL contain all durably accepted function-list items and formal requirement facts ordered by source type (`function_list_item` before `requirement_fact`) and source key, with every evidence-key array sorted and unique. `catalog_sha256` SHALL be the lowercase SHA-256 of the compact canonical catalog JSON. The run SHALL carry an opaque nonempty Java task-and-catalog `run_key`, that digest, and exact item/fact counts. Java MUST NOT sample, truncate, or split the catalog into mutually unaware comparisons.
+
+Owner windows SHALL be nonempty, unique, canonically ordered subsets that partition all canonical source references exactly once. `page_key` SHALL be the lowercase SHA-256 of `reconcile-page-v2\n`, `run_key`, `\n`, and compact canonical owner-reference JSON, with no trailing newline after the JSON. A relation's canonical owner SHALL be the minimum source reference in that relation and MUST belong to the current owner window. Sources MAY participate in multiple relations. Java SHALL independently recompute KEE-derived reconciliation key, owner reference, and sorted exact evidence union before staging a page. The reconciliation key SHALL be the lowercase SHA-256 of `reconciliation-v2\n`, `run_key`, `\n`, classification, `\n`, confirmation status, `\n`, and compact canonical referenced-source JSON, with no trailing newline after the JSON. All pages SHALL be staged under one run and SHALL produce zero business reconciliation rows until global validation succeeds.
+
+V2 SHALL use a configurable dedicated request budget defaulting to 16 MiB and a configurable page-response budget defaulting to 4 MiB. Other Skills SHALL retain their 2 MiB and bounded-array contracts. A full catalog that exceeds request/model capacity SHALL fail closed without truncation. Only `response_too_large` MAY deterministically bisect the current owner window under the unchanged run/catalog; all other failures SHALL leave the run incomplete.
+
+After all pages complete, Java SHALL validate exact run/catalog identity, owner-window partition and echo, canonical ownership, derived key/evidence closure, relation identity uniqueness, same-path exact/confirmed closure, and complete source coverage. One transaction SHALL then persist every relation, overlapping bindings, and exactly one processing terminal per catalog source. A terminal proves processing completion but SHALL NOT constrain the source to one relation. The accepted-result digest SHALL include every canonical leaf page identity and its validated result digest, so different reader-facing relation content is not treated as an idempotent replay under unchanged machine keys. Any invalid page or persistence conflict SHALL produce zero accepted reconciliation business rows. Stable run/page identities SHALL make restart invoke only missing pages, while a completed reconciliation work SHALL cause zero KEE calls.
+
+#### Scenario: A large task keeps one globally visible catalog
+- **WHEN** accepted inputs contain 297 function items and 514 facts, or a larger catalog from a work order exceeding one thousand pages
+- **THEN** every owner page SHALL carry the identical complete catalog and SHALL vary only its deterministic owner window
+
+#### Scenario: V1 history remains readable but new orchestration is V2-only
+- **WHEN** Java reads a previously accepted V1 reconciliation or plans a new/stage-gap reconciliation
+- **THEN** the V1 result SHALL remain readable without another KEE call, while the new/stage-gap work SHALL emit only V2 pages
+
+#### Scenario: Canonical identities are independently verified
+- **WHEN** KEE returns one V2 page
+- **THEN** Java SHALL reject the page unless its run key, catalog digest, page key, completed owners, canonical relation owner, derived reconciliation key, and exact evidence union all recompute from frozen task data
+
+#### Scenario: Overlapping relations retain one processing terminal
+- **WHEN** one fact participates in both a split relation and a conflict relation
+- **THEN** Java SHALL retain both valid relation rows after global acceptance but SHALL publish exactly one source terminal for that fact
+
+#### Scenario: Response overflow splits only output responsibility
+- **WHEN** one owner window returns `response_too_large`
+- **THEN** Java MAY replace it with two deterministic child owner windows under the same run and complete catalog, with no owner omitted or repeated
+
+#### Scenario: KEE reports a provider length cutoff as page capacity
+- **WHEN** a V2 reconciliation page receives HTTP 400 with `error.details.type=response_too_large` because the initial or repair model response ended at its provider length limit
+- **THEN** Java SHALL preserve the optional `repair_attempted` flag and SHALL apply the same deterministic owner-window-only bisection without changing the task, work, run, global catalog, or catalog digest
+
+#### Scenario: A minimum owner window still exceeds response capacity
+- **WHEN** a one-owner V2 page returns `response_too_large`
+- **THEN** Java SHALL fail the reconciliation work closed without staging that response, publishing partial relations, creating another task, or changing the global catalog
+
+#### Scenario: Global acceptance is all-or-nothing and restart-safe
+- **WHEN** any page is missing, mixed-run, invalid, duplicated, or unowned
+- **THEN** Java SHALL publish zero reconciliation business rows; after restart it SHALL reuse staged valid pages and call KEE only for missing windows
+
+#### Scenario: Pre-work planning failure is safely recoverable
+- **WHEN** all review/extraction work is complete but no V2 run/work/result exists
+- **THEN** Java SHALL retain a safe stage diagnostic and expose explicit retry eligibility only for the exact row-locked, zero-in-flight, zero-reconciliation stage-gap shape without reparsing materials
