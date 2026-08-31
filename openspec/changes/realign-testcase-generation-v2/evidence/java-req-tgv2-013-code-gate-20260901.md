@@ -4,7 +4,7 @@
 
 `REQ-TGV2-013` 已完成代码、真实 MySQL、并发、事务、迁移、前端静态门禁和双轴复审。该能力只依据 V2 版本化协议、有限技术失败类型、完整 attempt 历史和全业务零写入闭集，不包含任务、项目、知识库、文档、材料类型或数量特判。
 
-本文件只记录代码门禁；正式部署、Flyway V24 和 live 零副作用资格门禁在同一证据中继续补充。业务 retry 尚未发送，第二套业务夹具尚未创建。
+本文件记录代码门禁、正式部署、Flyway V24 和 live 零副作用资格门禁。业务 retry 未发送，第二套业务夹具未创建。
 
 ## RED 与根因
 
@@ -41,10 +41,26 @@
 
 复审确认：历史无来源 `request_too_large` 只在完整零写入闭集下兼容；未来本地预算拒绝为 `invalid_request`；V1、旧 operation、业务校验、结构化输出错误和任何部分写入状态继续失败关闭。
 
-## 待部署门禁
+## 构建与部署门禁
 
-- 构建并固定精确提交对应的不可变 JAR。
-- 部署前只读确认现有 artifact ID/路径无重复；允许 Flyway 正常向前应用 V24。
-- 部署唯一 8082，保持外层 KEE 等待 3060 秒，验证 8082/5173。
-- 对夹具 A 只读证明只有 `canRetry: false -> true`；task/work/attempt/artifact 和全部业务表计数与摘要不变。
-- 不发送正式 retry，不创建第二套夹具。
+- 生产代码提交：`6a3bf2fdfb5766bead1f53d7c049cd082a8af897`。
+- 不可变 JAR：`D:\workspace\testcase-agent-java-web\.worktrees\enforce-formal-testcase-grounding\backend\target\testcase-agent-backend-v2-zero-write-technical-retry-20260901-6a3bf2f.jar`。
+- JAR 字节数：`54,515,198`；SHA-256：`E1ECBA6995AE5CBA4BC810C990B7D022EF7680A8356CB410D4BEE507F74A1C18`。
+- 唯一 8082 Java 进程 PID：`23248`；实际命令行加载上述不可变 JAR；外层 KEE 等待时间保持 `3060s`。
+- 8082 API 与 5173 前端代理均返回 HTTP 200；5173 既有进程未重启。
+- Flyway 从 V23 正常向前应用至 V24。部署前 artifact ID 重复组为 0，artifact 路径重复组为 0；未手工修改数据库。
+- 启动后标准输出中的 `ERROR`/`Exception` 计数为 0，标准错误非空行计数为 0。
+
+## Live 零副作用资格门禁
+
+- 部署前后任务总数均为 23，在途任务均为 0。
+- 夹具 A 的 `canRetry` 由 `false` 变为 `true`；task/work/attempt/artifact 的业务状态和既有结果未改变。
+- 除 `generation_task` 外的 32 张对账表，部署前后计数和摘要完全一致，无差异表。
+- V24 为 `generation_task` 增加生成列，因此包含全部列的物理摘要按预期变化；按原有 21 个非生成业务列重新计算的摘要与部署前完全一致，证明业务列未被改写。
+- 正式业务 retry POST 次数为 0；新任务创建次数为 0；夹具 B 未创建；未调用或修改 KEE。
+
+可核验证据目录：
+
+`D:\workspace\testcase-agent-java-web\.worktrees\enforce-formal-testcase-grounding\backend\target\acceptance\tgv2-013-zero-write-technical-retry-deploy-20260901`
+
+其中 `snapshot-predeploy.json`、`snapshot-postdeploy.json` 和 `comparison-safe.json` 分别记录部署前快照、部署后快照与安全差异结论；日志文件不包含材料正文、模型输出或凭据。
