@@ -166,7 +166,10 @@ public final class StructuredValidationFailure {
         }
     }
 
-    /** Fixed, text-free rule categories for the internal direct-evidence rejection diagnosis. */
+    /**
+     * Fixed, text-free rule categories for the internal direct-evidence rejection diagnosis.
+     * [Req-ID]: REQ-TGV2-012
+     */
     public enum DirectEvidenceReason {
         LITERAL_UNSUPPORTED,
         CLAUSE_COUNT_MISMATCH,

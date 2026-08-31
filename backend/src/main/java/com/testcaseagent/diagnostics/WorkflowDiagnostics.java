@@ -41,7 +41,8 @@ public final class WorkflowDiagnostics {
 
     /**
      * Records only the enumerated safe fields of a structured business-validation failure.
-     * Rejected model output, material text, and arbitrary exception messages are not accepted. [Req-ID]: REQ-FSC-007
+     * Rejected model output, material text, and arbitrary exception messages are not accepted.
+     * [Req-ID]: REQ-FSC-007, REQ-TGV2-012
      */
     public static void structuredValidationFailure(String taskId, String workId, String attemptId, int attempt,
             StructuredValidationFailure failure) {

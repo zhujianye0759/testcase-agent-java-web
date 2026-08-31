@@ -410,6 +410,181 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
 
     /** [Req-ID]: REQ-TGV2-012 */
     @Test
+    void directEvidenceRecoveryAcceptsCanonicalThreeLayerDiagnosticAndRetainsAttemptAudit() {
+        V2AtomicityRecoveryFixture fixture = v2FactRecoveryFixture(
+                StructuredValidationFailure.Code.FACT_DIRECT_EVIDENCE_UNSUPPORTED,
+                List.of(V2GenerationPlanner.missingFormalFactInformation()));
+        StructuredValidationFailure failure = StructuredValidationFailure.directEvidence(
+                "$.requirement_facts[0].statement",
+                List.of(StructuredValidationFailure.DirectEvidenceReason.LITERAL_UNSUPPORTED,
+                        StructuredValidationFailure.DirectEvidenceReason.TOKEN_ORDER_OR_ADDITION));
+        replaceV2FactRecoveryDiagnostic(fixture, failure.storageMessage());
+
+        assertThat(taskRepository.structuredRetryEligibility("task-1").canRetry()).isTrue();
+        assertThat(taskRepository.retryFailedBatches("task-1")).isEqualTo(1);
+
+        assertSoftly(softly -> {
+            softly.assertThat(jdbc.queryForObject(
+                    "SELECT validation_error_message FROM generation_task WHERE id='task-1'", String.class)).isNull();
+            softly.assertThat(jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM structured_generation_work_item
+                    WHERE id IN (?, ?) AND validation_error_message IS NULL
+                    """, Integer.class, fixture.factWorkIds().get(0), fixture.factWorkIds().get(1))).isEqualTo(2);
+            softly.assertThat(jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM structured_generation_attempt
+                    WHERE work_item_id IN (?, ?) AND validation_error_message=?
+                    """, Integer.class, fixture.factWorkIds().get(0), fixture.factWorkIds().get(1),
+                    failure.storageMessage())).isEqualTo(2);
+        });
+    }
+
+    /** [Req-ID]: REQ-TGV2-011, REQ-TGV2-012 */
+    @Test
+    void atomicityRecoveryAllowsDifferentFactIndexesAcrossRejectedWindows() {
+        V2AtomicityRecoveryFixture fixture = v2AtomicityRecoveryFixture();
+        String firstWorkId = fixture.factWorkIds().get(0);
+        jdbc.update("""
+                UPDATE structured_generation_work_item
+                SET validation_error_path='$.requirement_facts[1].statement'
+                WHERE id=?
+                """, firstWorkId);
+        jdbc.update("""
+                UPDATE structured_generation_attempt
+                SET validation_error_path='$.requirement_facts[1].statement'
+                WHERE work_item_id=?
+                """, firstWorkId);
+
+        assertThat(jdbc.queryForObject(
+                "SELECT validation_error_path FROM generation_task WHERE id='task-1'", String.class))
+                .isEqualTo("$.requirement_facts[0].statement");
+        assertThat(taskRepository.structuredRetryEligibility("task-1").canRetry()).isTrue();
+    }
+
+    /** [Req-ID]: REQ-TGV2-012 */
+    @Test
+    void directEvidenceRecoveryAcceptsLegacyPublicMessageAcrossThreeLayers() {
+        V2AtomicityRecoveryFixture fixture = v2FactRecoveryFixture(
+                StructuredValidationFailure.Code.FACT_DIRECT_EVIDENCE_UNSUPPORTED,
+                List.of(V2GenerationPlanner.missingFormalFactInformation()));
+        StructuredValidationFailure legacy = StructuredValidationFailure.of(
+                StructuredValidationFailure.Code.FACT_DIRECT_EVIDENCE_UNSUPPORTED,
+                "$.requirement_facts[0].statement");
+
+        assertThat(jdbc.queryForObject(
+                "SELECT validation_error_message FROM generation_task WHERE id='task-1'", String.class))
+                .isEqualTo(legacy.message());
+        assertThat(taskRepository.structuredRetryEligibility("task-1").canRetry()).isTrue();
+    }
+
+    /** [Req-ID]: REQ-TGV2-012 */
+    @ParameterizedTest
+    @ValueSource(strings = {"unknown_reason", "duplicate_reason", "out_of_order_reasons", "raw_text",
+            "credential_text", "task_mismatch", "work_mismatch", "attempt_mismatch", "work_path_mismatch"})
+    void directEvidenceRecoveryRejectsUntrustedOrMismatchedThreeLayerDiagnostic(String mutation) {
+        V2AtomicityRecoveryFixture fixture = v2FactRecoveryFixture(
+                StructuredValidationFailure.Code.FACT_DIRECT_EVIDENCE_UNSUPPORTED,
+                List.of(V2GenerationPlanner.missingFormalFactInformation()));
+        StructuredValidationFailure canonical = StructuredValidationFailure.directEvidence(
+                "$.requirement_facts[0].statement",
+                List.of(StructuredValidationFailure.DirectEvidenceReason.LITERAL_UNSUPPORTED,
+                        StructuredValidationFailure.DirectEvidenceReason.TOKEN_ORDER_OR_ADDITION));
+        StructuredValidationFailure legacy = StructuredValidationFailure.of(
+                StructuredValidationFailure.Code.FACT_DIRECT_EVIDENCE_UNSUPPORTED,
+                "$.requirement_facts[0].statement");
+        replaceV2FactRecoveryDiagnostic(fixture, canonical.storageMessage());
+        String unsafeStoredValue = switch (mutation) {
+            case "unknown_reason" -> canonical.message() + "|direct_evidence_reasons=UNKNOWN_REASON";
+            case "duplicate_reason" -> canonical.message()
+                    + "|direct_evidence_reasons=LITERAL_UNSUPPORTED,LITERAL_UNSUPPORTED";
+            case "out_of_order_reasons" -> canonical.message()
+                    + "|direct_evidence_reasons=TOKEN_ORDER_OR_ADDITION,LITERAL_UNSUPPORTED";
+            case "raw_text" -> "untrusted synthetic source text";
+            case "credential_text" -> "api" + "_key=fixture-secret";
+            case "task_mismatch", "work_mismatch", "attempt_mismatch", "work_path_mismatch" -> legacy.message();
+            default -> throw new IllegalArgumentException("unknown diagnostic mutation");
+        };
+        switch (mutation) {
+            case "task_mismatch" -> jdbc.update(
+                    "UPDATE generation_task SET validation_error_message=? WHERE id='task-1'", unsafeStoredValue);
+            case "work_mismatch" -> jdbc.update(
+                    "UPDATE structured_generation_work_item SET validation_error_message=? WHERE id=?",
+                    unsafeStoredValue, fixture.factWorkIds().get(0));
+            case "attempt_mismatch" -> jdbc.update(
+                    "UPDATE structured_generation_attempt SET validation_error_message=? WHERE work_item_id=?",
+                    unsafeStoredValue, fixture.factWorkIds().get(0));
+            case "work_path_mismatch" -> jdbc.update(
+                    "UPDATE structured_generation_work_item SET validation_error_path='$.requirement_facts[1].statement' WHERE id=?",
+                    fixture.factWorkIds().get(0));
+            default -> replaceV2FactRecoveryDiagnostic(fixture, unsafeStoredValue);
+        }
+
+        var eligibility = taskRepository.structuredRetryEligibility("task-1");
+
+        assertThat(eligibility.canRetry()).isFalse();
+        assertThat(eligibility.unavailableReason()).doesNotContain(unsafeStoredValue).doesNotContain("fixture-secret");
+        assertThat(taskRepository.retryFailedBatches("task-1")).isZero();
+    }
+
+    /** [Req-ID]: REQ-TGV2-012 */
+    @ParameterizedTest
+    @ValueSource(strings = {"task", "work", "attempt"})
+    void directEvidenceRecoveryRejectsMissingDiagnosticTripleAtAnyDurableLayer(String layer) {
+        V2AtomicityRecoveryFixture fixture = v2FactRecoveryFixture(
+                StructuredValidationFailure.Code.FACT_DIRECT_EVIDENCE_UNSUPPORTED,
+                List.of(V2GenerationPlanner.missingFormalFactInformation()));
+        switch (layer) {
+            case "task" -> jdbc.update("""
+                    UPDATE generation_task
+                    SET validation_error_code=NULL, validation_error_path=NULL, validation_error_message=NULL
+                    WHERE id='task-1'
+                    """);
+            case "work" -> jdbc.update("""
+                    UPDATE structured_generation_work_item
+                    SET validation_error_code=NULL, validation_error_path=NULL, validation_error_message=NULL
+                    WHERE id=?
+                    """, fixture.factWorkIds().get(0));
+            case "attempt" -> jdbc.update("""
+                    UPDATE structured_generation_attempt
+                    SET validation_error_code=NULL, validation_error_path=NULL, validation_error_message=NULL
+                    WHERE work_item_id=?
+                    """, fixture.factWorkIds().get(0));
+            default -> throw new IllegalArgumentException("unknown durable diagnostic layer");
+        }
+
+        assertThat(taskRepository.structuredRetryEligibility("task-1").canRetry()).isFalse();
+        assertThat(taskRepository.retryFailedBatches("task-1")).isZero();
+    }
+
+    /** [Req-ID]: REQ-TGV2-012 */
+    @Test
+    void directEvidenceRecoveryValidatesOnlyTheLatestAttemptDiagnostic() {
+        V2AtomicityRecoveryFixture fixture = v2FactRecoveryFixture(
+                StructuredValidationFailure.Code.FACT_DIRECT_EVIDENCE_UNSUPPORTED,
+                List.of(V2GenerationPlanner.missingFormalFactInformation()));
+        StructuredValidationFailure canonical = StructuredValidationFailure.directEvidence(
+                "$.requirement_facts[0].statement",
+                List.of(StructuredValidationFailure.DirectEvidenceReason.LITERAL_UNSUPPORTED));
+        replaceV2FactRecoveryDiagnostic(fixture, canonical.storageMessage());
+        String firstWorkId = fixture.factWorkIds().get(0);
+        jdbc.update("""
+                UPDATE structured_generation_attempt
+                SET validation_error_message='untrusted historical diagnostic'
+                WHERE work_item_id=? AND attempt_number=1
+                """, firstWorkId);
+        jdbc.update("""
+                INSERT INTO structured_generation_attempt
+                (id, work_item_id, attempt_number, status, failure_type, completed_at,
+                 validation_error_code, validation_error_path, validation_error_message)
+                VALUES (?, ?, 2, 'FAILED', 'business_validation_failed', CURRENT_TIMESTAMP(6), ?, ?, ?)
+                """, java.util.UUID.randomUUID().toString(), firstWorkId,
+                StructuredValidationFailure.Code.FACT_DIRECT_EVIDENCE_UNSUPPORTED.name(),
+                "$.requirement_facts[0].statement", canonical.storageMessage());
+
+        assertThat(taskRepository.structuredRetryEligibility("task-1").canRetry()).isTrue();
+    }
+
+    /** [Req-ID]: REQ-TGV2-012 */
+    @Test
     void explicitlyRecoversOnlyTheClosedZeroWriteDirectEvidenceRejectionGraph() {
         V2AtomicityRecoveryFixture fixture = v2FactRecoveryFixture(
                 StructuredValidationFailure.Code.FACT_DIRECT_EVIDENCE_UNSUPPORTED,
@@ -6057,6 +6232,17 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
                 WHERE id='task-1'
                 """, "f".repeat(64));
         return new V2AtomicityRecoveryFixture(List.copyOf(factWorkIds), List.copyOf(fallbackWorkIds));
+    }
+
+    /** Replaces only the safe diagnostic message columns in the synthetic V2 recovery graph. */
+    private void replaceV2FactRecoveryDiagnostic(V2AtomicityRecoveryFixture fixture, String storedMessage) {
+        jdbc.update("UPDATE generation_task SET validation_error_message=? WHERE id='task-1'", storedMessage);
+        jdbc.update("""
+                UPDATE structured_generation_work_item SET validation_error_message=? WHERE id IN (?, ?)
+                """, storedMessage, fixture.factWorkIds().get(0), fixture.factWorkIds().get(1));
+        jdbc.update("""
+                UPDATE structured_generation_attempt SET validation_error_message=? WHERE work_item_id IN (?, ?)
+                """, storedMessage, fixture.factWorkIds().get(0), fixture.factWorkIds().get(1));
     }
 
     /** Captures fields that explicit recovery must retain byte-for-byte while current statuses/artifact coordinates change. */

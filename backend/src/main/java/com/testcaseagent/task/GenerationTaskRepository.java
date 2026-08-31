@@ -1103,7 +1103,7 @@ public final class GenerationTaskRepository {
     private StructuredRetryDecision structuredRetryEligibility(String taskId, boolean lockTask) {
         List<RetryTaskRow> tasks = jdbcTemplate.query("""
                         SELECT task_mode, status, request_snapshot, cancellation_requested_at,
-                               validation_error_code, validation_error_path,
+                               validation_error_code, validation_error_path, validation_error_message,
                                structured_processing_status, structured_coverage_status,
                                workflow_version, input_version, artifact_version,
                                artifact_id, artifact_sha256, artifact_path
@@ -1112,6 +1112,7 @@ public final class GenerationTaskRepository {
                 (row, ignored) -> new RetryTaskRow(row.getString("task_mode"), row.getString("status"),
                         row.getString("request_snapshot"), row.getTimestamp("cancellation_requested_at") != null,
                         row.getString("validation_error_code"), row.getString("validation_error_path"),
+                        row.getString("validation_error_message"),
                         row.getString("structured_processing_status"), row.getString("structured_coverage_status"),
                         row.getString("workflow_version"), row.getString("input_version"),
                         row.getString("artifact_version"), row.getString("artifact_id"),
@@ -1129,7 +1130,7 @@ public final class GenerationTaskRepository {
         List<RetryWorkRow> unfinished = jdbcTemplate.query("""
                         SELECT work.id, work.status, work.accepted_result_sha256, work.skill_name,
                                work.operation_name, work.function_key, work.ordinal_start, work.ordinal_end,
-                               work.validation_error_code, work.validation_error_path,
+                               work.validation_error_code, work.validation_error_path, work.validation_error_message,
                                JSON_TYPE(work.allowed_evidence_keys_json) AS evidence_json_type,
                                JSON_LENGTH(work.allowed_evidence_keys_json) AS evidence_key_count,
                                JSON_UNQUOTE(JSON_EXTRACT(work.allowed_evidence_keys_json, '$[0]')) AS evidence_key,
@@ -1155,7 +1156,8 @@ public final class GenerationTaskRepository {
                          row.getString("operation_name"), row.getString("function_key"),
                          nullableInteger(row, "ordinal_start"),
                          nullableInteger(row, "ordinal_end"), row.getString("validation_error_code"),
-                         row.getString("validation_error_path"), row.getString("evidence_json_type"),
+                         row.getString("validation_error_path"), row.getString("validation_error_message"),
+                         row.getString("evidence_json_type"),
                          row.getInt("evidence_key_count"), row.getString("evidence_key"),
                          row.getBoolean("has_lease"), row.getBoolean("has_complete_lease"),
                          row.getTimestamp("lease_expires_at") == null ? null
@@ -1174,8 +1176,7 @@ public final class GenerationTaskRepository {
             return unavailableRetry("任务材料范围不完整，不能重试");
         }
         if (v2FactValidationRecoveryTask) {
-            return v2FactValidationRecoveryDecision(
-                    taskId, task.validationErrorCode(), unfinished, lockTask);
+            return v2FactValidationRecoveryDecision(taskId, task, unfinished, lockTask);
         }
         if (unfinished.isEmpty()) {
             if (isSafeReconciliationStageGap(taskId)) {
@@ -1289,13 +1290,15 @@ public final class GenerationTaskRepository {
 
     private List<RetryAttemptRow> latestRetryAttempts(String workItemId, boolean lockTask) {
         return jdbcTemplate.query("""
-                        SELECT status, failure_type, validation_error_code, validation_error_path
+                        SELECT status, failure_type, validation_error_code, validation_error_path,
+                               validation_error_message
                         FROM structured_generation_attempt
                         WHERE work_item_id = ? ORDER BY attempt_number DESC LIMIT 1%s
                         """.formatted(lockTask ? " FOR UPDATE" : ""),
                 (row, ignored) -> new RetryAttemptRow(
                         row.getString("status"), row.getString("failure_type"),
-                        row.getString("validation_error_code"), row.getString("validation_error_path")), workItemId);
+                        row.getString("validation_error_code"), row.getString("validation_error_path"),
+                        row.getString("validation_error_message")), workItemId);
     }
 
     /**
@@ -1480,7 +1483,10 @@ public final class GenerationTaskRepository {
      * identity, material name, or cardinality is part of the decision. [Req-ID]: REQ-TGV2-011, REQ-TGV2-012
      */
     private StructuredRetryDecision v2FactValidationRecoveryDecision(
-            String taskId, String expectedCode, List<RetryWorkRow> unfinished, boolean lockRows) {
+            String taskId, RetryTaskRow task, List<RetryWorkRow> unfinished, boolean lockRows) {
+        String expectedCode = task.validationErrorCode();
+        boolean directEvidence = StructuredValidationFailure.Code.FACT_DIRECT_EVIDENCE_UNSUPPORTED.name()
+                .equals(expectedCode);
         if (unfinished.isEmpty() || unfinished.stream().anyMatch(work ->
                 !"FAILED".equals(work.status())
                         || !"requirement-fact-extraction".equals(work.skillName())
@@ -1491,14 +1497,15 @@ public final class GenerationTaskRepository {
                         || !V2_FACT_STATEMENT_PATH.matcher(orDefault(work.validationErrorPath(), "")).matches())) {
             return unavailableRetry("V2 事实失败状态不符合安全恢复条件");
         }
-        if (StructuredValidationFailure.Code.FACT_DIRECT_EVIDENCE_UNSUPPORTED.name().equals(expectedCode)) {
-            return v2DirectEvidenceRecoveryDecision(taskId, unfinished, lockRows);
-        }
         for (RetryWorkRow work : unfinished) {
             List<RetryAttemptRow> attempts = latestRetryAttempts(work.id(), lockRows);
-            if (attempts.size() != 1 || !isRecoverableV2FactValidationFailure(attempts.get(0), expectedCode)) {
+            if (attempts.size() != 1 || !isRecoverableV2FactValidationFailure(attempts.get(0), expectedCode)
+                    || (directEvidence && !hasMatchingStrictValidationDiagnostic(task, work, attempts.get(0)))) {
                 return unavailableRetry("V2 事实失败状态不符合安全恢复条件");
             }
+        }
+        if (directEvidence) {
+            return v2DirectEvidenceRecoveryDecision(taskId, unfinished, lockRows);
         }
         try {
             List<V2FallbackWorkRow> fallbacks = currentV2TestcaseWorks(taskId, lockRows);
@@ -1567,6 +1574,37 @@ public final class GenerationTaskRepository {
                 && "business_validation_failed".equals(attempt.failureType())
                 && expectedCode.equals(attempt.validationErrorCode())
                 && V2_FACT_STATEMENT_PATH.matcher(orDefault(attempt.validationErrorPath(), "")).matches();
+    }
+
+    /**
+     * Parses all three durable diagnostic layers through the same bounded catalog before an explicit recovery may
+     * consume them. Invalid database text is reduced to an ineligible decision and never retained as an exception
+     * cause or log value. Internal reason enums remain diagnostic only. [Req-ID]: REQ-TGV2-012
+     */
+    private static boolean hasMatchingStrictValidationDiagnostic(
+            RetryTaskRow task, RetryWorkRow work, RetryAttemptRow attempt) {
+        Optional<StoredValidationDiagnostic> taskDiagnostic = strictStoredValidationDiagnostic(
+                task.validationErrorCode(), task.validationErrorPath(), task.validationErrorMessage());
+        Optional<StoredValidationDiagnostic> workDiagnostic = strictStoredValidationDiagnostic(
+                work.validationErrorCode(), work.validationErrorPath(), work.validationErrorMessage());
+        Optional<StoredValidationDiagnostic> attemptDiagnostic = strictStoredValidationDiagnostic(
+                attempt.validationErrorCode(), attempt.validationErrorPath(), attempt.validationErrorMessage());
+        return taskDiagnostic.isPresent()
+                && taskDiagnostic.equals(workDiagnostic)
+                && taskDiagnostic.equals(attemptDiagnostic);
+    }
+
+    private static Optional<StoredValidationDiagnostic> strictStoredValidationDiagnostic(
+            String code, String path, String message) {
+        if (code == null || path == null || message == null) return Optional.empty();
+        try {
+            StructuredValidationFailure safe = StructuredValidationFailure.fromStored(
+                    StructuredValidationFailure.Code.valueOf(code), path, message);
+            return Optional.of(new StoredValidationDiagnostic(safe.code(), safe.path(), safe.storageMessage()));
+        } catch (IllegalArgumentException exception) {
+            // Untrusted stored text must fail closed without surviving in a cause, log, or reader-facing response.
+            return Optional.empty();
+        }
     }
 
     private static boolean isV2FactValidationRecoveryTask(RetryTaskRow task) {
@@ -1802,7 +1840,8 @@ public final class GenerationTaskRepository {
         Map<String, List<RetryAttemptRow>> attemptsByWork = new LinkedHashMap<>();
         jdbcTemplate.query("""
                 SELECT attempt.work_item_id, attempt.status, attempt.failure_type,
-                       attempt.validation_error_code, attempt.validation_error_path
+                       attempt.validation_error_code, attempt.validation_error_path,
+                       attempt.validation_error_message
                 FROM structured_generation_attempt attempt
                 JOIN structured_generation_work_item work ON work.id=attempt.work_item_id
                 WHERE work.task_id=? ORDER BY attempt.work_item_id, attempt.attempt_number DESC%s
@@ -1810,7 +1849,8 @@ public final class GenerationTaskRepository {
                 attemptsByWork.computeIfAbsent(
                         row.getString("work_item_id"), ignored -> new ArrayList<>()).add(new RetryAttemptRow(
                         row.getString("status"), row.getString("failure_type"),
-                        row.getString("validation_error_code"), row.getString("validation_error_path"))), taskId);
+                        row.getString("validation_error_code"), row.getString("validation_error_path"),
+                        row.getString("validation_error_message"))), taskId);
 
         Map<String, List<V2ReplayPublication>> publicationsByWork = new LinkedHashMap<>();
         jdbcTemplate.query("""
@@ -4404,7 +4444,7 @@ public final class GenerationTaskRepository {
      * Fails a structured task before a work attempt exists while retaining only an enumerated safe diagnostic.
      * This is used for task-level planning closure failures; rejected source/model text is never persisted.
      *
-     * [Req-ID]: REQ-FSC-008
+     * [Req-ID]: REQ-FSC-008, REQ-TGV2-012
      */
     public void failStructuredTask(String taskId, StructuredCoverageStatus coverageStatus,
             StructuredValidationFailure failure) {
@@ -4512,6 +4552,10 @@ public final class GenerationTaskRepository {
         return GenerationContractVersions.V2.equals(taskWorkflowVersion(taskId));
     }
 
+    /**
+     * Reads the strict stored diagnostic form and projects only its fixed reader-safe fields.
+     * [Req-ID]: REQ-FSC-007, REQ-TGV2-012
+     */
     private StructuredGenerationTaskDetail.ValidationFailure structuredValidationFailure(String taskId) {
         List<StructuredGenerationTaskDetail.ValidationFailure> rows = jdbcTemplate.query("""
                         SELECT validation_error_code, validation_error_path, validation_error_message
@@ -6181,6 +6225,7 @@ public final class GenerationTaskRepository {
 
     private record RetryTaskRow(String taskMode, String status, String requestSnapshot,
             boolean cancellationRequested, String validationErrorCode, String validationErrorPath,
+            String validationErrorMessage,
             String processingStatus, String coverageStatus, String workflowVersion, String inputVersion,
             String artifactVersion, String artifactId, String artifactSha256, String artifactPath) { }
 
@@ -6195,6 +6240,7 @@ public final class GenerationTaskRepository {
             Integer ordinalEnd,
             String validationErrorCode,
             String validationErrorPath,
+            String validationErrorMessage,
             String evidenceJsonType,
             int evidenceKeyCount,
             String evidenceKey,
@@ -6206,7 +6252,10 @@ public final class GenerationTaskRepository {
             int attemptCount) { }
 
     private record RetryAttemptRow(
-            String status, String failureType, String validationErrorCode, String validationErrorPath) { }
+            String status, String failureType, String validationErrorCode, String validationErrorPath,
+            String validationErrorMessage) { }
+
+    private record StoredValidationDiagnostic(String code, String path, String storageMessage) { }
 
     private record V2FallbackWorkRow(String id, String functionKey, String testPointKey, String status,
             String acceptedResultSha256, boolean hasLease, boolean hasRunningAttempt) { }

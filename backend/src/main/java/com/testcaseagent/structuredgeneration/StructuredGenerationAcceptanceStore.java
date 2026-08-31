@@ -914,7 +914,8 @@ public final class StructuredGenerationAcceptanceStore {
 
     /**
      * Marks a running attempt failed and atomically retains an optional enumerated business-validation diagnostic.
-     * Arbitrary exception messages are deliberately not accepted by this seam. [Req-ID]: REQ-FSC-007
+     * Arbitrary exception messages are deliberately not accepted by this seam.
+     * [Req-ID]: REQ-FSC-007, REQ-TGV2-012
      */
     public void fail(WorkClaim claim, String failureType, StructuredValidationFailure validationFailure) {
         requireClaim(claim); require(failureType, "failureType");

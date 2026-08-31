@@ -79,7 +79,7 @@ class WorkflowDiagnosticsTest {
         }
     }
 
-    /** [Req-ID]: REQ-FSC-007 */
+    /** [Req-ID]: REQ-FSC-007, REQ-TGV2-012 */
     @Test
     void correlatesOnlyEnumeratedStructuredValidationFieldsWithoutRejectedContent() {
         Logger logger = (Logger) LoggerFactory.getLogger("workflow.diagnostics");
