@@ -117,7 +117,7 @@ Java MUST 分离用例身份标签与执行业务内容的依据：`name`、`tit
 - **THEN** 当前测试点整批零接收；不得借用功能描述、待确认测试点或多个不连续来源拼成新的业务结论
 
 #### Scenario: 恢复旧身份标签误拒
-- **WHEN** 一个 V2 任务已原子发布事实、引文和反馈，全部未完成工作恰为 coverage status 为空且零写入的 `FUNCTIONAL_TESTCASE_DESIGN_V2`，其连续终态 attempt 均为 `business_validation_failed / TESTCASE_UNSUPPORTED_BUSINESS_DETAIL / $.testcases[n].name|title`、最新 attempt 与当前 work 诊断一致，且当前制品只是该失败任务的反馈投影
+- **WHEN** 一个 V2 任务已原子发布事实、引文和反馈，全部未完成工作恰为 coverage status 为空且零写入的 `FUNCTIONAL_TESTCASE_DESIGN_V2`；每个 work 的连续终态 attempt 只包含零个或多个更早的 `business_validation_failed / TESTCASE_EXPECTED_ORDER_INVALID / $.testcases[n].expected_results` 前缀，随后是一个或多个 `business_validation_failed / TESTCASE_UNSUPPORTED_BUSINESS_DETAIL / $.testcases[n].name|title` 后缀，最新 attempt 与当前 work 诊断一致，且当前制品只是该失败任务的反馈投影
 - **THEN** 显式恢复在同一事务校验任务、工作、attempt、制品唯一身份和完整零设计写入闭集后，只重排这些失败设计工作；任务外壳必须是“已有结果快照且无任务诊断”或“无结果快照且任务安全诊断与至少一个失败 work 最新诊断完全一致”之一；失败制品坐标保留为同任务待替换版本，但任务进入执行态后不可下载且不得作为当前成功投影，新终态制品只能通过既有原子发布替换；历史 attempt 与制品文件保留，已完成事实工作及发布账本保持不变，下一次执行不得重调事实 Skill
 
 #### Scenario: 身份恢复近似状态失败关闭

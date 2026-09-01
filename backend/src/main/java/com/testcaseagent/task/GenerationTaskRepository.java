@@ -1779,7 +1779,7 @@ public final class GenerationTaskRepository {
                     || !StructuredValidationFailure.Code.TESTCASE_UNSUPPORTED_BUSINESS_DETAIL.name()
                             .equals(workDiagnostic.get().code())
                     || !V2_IDENTITY_LABEL_PATH.matcher(workDiagnostic.get().path()).matches()
-                    || !hasOnlyIdentityLabelValidationAttempts(
+                    || !hasOnlyAuditedIdentityLabelValidationAttempts(
                             v2TechnicalRecoveryAttempts(work.id()), workDiagnostic.get())) {
                 return unavailableRetry("V2 身份标签失败历史不符合安全恢复条件");
             }
@@ -1834,22 +1834,35 @@ public final class GenerationTaskRepository {
                 StructuredRetryMutation.RECOVER_V2_IDENTITY_LABEL_REJECTION);
     }
 
-    private static boolean hasOnlyIdentityLabelValidationAttempts(
+    /**
+     * Accepts the exact historical validator succession: an older expected-results rejection prefix may be followed
+     * by the retired identity-label rejection, but the sequence cannot move back to the older rule or contain any
+     * third failure class. This preserves an audited recovery lineage without treating arbitrary business failures as
+     * retryable. [Req-ID]: REQ-TGV2-015
+     */
+    private static boolean hasOnlyAuditedIdentityLabelValidationAttempts(
             List<V2TechnicalRecoveryAttemptRow> attempts, StoredValidationDiagnostic workDiagnostic) {
         if (attempts.isEmpty()) return false;
         int expectedAttemptNumber = attempts.size();
         boolean latest = true;
+        boolean reachedExpectedResultsPrefix = false;
         for (V2TechnicalRecoveryAttemptRow attempt : attempts) {
             Optional<StoredValidationDiagnostic> diagnostic = strictStoredValidationDiagnostic(
                     attempt.validationErrorCode(), attempt.validationErrorPath(), attempt.validationErrorMessage());
             if (attempt.attemptNumber() != expectedAttemptNumber--
                     || !"FAILED".equals(attempt.status()) || attempt.completedAt() == null
                     || !"business_validation_failed".equals(attempt.failureType())
-                    || diagnostic.isEmpty()
-                    || !StructuredValidationFailure.Code.TESTCASE_UNSUPPORTED_BUSINESS_DETAIL.name()
+                    || diagnostic.isEmpty()) return false;
+            boolean identityLabel = StructuredValidationFailure.Code.TESTCASE_UNSUPPORTED_BUSINESS_DETAIL.name()
                             .equals(diagnostic.get().code())
-                    || !V2_IDENTITY_LABEL_PATH.matcher(diagnostic.get().path()).matches()
-                    || latest && !diagnostic.get().equals(workDiagnostic)) return false;
+                    && V2_IDENTITY_LABEL_PATH.matcher(diagnostic.get().path()).matches();
+            boolean expectedResults = StructuredValidationFailure.Code.TESTCASE_EXPECTED_ORDER_INVALID.name()
+                            .equals(diagnostic.get().code())
+                    && V2_EXPECTED_RESULTS_PATH.matcher(diagnostic.get().path()).matches();
+            if (latest && (!identityLabel || !diagnostic.get().equals(workDiagnostic))) return false;
+            if (reachedExpectedResultsPrefix && identityLabel) return false;
+            if (!identityLabel && !expectedResults) return false;
+            reachedExpectedResultsPrefix |= expectedResults;
             latest = false;
         }
         return true;

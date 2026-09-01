@@ -1111,6 +1111,35 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
         assertThat(taskRepository.structuredRetryEligibility("task-1").canRetry()).isTrue();
     }
 
+    /** [Req-ID]: REQ-TGV2-015 */
+    @Test
+    void identityLabelRecoveryAcceptsAuditedExpectedResultsPrefixBeforeLatestIdentityFailure() {
+        V2IdentityLabelRecoveryFixture fixture = v2IdentityLabelRecoveryFixture();
+        StructuredValidationFailure retiredRule = StructuredValidationFailure.of(
+                StructuredValidationFailure.Code.TESTCASE_EXPECTED_ORDER_INVALID,
+                "$.testcases[0].expected_results");
+        for (String designWork : fixture.designWorkIds()) {
+            jdbc.update("""
+                    UPDATE structured_generation_attempt SET attempt_number=2 WHERE work_item_id=?
+                    """, designWork);
+            jdbc.update("""
+                    INSERT INTO structured_generation_attempt
+                    (id, work_item_id, attempt_number, status, failure_type, created_at, completed_at,
+                     validation_error_code, validation_error_path, validation_error_message)
+                    VALUES (UUID(), ?, 1, 'FAILED', 'business_validation_failed',
+                            CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6), ?, ?, ?)
+                    """, designWork, retiredRule.code(), retiredRule.path(), retiredRule.storageMessage());
+        }
+
+        assertThat(taskRepository.structuredRetryEligibility("task-1").canRetry()).isTrue();
+        assertThat(taskRepository.retryFailedBatches("task-1")).isEqualTo(1);
+        assertThat(jdbc.queryForList("""
+                SELECT status FROM structured_generation_work_item
+                WHERE id IN (?, ?) ORDER BY id
+                """, String.class, fixture.designWorkIds().get(0), fixture.designWorkIds().get(1)))
+                .containsOnly("QUEUED");
+    }
+
     /** [Req-ID]: REQ-TGV2-014 */
     @Test
     void concurrentExpectedResultsRecoveriesHaveOneWinnerAndDoNotPrecreateAttempts() throws Exception {
@@ -1248,7 +1277,7 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
             "wrong-failure-type", "wrong-operation", "latest-diagnostic-mismatch", "work-coverage",
             "artifact-identity", "test-point", "generation-outcome",
             "test-case", "publication", "extra-unfinished", "wrong-design-identity", "v1-contract",
-            "task-diagnostic-mismatch", "result-diagnostic-conflict"})
+            "task-diagnostic-mismatch", "result-diagnostic-conflict", "mixed-validation-history"})
     void identityLabelRecoveryRejectsEveryNearStateWithoutMutation(String mutation) {
         V2IdentityLabelRecoveryFixture fixture = v2IdentityLabelRecoveryFixture();
         String designWork = fixture.designWorkIds().get(0);
@@ -1346,6 +1375,25 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
             }
             case "result-diagnostic-conflict" -> jdbc.update(
                     "UPDATE generation_task SET result_snapshot=JSON_OBJECT('terminal', true) WHERE id='task-1'");
+            case "mixed-validation-history" -> {
+                StructuredValidationFailure retiredRule = StructuredValidationFailure.of(
+                        StructuredValidationFailure.Code.TESTCASE_EXPECTED_ORDER_INVALID,
+                        "$.testcases[0].expected_results");
+                StructuredValidationFailure identity = StructuredValidationFailure.of(
+                        StructuredValidationFailure.Code.TESTCASE_UNSUPPORTED_BUSINESS_DETAIL,
+                        "$.testcases[0].name");
+                jdbc.update("UPDATE structured_generation_attempt SET attempt_number=3 WHERE work_item_id=?", designWork);
+                jdbc.update("""
+                        INSERT INTO structured_generation_attempt
+                        (id, work_item_id, attempt_number, status, failure_type, created_at, completed_at,
+                         validation_error_code, validation_error_path, validation_error_message)
+                        VALUES (UUID(), ?, 2, 'FAILED', 'business_validation_failed',
+                                CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6), ?, ?, ?),
+                               (UUID(), ?, 1, 'FAILED', 'business_validation_failed',
+                                CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6), ?, ?, ?)
+                        """, designWork, retiredRule.code(), retiredRule.path(), retiredRule.storageMessage(),
+                        designWork, identity.code(), identity.path(), identity.storageMessage());
+            }
             default -> throw new IllegalArgumentException("unknown mutation");
         }
         Map<String, Object> before = v2ExpectedResultsRecoveryFullSnapshot();
