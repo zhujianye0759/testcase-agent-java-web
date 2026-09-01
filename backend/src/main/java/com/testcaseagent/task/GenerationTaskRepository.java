@@ -1810,7 +1810,26 @@ public final class GenerationTaskRepository {
                 .anyMatch(row -> !snapshot.completeFactProjections().getOrDefault(row.id(), false))) {
             return unavailableRetry("V2 已完成事实窗口与发布账本不闭合");
         }
-        if (!isSafeV2IdentityLabelWorkGraph(snapshot, failedIds)) {
+        Set<String> supersededFallbackIds = new LinkedHashSet<>();
+        for (V2FactWorkRow row : snapshot.works()) {
+            if (!"FUNCTIONAL_TESTCASE_DESIGN_V2".equals(row.operationName())
+                    || !"SUPERSEDED".equals(row.status())) continue;
+            boolean exactFallback = "functional-testcase-design".equals(row.skillName())
+                    && nonBlank(row.functionKey()) && nonBlank(row.testPointKey())
+                    && V2GenerationPlanner.missingFormalFactPointKey(taskId, row.functionKey())
+                            .equals(row.testPointKey())
+                    && row.coverageStatus() == null && row.acceptedResultSha256() == null
+                    && row.validationErrorCode() == null && row.validationErrorPath() == null
+                    && row.validationErrorMessage() == null
+                    && !row.hasLease() && !row.runningAttempt()
+                    && !snapshot.allWorkOwnedBusinessIds().contains(row.id())
+                    && hasOnlyTerminalSupersededFallbackCapacityAttempts(v2TechnicalRecoveryAttempts(row.id()));
+            if (!exactFallback) {
+                return unavailableRetry("V2 已替代缺事实降级项不符合安全恢复条件");
+            }
+            supersededFallbackIds.add(row.id());
+        }
+        if (!isSafeV2IdentityLabelWorkGraph(snapshot, failedIds, supersededFallbackIds)) {
             return unavailableRetry("V2 身份标签失败工作图不符合安全恢复条件");
         }
         Set<String> affectedFunctions = unfinished.stream().map(RetryWorkRow::functionKey)
@@ -1822,11 +1841,13 @@ public final class GenerationTaskRepository {
                 taskId, affectedFunctions, suffix);
         Map<FunctionPointKey, V2GenerationPlanner.TestPointPlan> plans = buildV2TestPointPlans(
                 taskId, functions, facts);
+        Set<String> replayedDesignIds = new LinkedHashSet<>(failedIds);
+        replayedDesignIds.addAll(supersededFallbackIds);
         for (V2FactWorkRow work : snapshot.works()) {
-            if (!failedIds.contains(work.id())) continue;
+            if (!replayedDesignIds.contains(work.id())) continue;
             V2GenerationPlanner.TestPointPlan plan = plans.get(
                     new FunctionPointKey(work.functionKey(), work.testPointKey()));
-            if (plan == null || !work.identityKey().equals(plan.registration().identityKey())) {
+            if (plan == null || !matchesV2WorkRegistration(work, plan.registration())) {
                 return unavailableRetry("V2 身份标签失败工作身份无法从已发布事实重建");
             }
         }
@@ -1869,7 +1890,7 @@ public final class GenerationTaskRepository {
     }
 
     private static boolean isSafeV2IdentityLabelWorkGraph(
-            V2RecoverySnapshot snapshot, Set<String> failedIds) {
+            V2RecoverySnapshot snapshot, Set<String> failedIds, Set<String> supersededFallbackIds) {
         if (failedIds.isEmpty() || !snapshot.exactTaskFactProjection() || !snapshot.exactSplitLineage()
                 || !snapshot.exactFailedLeafEvidence()) return false;
         int completedFactWorks = 0;
@@ -1886,17 +1907,22 @@ public final class GenerationTaskRepository {
                     return false;
                 }
             } else if ("FUNCTIONAL_TESTCASE_DESIGN_V2".equals(row.operationName())) {
+                boolean failedLeaf = failedIds.contains(row.id()) && "FAILED".equals(row.status());
+                boolean supersededFallback = supersededFallbackIds.contains(row.id())
+                        && "SUPERSEDED".equals(row.status());
                 if (!"functional-testcase-design".equals(row.skillName())
-                        || !failedIds.contains(row.id()) || !"FAILED".equals(row.status())
-                        || row.acceptedResultSha256() != null
+                        || (!failedLeaf && !supersededFallback)
+                        || row.coverageStatus() != null || row.acceptedResultSha256() != null
                         || snapshot.allWorkOwnedBusinessIds().contains(row.id())) return false;
             } else {
                 return false;
             }
         }
+        Set<String> expectedDesignIds = new LinkedHashSet<>(failedIds);
+        expectedDesignIds.addAll(supersededFallbackIds);
         return completedFactWorks > 0 && snapshot.works().stream()
                 .filter(row -> "FUNCTIONAL_TESTCASE_DESIGN_V2".equals(row.operationName()))
-                .map(V2FactWorkRow::id).collect(java.util.stream.Collectors.toSet()).equals(failedIds);
+                .map(V2FactWorkRow::id).collect(java.util.stream.Collectors.toSet()).equals(expectedDesignIds);
     }
 
     /**
@@ -2025,6 +2051,44 @@ public final class GenerationTaskRepository {
                     || attempt.validationErrorMessage() != null) return false;
         }
         return true;
+    }
+
+    /**
+     * A superseded no-fact placeholder is historical lineage, not an active technical-recovery target. Only the
+     * capacity failure that caused the placeholder to be replaced is admissible; widening this to the general
+     * technical allowlist could retain an unrelated failed design work in the identity-label recovery graph.
+     * [Req-ID]: REQ-TGV2-015
+     */
+    private static boolean hasOnlyTerminalSupersededFallbackCapacityAttempts(
+            List<V2TechnicalRecoveryAttemptRow> attempts) {
+        if (attempts.isEmpty()) return false;
+        for (int index = 0; index < attempts.size(); index++) {
+            V2TechnicalRecoveryAttemptRow attempt = attempts.get(index);
+            if (attempt.attemptNumber() != attempts.size() - index || !"FAILED".equals(attempt.status())
+                    || attempt.completedAt() == null || !"request_too_large".equals(attempt.failureType())
+                    || attempt.validationErrorCode() != null || attempt.validationErrorPath() != null
+                    || attempt.validationErrorMessage() != null) return false;
+        }
+        return true;
+    }
+
+    /** Recovery accepts only the exact durable coordinates produced by the current deterministic V2 planner. */
+    private static boolean matchesV2WorkRegistration(V2FactWorkRow work,
+            StructuredGenerationAcceptanceStore.WorkRegistration registration) {
+        return work.identityKey().equals(registration.identityKey())
+                && work.skillName().equals(registration.skillName())
+                && work.operationName().equals(registration.operationName())
+                && Objects.equals(work.ordinalStart(), registration.ordinalStart())
+                && Objects.equals(work.ordinalEnd(), registration.ordinalEnd())
+                && Objects.equals(work.materialKey(), registration.materialKey())
+                && Objects.equals(work.materialDocumentId(), registration.materialDocumentId())
+                && Objects.equals(work.sourceLabel(), registration.sourceLabel())
+                && work.evidenceKeys().equals(registration.allowedEvidenceKeys())
+                && work.contextEvidenceKeys().equals(registration.contextEvidenceKeys())
+                && Objects.equals(work.functionKey(), registration.functionKey())
+                && Objects.equals(work.testPointKey(), registration.testPointKey())
+                && Objects.equals(work.parentWorkItemId(), registration.parentWorkItemId())
+                && work.splitDepth() == registration.splitDepth();
     }
 
     /**
@@ -2303,10 +2367,12 @@ public final class GenerationTaskRepository {
     private boolean isExactV2AtomicityWorkGraph(String taskId, List<RetryWorkRow> unfinished,
             List<V2FallbackWorkRow> fallbacks, boolean lockRows) {
         List<V2FactWorkRow> rows = jdbcTemplate.query("""
-                        SELECT work.id, work.parent_work_item_id, work.status, work.skill_name, work.operation_name,
+                        SELECT work.id, work.parent_work_item_id, work.status, work.coverage_status,
+                               work.skill_name, work.operation_name,
                                work.ordinal_start, work.ordinal_end, work.material_key, work.material_document_id,
                                work.source_label, work.identity_key, work.split_depth, work.function_key,
                                work.test_point_key, work.accepted_result_sha256,
+                               work.validation_error_code, work.validation_error_path, work.validation_error_message,
                                (work.lease_owner IS NOT NULL OR work.lease_expires_at IS NOT NULL) AS has_lease,
                                EXISTS (SELECT 1 FROM structured_generation_attempt running
                                    WHERE running.work_item_id=work.id AND running.status='RUNNING') AS running_attempt
@@ -2315,12 +2381,15 @@ public final class GenerationTaskRepository {
                         ORDER BY work.created_at, work.id%s
                         """.formatted(lockRows ? " FOR UPDATE" : ""),
                 (row, ignored) -> new V2FactWorkRow(row.getString("id"), row.getString("parent_work_item_id"),
-                        row.getString("status"), row.getString("skill_name"), row.getString("operation_name"),
+                        row.getString("status"), row.getString("coverage_status"),
+                        row.getString("skill_name"), row.getString("operation_name"),
                         nullableInteger(row, "ordinal_start"), nullableInteger(row, "ordinal_end"),
                         row.getString("material_key"), row.getString("material_document_id"),
                         row.getString("source_label"), List.of(), List.of(), row.getString("identity_key"),
                         row.getInt("split_depth"), row.getString("function_key"), row.getString("test_point_key"),
-                        row.getString("accepted_result_sha256"), row.getBoolean("has_lease"),
+                        row.getString("accepted_result_sha256"), row.getString("validation_error_code"),
+                        row.getString("validation_error_path"), row.getString("validation_error_message"),
+                        row.getBoolean("has_lease"),
                         row.getBoolean("running_attempt")), taskId);
         Map<String, V2FactWorkRow> byId = new LinkedHashMap<>();
         Map<String, List<V2FactWorkRow>> children = new LinkedHashMap<>();
@@ -2397,10 +2466,12 @@ public final class GenerationTaskRepository {
             String taskId, Set<String> affectedFunctions, boolean lockRows) {
         String suffix = lockRows ? " FOR UPDATE" : "";
         List<V2FactWorkRow> works = jdbcTemplate.query("""
-                        SELECT work.id, work.parent_work_item_id, work.status, work.skill_name, work.operation_name,
+                        SELECT work.id, work.parent_work_item_id, work.status, work.coverage_status,
+                               work.skill_name, work.operation_name,
                                work.ordinal_start, work.ordinal_end, work.material_key, work.material_document_id,
                                work.source_label, work.identity_key, work.split_depth, work.function_key, work.test_point_key,
-                               work.accepted_result_sha256,
+                                work.accepted_result_sha256,
+                                work.validation_error_code, work.validation_error_path, work.validation_error_message,
                                (work.lease_owner IS NOT NULL OR work.lease_expires_at IS NOT NULL) AS has_lease,
                                EXISTS (SELECT 1 FROM structured_generation_attempt running
                                    WHERE running.work_item_id=work.id AND running.status='RUNNING') AS running_attempt
@@ -2408,12 +2479,15 @@ public final class GenerationTaskRepository {
                         WHERE work.task_id=? ORDER BY work.created_at, work.id%s
                         """.formatted(suffix),
                 (row, ignored) -> new V2FactWorkRow(row.getString("id"), row.getString("parent_work_item_id"),
-                        row.getString("status"), row.getString("skill_name"), row.getString("operation_name"),
+                        row.getString("status"), row.getString("coverage_status"),
+                        row.getString("skill_name"), row.getString("operation_name"),
                         nullableInteger(row, "ordinal_start"), nullableInteger(row, "ordinal_end"),
                         row.getString("material_key"), row.getString("material_document_id"),
                         row.getString("source_label"), List.of(), List.of(), row.getString("identity_key"),
                         row.getInt("split_depth"), row.getString("function_key"), row.getString("test_point_key"),
-                        row.getString("accepted_result_sha256"), row.getBoolean("has_lease"),
+                        row.getString("accepted_result_sha256"), row.getString("validation_error_code"),
+                        row.getString("validation_error_path"), row.getString("validation_error_message"),
+                        row.getBoolean("has_lease"),
                         row.getBoolean("running_attempt")), taskId);
         Map<String, V2ApprovedFunctionRow> functions = new LinkedHashMap<>();
         jdbcTemplate.query("""
@@ -2599,11 +2673,12 @@ public final class GenerationTaskRepository {
         if (evidence.size() != works.size()) throw new InvalidV2RecoverySnapshotException();
         return works.stream().map(work -> {
             V2EvidenceWindow window = evidence.get(work.id());
-            return new V2FactWorkRow(work.id(), work.parentWorkItemId(), work.status(), work.skillName(),
+            return new V2FactWorkRow(work.id(), work.parentWorkItemId(), work.status(), work.coverageStatus(), work.skillName(),
                     work.operationName(), work.ordinalStart(), work.ordinalEnd(), work.materialKey(),
                     work.materialDocumentId(), work.sourceLabel(), window.evidenceKeys(), window.contextEvidenceKeys(),
                     work.identityKey(), work.splitDepth(), work.functionKey(), work.testPointKey(),
-                    work.acceptedResultSha256(), work.hasLease(), work.runningAttempt());
+                    work.acceptedResultSha256(), work.validationErrorCode(), work.validationErrorPath(),
+                    work.validationErrorMessage(), work.hasLease(), work.runningAttempt());
         }).toList();
     }
 
@@ -3557,10 +3632,10 @@ public final class GenerationTaskRepository {
     }
 
     private static V2FactWorkRow fallbackWork(V2FallbackWorkRow fallback) {
-        return new V2FactWorkRow(fallback.id(), null, fallback.status(), "functional-testcase-design",
+        return new V2FactWorkRow(fallback.id(), null, fallback.status(), null, "functional-testcase-design",
                 "FUNCTIONAL_TESTCASE_DESIGN_V2", null, null, null, null, null, List.of(), List.of(), null, 0,
                 fallback.functionKey(), fallback.testPointKey(), fallback.acceptedResultSha256(),
-                fallback.hasLease(), fallback.hasRunningAttempt());
+                null, null, null, fallback.hasLease(), fallback.hasRunningAttempt());
     }
 
     private boolean hasExactMissingFactFallbackProjection(
@@ -7086,11 +7161,12 @@ public final class GenerationTaskRepository {
             String validatedResultReplayJson) { }
 
     private record V2FactWorkRow(
-            String id, String parentWorkItemId, String status, String skillName, String operationName,
+            String id, String parentWorkItemId, String status, String coverageStatus, String skillName, String operationName,
             Integer ordinalStart, Integer ordinalEnd, String materialKey, String materialDocumentId,
             String sourceLabel, List<String> evidenceKeys, List<String> contextEvidenceKeys, String identityKey,
             int splitDepth, String functionKey, String testPointKey,
-            String acceptedResultSha256, boolean hasLease, boolean runningAttempt) { }
+            String acceptedResultSha256, String validationErrorCode, String validationErrorPath,
+            String validationErrorMessage, boolean hasLease, boolean runningAttempt) { }
 
     private record V2TestcaseProjectionHeader(
             String functionName, String testPointType, String basis, String description,

@@ -562,6 +562,34 @@ class FunctionalTestcaseV2ValidatorTest {
 
     /** [Req-ID]: REQ-TGV2-015 */
     @Test
+    void rejectsDeeplyWrappedUnsupportedCoreWithoutCartesianBoundaryScan() {
+        List<FunctionalTestcaseDesignV2Input.RequirementFact> facts = List.of(
+                new FunctionalTestcaseDesignV2Input.RequirementFact("fact-0", FactType.BUSINESS_RULE,
+                        "fact0", List.of(new StructuredSourceQuoteV2("unit-0", "fact0quote"))));
+        var supportedInput = new FunctionalTestcaseDesignV2Input("function-1", "批次处理", "业务/批次处理", "",
+                new FunctionalTestcaseDesignV2Input.TestPoint("point-1",
+                        FunctionalTestcaseDesignV2Input.TestPointType.NORMAL_BEHAVIOR,
+                        FunctionalTestcaseDesignV2Input.Basis.FORMAL_REQUIREMENT, "提交批次", List.of()),
+                facts);
+        String unsupportedName = "验证".repeat(1_200) + "x".repeat(100) + "用例".repeat(1_200);
+        var base = testcaseWithStep("fact0", "fact0", "实际结果符合预期");
+        var candidate = new FunctionalTestcaseDesignV2Result.Testcase(unsupportedName, "批次处理", base.priority(),
+                base.preconditions(), base.initialization(), base.inputs(), base.steps(), base.expectedResults(),
+                base.evaluationCriteria(), base.resultEvaluationCriteria(), base.terminationConditions(),
+                base.resultCollection(), facts.stream().map(FunctionalTestcaseDesignV2Input.RequirementFact::factKey).toList(),
+                facts.stream().flatMap(fact -> fact.sourceQuotes().stream()).map(StructuredSourceQuoteV2::evidenceKey).toList(),
+                base.caseStatus(), base.missingInformation());
+
+        // This is a runaway-complexity guard, not a product response-time objective.
+        assertTimeoutPreemptively(Duration.ofSeconds(2), () -> {
+            for (int repeat = 0; repeat < 100; repeat++) {
+                assertUnsupportedCase(supportedInput, candidate, "$.testcases[0].name");
+            }
+        });
+    }
+
+    /** [Req-ID]: REQ-TGV2-015 */
+    @Test
     void rejectsLongUnwrappedIdentityWithoutScanningUnreachableBoundariesForEveryFact() {
         String unsupportedName = "x".repeat(15_000);
         List<FunctionalTestcaseDesignV2Input.RequirementFact> facts = new java.util.ArrayList<>();

@@ -1140,6 +1140,73 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
                 .containsOnly("QUEUED");
     }
 
+    /** [Req-ID]: REQ-TGV2-015 */
+    @Test
+    void identityLabelRecoveryPreservesAuditedSupersededNoFactFallback() {
+        V2IdentityLabelRecoveryFixture fixture = v2IdentityLabelRecoveryFixture();
+        String fallbackWorkId = addAuditedSupersededNoFactFallback();
+        List<Map<String, Object>> fallbackBefore = jdbc.queryForList("""
+                SELECT status, accepted_result_sha256, validation_error_code, validation_error_path,
+                       lease_owner, lease_expires_at
+                FROM structured_generation_work_item WHERE id=?
+                """, fallbackWorkId);
+
+        var eligibility = taskRepository.structuredRetryEligibility("task-1");
+        assertThat(eligibility.canRetry()).as(eligibility.unavailableReason()).isTrue();
+        assertThat(taskRepository.retryFailedBatches("task-1")).isEqualTo(1);
+        assertThat(jdbc.queryForList("""
+                SELECT status FROM structured_generation_work_item
+                WHERE id IN (?, ?) ORDER BY id
+                """, String.class, fixture.designWorkIds().get(0), fixture.designWorkIds().get(1)))
+                .containsOnly("QUEUED");
+        assertThat(jdbc.queryForList("""
+                SELECT status, accepted_result_sha256, validation_error_code, validation_error_path,
+                       lease_owner, lease_expires_at
+                FROM structured_generation_work_item WHERE id=?
+                """, fallbackWorkId)).isEqualTo(fallbackBefore);
+    }
+
+    /** [Req-ID]: REQ-TGV2-015 */
+    @ParameterizedTest
+    @ValueSource(strings = {"coverage", "work-diagnostic", "attempt-history", "registration-lineage"})
+    void identityLabelRecoveryRejectsInexactSupersededFallbackState(String mutation) {
+        v2IdentityLabelRecoveryFixture();
+        String fallbackWorkId = addAuditedSupersededNoFactFallback();
+        switch (mutation) {
+            case "coverage" -> jdbc.update(
+                    "UPDATE structured_generation_work_item SET coverage_status='NOT_APPLICABLE' WHERE id=?",
+                    fallbackWorkId);
+            case "work-diagnostic" -> jdbc.update("""
+                    UPDATE structured_generation_work_item
+                    SET validation_error_code='TESTCASE_UNSUPPORTED_BUSINESS_DETAIL',
+                        validation_error_path='$.testcases[0].name', validation_error_message='safe diagnostic'
+                    WHERE id=?
+                    """, fallbackWorkId);
+            case "attempt-history" -> jdbc.update("""
+                    UPDATE structured_generation_attempt SET failure_type='model_execution_failed'
+                    WHERE work_item_id=?
+                    """, fallbackWorkId);
+            case "registration-lineage" -> {
+                String completedFactWork = jdbc.queryForObject("""
+                        SELECT id FROM structured_generation_work_item
+                        WHERE task_id='task-1' AND operation_name='REQUIREMENT_FACT_EXTRACTION_V2'
+                        ORDER BY created_at, id LIMIT 1
+                        """, String.class);
+                jdbc.update("""
+                        UPDATE structured_generation_work_item
+                        SET parent_work_item_id=?, split_depth=1
+                        WHERE id=?
+                        """, completedFactWork, fallbackWorkId);
+            }
+            default -> throw new IllegalArgumentException("unknown mutation");
+        }
+        Map<String, Object> before = v2ExpectedResultsRecoveryFullSnapshot();
+
+        assertThat(taskRepository.structuredRetryEligibility("task-1").canRetry()).isFalse();
+        assertThat(taskRepository.retryFailedBatches("task-1")).isZero();
+        assertThat(v2ExpectedResultsRecoveryFullSnapshot()).isEqualTo(before);
+    }
+
     /** [Req-ID]: REQ-TGV2-014 */
     @Test
     void concurrentExpectedResultsRecoveriesHaveOneWinnerAndDoNotPrecreateAttempts() throws Exception {
@@ -7445,6 +7512,31 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
                 WHERE id='task-1'
                 """, "e".repeat(64), taskFailure.code(), taskFailure.path(), taskFailure.storageMessage());
         return new V2IdentityLabelRecoveryFixture(factClaim.workItemId(), List.copyOf(designWorkIds));
+    }
+
+    /** Adds the exact zero-write no-fact placeholder lineage retained by an earlier capacity failure. */
+    private String addAuditedSupersededNoFactFallback() {
+        V2GenerationPlanner planner = new V2GenerationPlanner();
+        ApprovedFunctionScope.ApprovedFunction function = new ApprovedFunctionScope.ApprovedFunction(
+                "function-1", "订单提交", "业务/订单提交", "");
+        String fallbackWorkId = store.registerMissingFactFallback(
+                planner.missingFormalFactTestPoint("task-1", function));
+        StructuredGenerationAcceptanceStore.WorkClaim fallbackClaim = store.claimRegistered(
+                "task-1", fallbackWorkId, "historical-fallback-worker").orElseThrow();
+        store.fail(fallbackClaim, "request_too_large");
+        assertThat(jdbc.update("""
+                UPDATE structured_generation_work_item SET status='SUPERSEDED'
+                WHERE id=? AND status='FAILED' AND accepted_result_sha256 IS NULL
+                """, fallbackWorkId)).isEqualTo(1);
+        StructuredValidationFailure latestTaskFailure = StructuredValidationFailure.of(
+                StructuredValidationFailure.Code.TESTCASE_UNSUPPORTED_BUSINESS_DETAIL,
+                "$.testcases[0].name");
+        jdbc.update("""
+                UPDATE generation_task
+                SET validation_error_code=?, validation_error_path=?, validation_error_message=?
+                WHERE id='task-1'
+                """, latestTaskFailure.code(), latestTaskFailure.path(), latestTaskFailure.storageMessage());
+        return fallbackWorkId;
     }
 
     private Map<String, Object> v2ExpectedResultsPublishedFactSnapshot(V2ExpectedResultsRecoveryFixture fixture) {

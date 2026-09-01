@@ -278,10 +278,12 @@ public final class FunctionalTestcaseV2Validator {
         List<String> identitySupportSources = java.util.stream.Stream.concat(
                         factSupportSources.stream(), atoms.stream().map(IdentityAtom::text))
                 .distinct().toList();
-        requireSupportedSpecificDetails(normalized, path, identitySupportSources);
+        // Reject labels outside the approved identity before scanning long text for protected details. Both checks
+        // report the same fail-closed code/path, while this order prevents unsupported input from amplifying regex work.
         if (!isSupportedIdentityText(normalized, atoms)) {
             throw failure(StructuredValidationFailure.Code.TESTCASE_UNSUPPORTED_BUSINESS_DETAIL, path);
         }
+        requireSupportedSpecificDetails(normalized, path, identitySupportSources);
     }
 
     /** Matches reachable wrapper boundaries without materializing their left/right cross-product as strings. */
@@ -419,6 +421,11 @@ public final class FunctionalTestcaseV2Validator {
                 .map(IdentityAtom::text).distinct().toList();
         Set<String> semantics = atoms.stream().filter(atom -> atom.kind() == IdentityAtomKind.SEMANTIC)
                 .map(IdentityAtom::text).collect(java.util.stream.Collectors.toSet());
+        if (semantics.isEmpty()) return false;
+        int maximumCompositionLength = scopes.stream().mapToInt(String::length).sum()
+                + semantics.stream().mapToInt(String::length).max().orElse(0);
+        // No legal composition can fill a longer reachable slice. Reject it once instead of checking every fact.
+        if (!boundaries.hasNonEmptySliceAtMost(maximumCompositionLength)) return false;
         List<ScopeComposition> compositions = new java.util.ArrayList<>();
         addScopeCompositions(scopes, 0, "", compositions);
         for (ScopeComposition prefix : compositions) {
@@ -619,6 +626,15 @@ public final class FunctionalTestcaseV2Validator {
         boolean hasEmptySlice() {
             for (int boundary : reachableStarts) {
                 if (ends[boundary]) return true;
+            }
+            return false;
+        }
+
+        boolean hasNonEmptySliceAtMost(int maximumLength) {
+            int endIndex = 0;
+            for (int start : reachableStarts) {
+                while (endIndex < reachableEnds.length && reachableEnds[endIndex] <= start) endIndex++;
+                if (endIndex < reachableEnds.length && reachableEnds[endIndex] - start <= maximumLength) return true;
             }
             return false;
         }

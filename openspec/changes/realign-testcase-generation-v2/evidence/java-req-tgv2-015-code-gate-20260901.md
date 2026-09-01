@@ -16,13 +16,16 @@
 - 最终标准复审还发现 exact composition 会为每条语义来源遍历标签的全部字符位置，即使包装边界极稀疏。新增 15,000 字符、100 条事实、连续 40 次公共校验的资源边界，旧实现于 500ms 超时且堆栈停在 `hasReachableIdentityComposition`；边界对象改为只遍历实际可达起止索引后 GREEN。
 - 首次部署的数据库全等门禁证明线上旧任务使用“`result_snapshot` 为空且 task 保存安全 `name` 误拒诊断”的历史终态外壳，而原测试夹具只覆盖“有快照、无 task 诊断”，因此 `canRetry` 仍为 false。新增真实外壳 RED 后，恢复门禁仅增加两种精确历史外壳的兼容：task 安全诊断必须与至少一个失败 work 的最新诊断完全一致；快照和诊断混合、部分诊断或不一致仍失败关闭。实现复审又发现旧快照用例只验证资格，没有执行 mutation；端到端测试随即 RED，证明 MySQL JSON 列与字符串参数的普通等值谓词会更新 0 行。最终 SQL 使用 `CAST(? AS JSON)` 做类型明确的原快照条件更新后 GREEN，旧 attempt、制品坐标和已发布事实仍原样保留。
 - 第二次 live 全等门禁进一步证明每个失败设计 work 的历史为“旧 `expected_results` 等值规则误拒 + 新身份标签误拒”，当前实现把更早且已审计的旧规则历史误当成任意业务失败而拒绝。线上只读状态构成真实 RED；最终序列校验只允许零个或多个连续的旧规则误拒前缀，随后一个或多个连续的身份标签误拒后缀，最新诊断仍须与 work/task 一致。交错、倒序、第三类错误或非终态 attempt 的反例继续失败关闭。
+- 第三次 live 只读门禁确认历史工作图还保留一个 `SUPERSEDED` 缺事实占位项。最终通用门禁只允许规划器能够确定性重建、coverage/诊断/accepted hash/租约/业务行均为空，且全部历史 attempt 都是连续终态零写入 `request_too_large` 的占位项；通用技术失败白名单不再复用。恢复 mutation 仍只重排失败设计 work，占位项及其历史 attempt 原样保留。
+- 规格复审随后指出，仅检查占位项稳定身份和零写入仍可能误放父项、拆分深度或材料坐标漂移的近似记录。新增 `registration-lineage` 真实 MySQL 反例先证明旧门禁会接受错误父项/拆分层级，再逐项比较规划器登记的 identity、Skill/operation、ordinal、材料/文档/来源、evidence/context、功能/测试点、父项和拆分深度；任一不一致均失败关闭。
+- 为避免身份标签验证在畸形长输入上出现明显 CPU 放大，验证器先用最大可组成长度排除不可达切片，再以单调双指针检查是否存在可能长度的可达区间。新增约 14.5 KiB 的通用畸形标签防失控测试，100 次公共验证须在宽松 2 秒保护窗内结束；该保护窗只用于发现复杂度回退，不是产品响应时间指标，也不继续扩展为性能基准。
 - 保留明确拒绝对照：跨功能、跨测试点、跨事实拼接、待确认测试点支撑正式标签、纯通用名称、角色/环境/阈值/状态/错误码臆造、部分业务写入和近似恢复状态。
 
 ## 测试与静态检查
 
-- validator 聚焦：35/35 通过。
-- REQ-TGV2-015 相关测试：`StructuredGenerationAcceptanceStoreIntegrationTest` 455、`V2StructuredAllGenerationCoordinatorTest` 8、`FunctionalTestcaseV2ValidatorTest` 35，共 498/498 通过。
-- 完整后端：1111/1111 通过，失败 0、错误 0、跳过 0；最终 Maven `BUILD SUCCESS`（2026-09-01 11:40:47+08，06:11）。
+- validator 聚焦：36/36 通过。
+- REQ-TGV2-015 相关测试：`StructuredGenerationAcceptanceStoreIntegrationTest` 460、`V2StructuredAllGenerationCoordinatorTest` 8、`FunctionalTestcaseV2ValidatorTest` 36，共 504/504 通过。
+- 完整后端：1117/1117 通过，失败 0、错误 0、跳过 0；最终 Maven `BUILD SUCCESS`（2026-09-01 13:09+08）。
 - 前端：Vitest 58/58 通过；TypeScript 类型检查、ESLint、Vite 生产构建均通过。本轮没有前端代码变更。
 - `openspec validate realign-testcase-generation-v2 --strict`：通过。
 - `git diff --check`：退出码 0，仅有 Git 的 LF/CRLF 工作副本提示。
@@ -38,7 +41,7 @@
 
 ## 双轴复审
 
-- 规格/领域轴：P0=0、P1=0、P2=0、P3=0；确认身份依据措辞、单来源连续短语、正式/待确认分离、真实 MySQL 恢复边界和通用适应性均与 `REQ-TGV2-015` 一致。
+- 规格/领域轴：P0=0、P1=0、P2=0、P3=1；生产实现、规格和恢复失败关闭逻辑无缺口，唯一 P3 是固定墙钟测试在不同机器上的区分余量仍可更强。该测试已收敛为宽松防明显失控保护，不作为产品 SLA，也不继续扩大性能工程范围。
 - 标准/实现轴：首轮发现 terminal slice CPU P1，次轮发现不可达边界 CPU P2，均已按上述 TDD 修复；最终复审 P0=0、P1=0、P2=0、P3=0。
 
 ## 部署与 live 门禁
