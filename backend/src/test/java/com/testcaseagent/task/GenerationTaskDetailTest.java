@@ -96,6 +96,7 @@ class GenerationTaskDetailTest {
         jdbcTemplate.update("DELETE FROM v2_testability_feedback");
         jdbcTemplate.update("DELETE FROM v2_requirement_fact_quote");
         jdbcTemplate.update("DELETE FROM v2_requirement_fact");
+        jdbcTemplate.update("DELETE FROM v2_approved_test_point");
         jdbcTemplate.update("DELETE FROM v2_approved_function");
         jdbcTemplate.update("DELETE FROM structured_reference_binding");
         jdbcTemplate.update("DELETE FROM structured_function_outcome_candidate");

@@ -87,7 +87,44 @@ describe('generation task form', () => {
           path: '订单/提交',
           description: '',
         }],
+        testPoints: [],
       },
+    }))
+  })
+
+  // [Req-ID]: REQ-TGV2-016
+  it('submits a reviewed pending test point without showing internal enum values', async () => {
+    const createTask = vi.fn().mockResolvedValue({ id: 'task-123' })
+    const { wrapper } = await mountPage({ createTask })
+
+    await wrapper.get('[data-testid="add-approved-test-point"]').trigger('click')
+    await wrapper.get('input[name="approvedTestPointKey-0"]').setValue('point-order-limit')
+    await wrapper.get('select[name="approvedTestPointFunction-0"]').setValue('function-fixture')
+    await wrapper.get('select[name="approvedTestPointType-0"]').setValue('BOUNDARY_VALUE')
+    await wrapper.get('textarea[name="approvedTestPointDescription-0"]').setValue('验证订单金额边界')
+    await wrapper.get('textarea[name="approvedTestPointMissingInformation-0"]')
+      .setValue('最大金额尚未确认\n币种范围尚未确认')
+
+    expect(wrapper.text()).toContain('待确认测试点')
+    expect(wrapper.text()).toContain('边界值')
+    expect(wrapper.text()).not.toContain('BOUNDARY_VALUE')
+    expect(wrapper.text()).not.toContain('GENERAL_EXPERIENCE')
+    expect(wrapper.text()).not.toContain('PENDING_CONFIRMATION')
+
+    await wrapper.get('form').trigger('submit.prevent')
+
+    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
+      approvedFunctionScope: expect.objectContaining({
+        testPoints: [{
+          testPointKey: 'point-order-limit',
+          functionKey: 'function-fixture',
+          type: 'BOUNDARY_VALUE',
+          source: 'GENERAL_EXPERIENCE',
+          status: 'PENDING_CONFIRMATION',
+          description: '验证订单金额边界',
+          missingInformation: ['最大金额尚未确认', '币种范围尚未确认'],
+        }],
+      }),
     }))
   })
 

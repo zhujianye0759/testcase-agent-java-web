@@ -75,6 +75,7 @@ class MaterialInventoryPersistenceIntegrationTest {
         jdbcTemplate.update("DELETE FROM v2_work_publication");
         jdbcTemplate.update("DELETE FROM v2_requirement_fact");
         jdbcTemplate.update("DELETE FROM v2_testability_feedback");
+        jdbcTemplate.update("DELETE FROM v2_approved_test_point");
         jdbcTemplate.update("DELETE FROM v2_approved_function");
         jdbcTemplate.update("DELETE FROM feature_review_conclusion_candidate");
         jdbcTemplate.update("DELETE FROM feature_review_conclusion");

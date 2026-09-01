@@ -9,6 +9,25 @@ import {
   type TaskCreated,
 } from '../api/taskApi'
 
+type ApprovedTestPointPayload = NonNullable<
+  CreateTaskPayload['approvedFunctionScope']['testPoints']
+>[number]
+
+type ApprovedTestPointDraft = Pick<
+  ApprovedTestPointPayload,
+  'testPointKey' | 'functionKey' | 'type' | 'description'
+> & { missingInformationText: string }
+
+const approvedTestPointTypes = [
+  { value: 'NORMAL_BEHAVIOR', label: '正常流程' },
+  { value: 'INPUT_VALIDATION', label: '输入校验' },
+  { value: 'BOUNDARY_VALUE', label: '边界值' },
+  { value: 'PERMISSION', label: '权限条件' },
+  { value: 'STATE_TRANSITION', label: '状态变化' },
+  { value: 'BUSINESS_EXCEPTION', label: '业务异常' },
+  { value: 'DEPENDENCY_FAILURE', label: '依赖故障' },
+] as const satisfies ReadonlyArray<{ value: ApprovedTestPointPayload['type']; label: string }>
+
 const props = withDefaults(defineProps<{
   createTask?: (payload: CreateTaskPayload) => Promise<TaskCreated>
   loadTaskOptions?: (refresh?: boolean) => Promise<ScopeCatalog>
@@ -36,6 +55,7 @@ const form = reactive({
   prompt: '',
   approvedScopeVersion: '',
   approvedFunctions: [{ functionKey: '', name: '', path: '', description: '' }],
+  approvedTestPoints: [] as ApprovedTestPointDraft[],
 })
 
 const knowledgeBases = computed(() => scopeCatalog.value.knowledgeBases)
@@ -65,6 +85,13 @@ const hasCatalog = computed(() => knowledgeBases.value.length > 0)
 const approvedScopeComplete = computed(() => form.approvedScopeVersion.trim().length > 0
   && form.approvedFunctions.length > 0
   && form.approvedFunctions.every(item => item.functionKey.trim() && item.name.trim() && item.path.trim())
+  && form.approvedTestPoints.every(item => {
+    const missingInformation = parseMissingInformation(item.missingInformationText)
+    return item.testPointKey.trim() && item.functionKey.trim() && item.type && item.description.trim()
+      && form.approvedFunctions.some(approved => approved.functionKey.trim() === item.functionKey.trim())
+      && missingInformation.length > 0 && missingInformation.length <= 100
+      && new Set(missingInformation).size === missingInformation.length
+  })
   && (form.taskMode !== 'FEATURE' || form.approvedFunctions.length === 1))
 const canSubmit = computed(() => !submitting.value && !loadingOptions.value
   && form.scopeSelectionIds.length > 0 && approvedScopeComplete.value)
@@ -122,6 +149,25 @@ function removeApprovedFunction(index: number) {
   if (form.approvedFunctions.length > 1) form.approvedFunctions.splice(index, 1)
 }
 
+function addApprovedTestPoint() {
+  form.approvedTestPoints.push({
+    testPointKey: '',
+    functionKey: '',
+    type: 'NORMAL_BEHAVIOR',
+    description: '',
+    missingInformationText: '',
+  })
+}
+
+function removeApprovedTestPoint(index: number) {
+  form.approvedTestPoints.splice(index, 1)
+}
+
+/** Each non-empty line remains a separately reviewable gap in the immutable admission snapshot. */
+function parseMissingInformation(value: string): string[] {
+  return value.split(/\r?\n/u).map(item => item.trim()).filter(Boolean)
+}
+
 async function submitTask() {
   if (!canSubmit.value) return
   if (form.taskMode === 'FEATURE' && !form.featureDescription.trim()) {
@@ -161,6 +207,15 @@ async function submitTask() {
           path: item.path.trim(),
           description: item.description.trim(),
         })),
+        testPoints: form.approvedTestPoints.map(item => ({
+          testPointKey: item.testPointKey.trim(),
+          functionKey: item.functionKey.trim(),
+          type: item.type,
+          source: 'GENERAL_EXPERIENCE',
+          status: 'PENDING_CONFIRMATION',
+          description: item.description.trim(),
+          missingInformation: parseMissingInformation(item.missingInformationText),
+        })),
       },
     })
     await router.push({ name: 'task-detail', params: { taskId: task.id } })
@@ -175,6 +230,7 @@ async function submitTask() {
 </script>
 
 <template>
+  <!-- [Req-ID]: REQ-TGV2-016 -->
   <!-- [Req-ID]: REQ-WEB-001, REQ-WEB-006, REQ-WEB-007, REQ-WEB-009, REQ-WEB-010, REQ-FSC-006 -->
   <!-- [Req-ID]: REQ-UIX-001, REQ-UIX-003, REQ-UIX-006, REQ-UIX-007, REQ-UIX-009 -->
   <section
@@ -468,6 +524,96 @@ async function submitTask() {
         >
           添加已审核功能
         </button>
+        <section class="task-form__approved-test-points">
+          <h3>待确认测试点（可选）</h3>
+          <p class="task-form__help">
+            可录入测试准入阶段已识别、但仍缺少正式依据的测试点。系统会生成待确认结果；信息不足时会明确说明暂时无法生成，且都不计入正式覆盖。
+          </p>
+          <div
+            v-for="(testPoint, index) in form.approvedTestPoints"
+            :key="index"
+            class="task-form__approved-test-point"
+            data-testid="approved-test-point"
+          >
+            <label>
+              测试点标识（由准入审核结果提供）
+              <input
+                v-model="testPoint.testPointKey"
+                :name="`approvedTestPointKey-${index}`"
+                required
+              >
+            </label>
+            <label>
+              所属功能
+              <select
+                v-model="testPoint.functionKey"
+                :name="`approvedTestPointFunction-${index}`"
+                required
+              >
+                <option
+                  value=""
+                  disabled
+                >请选择已审核功能</option>
+                <option
+                  v-for="approvedFunction in form.approvedFunctions"
+                  :key="approvedFunction.functionKey"
+                  :value="approvedFunction.functionKey"
+                  :disabled="!approvedFunction.functionKey.trim()"
+                >
+                  {{ approvedFunction.name.trim() || '未命名功能' }} · {{ approvedFunction.path.trim() || '路径待填写' }}
+                </option>
+              </select>
+            </label>
+            <label>
+              测试点类型
+              <select
+                v-model="testPoint.type"
+                :name="`approvedTestPointType-${index}`"
+                required
+              >
+                <option
+                  v-for="option in approvedTestPointTypes"
+                  :key="option.value"
+                  :value="option.value"
+                >
+                  {{ option.label }}
+                </option>
+              </select>
+            </label>
+            <label>
+              测试点说明
+              <textarea
+                v-model="testPoint.description"
+                :name="`approvedTestPointDescription-${index}`"
+                required
+              />
+            </label>
+            <label class="task-form__wide">
+              待补充信息（每行一项）
+              <textarea
+                v-model="testPoint.missingInformationText"
+                :name="`approvedTestPointMissingInformation-${index}`"
+                required
+              />
+            </label>
+            <button
+              type="button"
+              class="task-form__secondary-action"
+              :aria-label="`移除第 ${index + 1} 个待确认测试点`"
+              @click="removeApprovedTestPoint(index)"
+            >
+              移除此测试点
+            </button>
+          </div>
+          <button
+            type="button"
+            class="task-form__secondary-action"
+            data-testid="add-approved-test-point"
+            @click="addApprovedTestPoint"
+          >
+            添加待确认测试点
+          </button>
+        </section>
       </fieldset>
 
       <!-- Execution rail: strategy, notes, and launch actions grouped for the two-column console layout. -->

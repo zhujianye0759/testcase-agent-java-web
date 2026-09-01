@@ -8,7 +8,7 @@ import java.util.Objects;
 /**
  * Browser-safe task creation command containing opaque server-authorized material selections.
  *
- * [Req-ID]: REQ-KAG-006, REQ-SCP-004, REQ-CAT-004
+ * [Req-ID]: REQ-KAG-006, REQ-SCP-004, REQ-CAT-004, REQ-TGV2-016
  */
 public record CreateGenerationTaskCommand(
         GenerationTaskMode taskMode,

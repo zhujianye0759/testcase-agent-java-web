@@ -337,6 +337,26 @@ class ApplicationDatabaseMigrationTest {
                         "uq_generation_task_artifact_id", "uq_generation_task_artifact_path_sha256");
     }
 
+    /** [Req-ID]: REQ-TGV2-016 */
+    @Test
+    void addsReviewedPendingTestPointsWithoutRewritingEarlierV2Tables(
+            @Autowired JdbcTemplate jdbcTemplate) {
+        assertThat(jdbcTemplate.queryForMap("""
+                SELECT version, script FROM flyway_schema_history
+                WHERE script = 'V25__persist_approved_test_points.sql'
+                """))
+                .containsEntry("version", "25")
+                .containsEntry("script", "V25__persist_approved_test_points.sql");
+        assertThat(tableNames(jdbcTemplate)).contains("v2_approved_test_point");
+        assertThat(columnNames(jdbcTemplate, "v2_approved_test_point")).containsExactlyInAnyOrder(
+                "task_id", "test_point_key", "stable_sequence", "scope_version", "function_key",
+                "test_point_type", "source_type", "review_status", "description_text",
+                "missing_information_json");
+        assertThat(uniqueIndexNames(jdbcTemplate)).contains("uq_v2_approved_test_point_sequence");
+        assertThat(foreignKeyNames(jdbcTemplate)).contains(
+                "fk_v2_approved_test_point_function", "fk_v2_approved_test_point_task");
+    }
+
     /** [Req-ID]: REQ-STG-001 */
     @Test
     void productionContextRequiresTheRealStructuredAllCoordinator(

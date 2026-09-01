@@ -24,9 +24,11 @@ import com.testcaseagent.validation.RequirementFactV2Validator;
 import com.testcaseagent.validation.StructuredValidationException;
 import com.testcaseagent.validation.StructuredValidationFailure;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
 
 /**
@@ -34,7 +36,7 @@ import java.util.concurrent.CancellationException;
  * Each window/test point is an independent transaction; a weak or failed scope becomes auditable pending coverage
  * while unrelated scopes continue.
  *
- * [Req-ID]: REQ-TGV2-002, REQ-TGV2-003, REQ-TGV2-005~REQ-TGV2-010
+ * [Req-ID]: REQ-TGV2-002, REQ-TGV2-003, REQ-TGV2-005~REQ-TGV2-010, REQ-TGV2-016
  */
 public final class V2StructuredAllGenerationCoordinator implements StructuredAllGenerationCoordinator {
     private static final String OWNER = "structured-v2-worker";
@@ -73,13 +75,33 @@ public final class V2StructuredAllGenerationCoordinator implements StructuredAll
         }
         StructuredCoordinatorFailure.Stage stage = StructuredCoordinatorFailure.Stage.TASK_START_STATE_RESUME;
         try {
+            if (!repository.hasExactApprovedScopeSnapshot(taskId)
+                    || !repository.hasDistinctApprovedAndDerivedTestPointKeys(taskId)) {
+                throw new IllegalStateException("Persisted approved scope does not match its raw task snapshot");
+            }
             store.updateTaskState(taskId, new StructuredGenerationAcceptanceStore.StructuredTaskState(
                     StructuredProcessingStatus.RUNNING, StructuredCoverageStatus.PENDING));
             cancellationCheckpoint(taskId);
+            if (!Objects.equals(repository.approvedScopeVersion(taskId),
+                    request.approvedFunctionScope().scopeVersion())) {
+                throw new IllegalStateException("Persisted approved scope version does not match the task snapshot");
+            }
             List<ApprovedFunctionScope.ApprovedFunction> functions = repository.approvedFunctions(taskId);
             if (!functions.equals(request.approvedFunctionScope().functions())) {
                 throw new IllegalStateException("Persisted approved function scope does not match the task snapshot");
             }
+            List<ApprovedFunctionScope.ApprovedTestPoint> reviewedPoints = repository.approvedTestPoints(taskId);
+            if (!reviewedPoints.equals(request.approvedFunctionScope().testPoints())) {
+                throw new IllegalStateException("Persisted approved test points do not match the task snapshot");
+            }
+            Map<String, ApprovedFunctionScope.ApprovedFunction> functionsByKey = new LinkedHashMap<>();
+            functions.forEach(function -> functionsByKey.put(function.functionKey(), function));
+            Map<String, Boolean> hasReviewedPoint = new LinkedHashMap<>();
+            reviewedPoints.forEach(point -> hasReviewedPoint.put(point.functionKey(), true));
+            Set<String> reviewedPointKeys = reviewedPoints.stream()
+                    .map(ApprovedFunctionScope.ApprovedTestPoint::testPointKey)
+                    .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+            Set<String> generatedPointKeys = new LinkedHashSet<>();
             stage = StructuredCoordinatorFailure.Stage.INVENTORY_RESUME_TRAVERSAL;
             if (!repository.hasCompleteMaterialInventory(taskId, request.requirementScope())) {
                 traversal.traversePagedV2(taskId, request, false);
@@ -115,7 +137,7 @@ public final class V2StructuredAllGenerationCoordinator implements StructuredAll
                         }
                         nextTargetStart = plannedNext;
                         boolean completed = processFactWindow(
-                                taskId, request, sessionId, function, material, window);
+                                taskId, request, sessionId, function, material, window, reviewedPointKeys);
                         factStageComplete.put(function.functionKey(),
                                 Boolean.TRUE.equals(factStageComplete.get(function.functionKey())) && completed);
                     }
@@ -137,19 +159,32 @@ public final class V2StructuredAllGenerationCoordinator implements StructuredAll
                             taskId, function.functionKey(), afterFactKey, FACT_PAGE_SIZE);
                     for (V2GenerationPlanner.PersistedFact fact : factPage) {
                         foundFact = true;
-                        boolean completed = processTestPoint(taskId, request, designScope, sessionId,
-                                planner.testPoint(taskId, function, fact));
+                        V2GenerationPlanner.TestPointPlan plan = planner.testPoint(taskId, function, fact);
+                        requireDistinctGeneratedTestPoint(plan, reviewedPointKeys, generatedPointKeys);
+                        boolean completed = processTestPoint(taskId, request, designScope, sessionId, plan);
                         anyTechnicalFailure |= !completed;
                     }
                     if (!factPage.isEmpty()) afterFactKey = factPage.get(factPage.size() - 1).factKey();
                 } while (factPage.size() == FACT_PAGE_SIZE);
-                if (!foundFact) {
-                    anyTechnicalFailure |= !processTestPoint(taskId, request, designScope, sessionId,
-                            planner.missingFormalFactTestPoint(taskId, function));
+                if (!foundFact && !Boolean.TRUE.equals(hasReviewedPoint.get(function.functionKey()))) {
+                    V2GenerationPlanner.TestPointPlan plan = planner.missingFormalFactTestPoint(taskId, function);
+                    requireDistinctGeneratedTestPoint(plan, reviewedPointKeys, generatedPointKeys);
+                    anyTechnicalFailure |= !processTestPoint(taskId, request, designScope, sessionId, plan);
                 } else if (!complete) {
-                    anyTechnicalFailure |= !processTestPoint(taskId, request, designScope, sessionId,
-                            planner.incompleteFactWindowsTestPoint(taskId, function));
+                    V2GenerationPlanner.TestPointPlan plan = planner.incompleteFactWindowsTestPoint(taskId, function);
+                    requireDistinctGeneratedTestPoint(plan, reviewedPointKeys, generatedPointKeys);
+                    anyTechnicalFailure |= !processTestPoint(taskId, request, designScope, sessionId, plan);
                 }
+            }
+            // Admission owns reviewed-point wording and order. Execute that frozen sequence separately so fact-derived
+            // planning cannot rewrite, reorder, or replace it with the generic no-fact fallback. [Req-ID]: REQ-TGV2-016
+            for (ApprovedFunctionScope.ApprovedTestPoint reviewedPoint : reviewedPoints) {
+                ApprovedFunctionScope.ApprovedFunction function = functionsByKey.get(reviewedPoint.functionKey());
+                if (function == null) {
+                    throw new IllegalStateException("Persisted approved test point references an unknown function");
+                }
+                anyTechnicalFailure |= !processTestPoint(taskId, request, designScope, sessionId,
+                        planner.approvedTestPoint(taskId, function, reviewedPoint));
             }
             stage = StructuredCoordinatorFailure.Stage.ARTIFACT_EXPORT;
             complete(taskId, anyTechnicalFailure);
@@ -167,13 +202,23 @@ public final class V2StructuredAllGenerationCoordinator implements StructuredAll
         }
     }
 
+    /** Prevents caller-owned reviewed identities from aliasing Java-derived points and silently skipping work. */
+    private static void requireDistinctGeneratedTestPoint(V2GenerationPlanner.TestPointPlan plan,
+            Set<String> reviewedPointKeys, Set<String> generatedPointKeys) {
+        String pointKey = plan.input().testPoint().testPointKey();
+        if (reviewedPointKeys.contains(pointKey) || !generatedPointKeys.add(pointKey)) {
+            throw new IllegalStateException("Generated and reviewed test-point identities must be distinct");
+        }
+    }
+
     private boolean processFactWindow(String taskId, CreateGenerationTaskRequest request, String sessionId,
             ApprovedFunctionScope.ApprovedFunction function, V2GenerationPlanner.MaterialDescriptor material,
-            V2GenerationPlanner.FactWindow window) {
+            V2GenerationPlanner.FactWindow window, Set<String> reviewedPointKeys) {
         String workId = store.register(window.registration());
         if (store.isCompleted(workId)) return true;
         if (store.isSplit(workId)) {
-            return processFactChildren(taskId, request, sessionId, function, material, window, workId);
+            return processFactChildren(
+                    taskId, request, sessionId, function, material, window, workId, reviewedPointKeys);
         }
         while (true) {
             cancellationCheckpoint(taskId);
@@ -187,7 +232,8 @@ public final class V2StructuredAllGenerationCoordinator implements StructuredAll
                         window.input())).data().result();
                 active.requireActive();
                 cancellationCheckpoint(taskId);
-                store.acceptRequirementFactsV2(claim.get(), factValidator, window.input(), result);
+                store.acceptRequirementFactsV2(
+                        claim.get(), factValidator, window.input(), result, reviewedPointKeys);
                 return true;
             } catch (CancellationException exception) {
                 store.fail(claim.get(), "model_execution_failed");
@@ -207,8 +253,10 @@ public final class V2StructuredAllGenerationCoordinator implements StructuredAll
                             material, window, workId);
                     store.splitRequirementFactWork(claim.get(), children.get(0).registration(),
                             children.get(1).registration());
-                    return processFactWindow(taskId, request, sessionId, function, material, children.get(0))
-                            & processFactWindow(taskId, request, sessionId, function, material, children.get(1));
+                    return processFactWindow(
+                            taskId, request, sessionId, function, material, children.get(0), reviewedPointKeys)
+                            & processFactWindow(
+                                    taskId, request, sessionId, function, material, children.get(1), reviewedPointKeys);
                 }
                 fail(claim.get(), exception, StructuredCoordinatorFailure.Stage.REQUIREMENT_FACT_EXTRACTION);
                 if (isTransient(exception)
@@ -222,11 +270,13 @@ public final class V2StructuredAllGenerationCoordinator implements StructuredAll
 
     private boolean processFactChildren(String taskId, CreateGenerationTaskRequest request, String sessionId,
             ApprovedFunctionScope.ApprovedFunction function, V2GenerationPlanner.MaterialDescriptor material,
-            V2GenerationPlanner.FactWindow parent, String parentWorkId) {
+            V2GenerationPlanner.FactWindow parent, String parentWorkId, Set<String> reviewedPointKeys) {
         List<V2GenerationPlanner.FactWindow> children = planner.bisectFactWindow(
                 taskId, function, material, parent, parentWorkId);
-        return processFactWindow(taskId, request, sessionId, function, material, children.get(0))
-                & processFactWindow(taskId, request, sessionId, function, material, children.get(1));
+        return processFactWindow(
+                taskId, request, sessionId, function, material, children.get(0), reviewedPointKeys)
+                & processFactWindow(
+                        taskId, request, sessionId, function, material, children.get(1), reviewedPointKeys);
     }
 
     private boolean processTestPoint(String taskId, CreateGenerationTaskRequest request,

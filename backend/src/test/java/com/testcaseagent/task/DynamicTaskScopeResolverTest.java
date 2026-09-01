@@ -121,7 +121,7 @@ class DynamicTaskScopeResolverTest {
                 .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("材料范围");
     }
 
-    /** [Req-ID]: REQ-TGV2-001, REQ-TGV2-002 */
+    /** [Req-ID]: REQ-TGV2-001, REQ-TGV2-002, REQ-TGV2-016 */
     @Test
     void rejectsLegacyCreationBeforeScopeLookupAndFreezesTheExactAuditedFunctionScopeForV2() {
         DynamicTaskScopeResolver resolver = new DynamicTaskScopeResolver(catalog(), profile());
@@ -132,7 +132,7 @@ class DynamicTaskScopeResolverTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("版本 2.0");
 
-        CreateGenerationTaskRequest request = resolver.resolve(command(selected));
+        CreateGenerationTaskRequest request = resolver.resolve(commandWithReviewedPoint(selected));
 
         assertThat(request.isV2()).isTrue();
         assertThat(request.featureIds()).containsExactly("audited-function-1");
@@ -141,6 +141,12 @@ class DynamicTaskScopeResolverTest {
                 ApprovedFunctionScope.ApprovedFunction::functionKey,
                 ApprovedFunctionScope.ApprovedFunction::path)
                 .containsExactly(org.assertj.core.groups.Tuple.tuple("audited-function-1", "业务域/提交申请"));
+        assertThat(request.approvedFunctionScope().testPoints())
+                .extracting(ApprovedFunctionScope.ApprovedTestPoint::testPointKey,
+                        ApprovedFunctionScope.ApprovedTestPoint::functionKey,
+                        ApprovedFunctionScope.ApprovedTestPoint::description)
+                .containsExactly(org.assertj.core.groups.Tuple.tuple(
+                        "reviewed-point-1", "audited-function-1", "验证待确认的审批边界"));
     }
 
     @Test
@@ -210,6 +216,20 @@ class DynamicTaskScopeResolverTest {
                 new ApprovedFunctionScope("scope-release-7", List.of(
                         new ApprovedFunctionScope.ApprovedFunction("audited-function-1", "提交申请",
                                 "业务域/提交申请", "提交一项业务申请"))));
+    }
+
+    private static CreateGenerationTaskCommand commandWithReviewedPoint(List<String> selected) {
+        ApprovedFunctionScope.ApprovedFunction function = new ApprovedFunctionScope.ApprovedFunction(
+                "audited-function-1", "提交申请", "业务域/提交申请", "提交一项业务申请");
+        ApprovedFunctionScope.ApprovedTestPoint point = new ApprovedFunctionScope.ApprovedTestPoint(
+                "reviewed-point-1", function.functionKey(),
+                ApprovedFunctionScope.ApprovedTestPointType.BOUNDARY_VALUE,
+                ApprovedFunctionScope.ApprovedTestPointSource.GENERAL_EXPERIENCE,
+                ApprovedFunctionScope.ApprovedTestPointStatus.PENDING_CONFIRMATION,
+                "验证待确认的审批边界", List.of("审批阈值尚未确认"));
+        return new CreateGenerationTaskCommand(GenerationTaskMode.ALL, "", FewShotPolicy.AUTO,
+                "2.0", "2.0", selected, "", "2.0", "2.0", "2.0",
+                new ApprovedFunctionScope("scope-release-7", List.of(function), List.of(point)));
     }
 
     private static List<String> legacyMaterialTypeSelectionIds(ScopeCatalogSnapshot snapshot) {

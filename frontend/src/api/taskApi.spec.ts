@@ -18,6 +18,15 @@ const payload: CreateTaskPayload = {
     functions: [{
       functionKey: 'function-login', name: '用户登录', path: '账号/登录', description: '',
     }],
+    testPoints: [{
+      testPointKey: 'point-login-threshold',
+      functionKey: 'function-login',
+      type: 'BOUNDARY_VALUE',
+      source: 'GENERAL_EXPERIENCE',
+      status: 'PENDING_CONFIRMATION',
+      description: '验证待确认的尝试次数边界',
+      missingInformation: ['最大尝试次数尚未确认'],
+    }],
   },
 }
 

@@ -122,6 +122,30 @@ class V2GenerationPlannerTest {
         });
     }
 
+    /** [Req-ID]: REQ-TGV2-016 */
+    @Test
+    void mapsOneReviewedPendingPointWithoutBorrowingFactsOrChangingItsIdentity() {
+        var function = function("function-a");
+        var approved = new ApprovedFunctionScope.ApprovedTestPoint("reviewed-point-9", "function-a",
+                ApprovedFunctionScope.ApprovedTestPointType.BOUNDARY_VALUE,
+                ApprovedFunctionScope.ApprovedTestPointSource.GENERAL_EXPERIENCE,
+                ApprovedFunctionScope.ApprovedTestPointStatus.PENDING_CONFIRMATION,
+                "验证尚未量化的边界", List.of("边界数值尚未确认", "初始化条件尚未确认"));
+
+        V2GenerationPlanner.TestPointPlan plan = planner.approvedTestPoint("task-a", function, approved);
+
+        assertThat(plan.input().testPoint().testPointKey()).isEqualTo("reviewed-point-9");
+        assertThat(plan.input().testPoint().type())
+                .isEqualTo(FunctionalTestcaseDesignV2Input.TestPointType.BOUNDARY_VALUE);
+        assertThat(plan.input().testPoint().basis())
+                .isEqualTo(FunctionalTestcaseDesignV2Input.Basis.GENERAL_EXPERIENCE);
+        assertThat(plan.input().testPoint().description()).isEqualTo("验证尚未量化的边界");
+        assertThat(plan.input().testPoint().missingInformation())
+                .containsExactly("边界数值尚未确认", "初始化条件尚未确认");
+        assertThat(plan.input().requirementFacts()).isEmpty();
+        assertThat(plan.registration().testPointKey()).isEqualTo("reviewed-point-9");
+    }
+
     private static ApprovedFunctionScope.ApprovedFunction function(String key) {
         return new ApprovedFunctionScope.ApprovedFunction(key, "提交申请", "业务/提交申请", "提交业务申请");
     }

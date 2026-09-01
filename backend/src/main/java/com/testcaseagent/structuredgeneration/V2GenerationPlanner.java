@@ -17,7 +17,7 @@ import java.util.Objects;
  * Converts one frozen V2 scope into restart-stable material windows and dynamic test points.
  * The planner owns identities only; it never reads model output or invents business facts.
  *
- * [Req-ID]: REQ-TGV2-003, REQ-TGV2-005, REQ-TGV2-006, REQ-TGV2-008
+ * [Req-ID]: REQ-TGV2-003, REQ-TGV2-005, REQ-TGV2-006, REQ-TGV2-008, REQ-TGV2-016
  */
 public final class V2GenerationPlanner {
 
@@ -124,7 +124,7 @@ public final class V2GenerationPlanner {
         require(taskId, "taskId");
         Objects.requireNonNull(function, "function must not be null");
         Objects.requireNonNull(fact, "fact must not be null");
-        String pointKey = hash("test-point-v2", taskId, function.functionKey(), fact.factKey());
+        String pointKey = factDerivedTestPointKey(taskId, function.functionKey(), fact.factKey());
         FunctionalTestcaseDesignV2Input.TestPoint point = new FunctionalTestcaseDesignV2Input.TestPoint(
                 pointKey, pointType(fact.factType()), FunctionalTestcaseDesignV2Input.Basis.FORMAL_REQUIREMENT,
                 fact.statement(), List.of());
@@ -132,6 +132,23 @@ public final class V2GenerationPlanner {
                 new FunctionalTestcaseDesignV2Input.RequirementFact(fact.factKey(), fact.factType(),
                         fact.statement(), fact.sourceQuotes());
         return testPointPlan(taskId, function, point, List.of(inputFact));
+    }
+
+    /** Maps one externally reviewed pending point without borrowing formal facts or rewriting caller-owned wording. */
+    public TestPointPlan approvedTestPoint(String taskId, ApprovedFunctionScope.ApprovedFunction function,
+            ApprovedFunctionScope.ApprovedTestPoint approved) {
+        require(taskId, "taskId");
+        Objects.requireNonNull(function, "function must not be null");
+        Objects.requireNonNull(approved, "approved test point must not be null");
+        if (!function.functionKey().equals(approved.functionKey())) {
+            throw new IllegalArgumentException("approved test point belongs to another function");
+        }
+        FunctionalTestcaseDesignV2Input.TestPoint point = new FunctionalTestcaseDesignV2Input.TestPoint(
+                approved.testPointKey(),
+                FunctionalTestcaseDesignV2Input.TestPointType.valueOf(approved.type().name()),
+                FunctionalTestcaseDesignV2Input.Basis.GENERAL_EXPERIENCE,
+                approved.description(), approved.missingInformation());
+        return testPointPlan(taskId, function, point, List.of());
     }
 
     /** Produces the explicit pending work item used when a function has no accepted formal fact. */
@@ -168,12 +185,27 @@ public final class V2GenerationPlanner {
         return hash("test-point-v2", taskId, functionKey, "missing-formal-fact");
     }
 
+    /** Recomputes the fact-derived point identity without loading reader-facing fact text. */
+    public static String factDerivedTestPointKey(String taskId, String functionKey, String factKey) {
+        require(taskId, "taskId");
+        require(functionKey, "functionKey");
+        require(factKey, "factKey");
+        return hash("test-point-v2", taskId, functionKey, factKey);
+    }
+
+    /** Recomputes the incomplete-window fallback identity for admission-snapshot collision checks. */
+    public static String incompleteFactWindowsPointKey(String taskId, String functionKey) {
+        require(taskId, "taskId");
+        require(functionKey, "functionKey");
+        return hash("test-point-v2", taskId, functionKey, "incomplete-fact-windows");
+    }
+
     /** Produces one extra pending point for a function whose fact-window traversal was technically incomplete. */
     public TestPointPlan incompleteFactWindowsTestPoint(
             String taskId, ApprovedFunctionScope.ApprovedFunction function) {
         require(taskId, "taskId");
         Objects.requireNonNull(function, "function must not be null");
-        String pointKey = hash("test-point-v2", taskId, function.functionKey(), "incomplete-fact-windows");
+        String pointKey = incompleteFactWindowsPointKey(taskId, function.functionKey());
         FunctionalTestcaseDesignV2Input.TestPoint point = new FunctionalTestcaseDesignV2Input.TestPoint(
                 pointKey, FunctionalTestcaseDesignV2Input.TestPointType.NORMAL_BEHAVIOR,
                 FunctionalTestcaseDesignV2Input.Basis.GENERAL_EXPERIENCE,

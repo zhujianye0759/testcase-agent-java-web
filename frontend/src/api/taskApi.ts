@@ -23,6 +23,17 @@ export interface ApprovedFunctionScopePayload {
     path: string
     description: string
   }>
+  /** Optional for old callers; new admission clients may freeze reviewed non-formal points in caller order. */
+  testPoints?: Array<{
+    testPointKey: string
+    functionKey: string
+    type: 'NORMAL_BEHAVIOR' | 'INPUT_VALIDATION' | 'BOUNDARY_VALUE' | 'PERMISSION'
+      | 'STATE_TRANSITION' | 'BUSINESS_EXCEPTION' | 'DEPENDENCY_FAILURE'
+    source: 'GENERAL_EXPERIENCE'
+    status: 'PENDING_CONFIRMATION'
+    description: string
+    missingInformation: string[]
+  }>
 }
 
 export interface MaterialTypeOption {

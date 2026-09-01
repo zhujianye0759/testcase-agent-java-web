@@ -69,6 +69,7 @@ class TaskExecutionQueueIntegrationTest {
 
     @BeforeEach
     void cleanDatabase() {
+        jdbcTemplate.update("DELETE FROM v2_approved_test_point");
         jdbcTemplate.update("DELETE FROM v2_approved_function");
         jdbcTemplate.update("DELETE FROM structured_reference_binding");
         jdbcTemplate.update("DELETE FROM structured_generation_attempt");

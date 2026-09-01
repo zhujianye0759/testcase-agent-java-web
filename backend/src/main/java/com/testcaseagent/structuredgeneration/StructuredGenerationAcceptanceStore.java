@@ -625,8 +625,28 @@ public final class StructuredGenerationAcceptanceStore {
      */
     public void acceptRequirementFactsV2(WorkClaim claim, RequirementFactV2Validator validator,
             RequirementFactExtractionV2Input input, RequirementFactExtractionV2Result result) {
+        acceptRequirementFactsV2(claim, validator, input, result, Set.of());
+    }
+
+    /**
+     * Publishes one fact window only when none of its deterministic test-point identities aliases caller-reviewed
+     * points. The collision check happens before the acceptance transaction so the affected window remains zero-write.
+     * [Req-ID]: REQ-TGV2-004, REQ-TGV2-008, REQ-TGV2-016
+     */
+    public void acceptRequirementFactsV2(WorkClaim claim, RequirementFactV2Validator validator,
+            RequirementFactExtractionV2Input input, RequirementFactExtractionV2Result result,
+            Set<String> reservedTestPointKeys) {
         RequirementFactV2Validator.AcceptedWindow accepted = Objects.requireNonNull(validator,
                 "validator must not be null").validate(input, result);
+        Set<String> reserved = Set.copyOf(Objects.requireNonNull(
+                reservedTestPointKeys, "reservedTestPointKeys must not be null"));
+        boolean aliasesReviewedPoint = accepted.facts().stream()
+                .map(fact -> V2GenerationPlanner.factDerivedTestPointKey(
+                        claim.taskId(), input.functionKey(), fact.factKey()))
+                .anyMatch(reserved::contains);
+        if (aliasesReviewedPoint) {
+            throw new IllegalStateException("Generated and reviewed test-point identities must be distinct");
+        }
         String inputSha256 = sha256(input);
         String resultSha256 = sha256(result);
         accept(claim, result, null, "REQUIREMENT_FACT_EXTRACTION_V2", frozen -> {

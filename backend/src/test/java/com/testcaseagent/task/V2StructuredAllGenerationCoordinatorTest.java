@@ -44,6 +44,326 @@ import org.mockito.ArgumentCaptor;
 /** [Req-ID]: REQ-TGV2-002, REQ-TGV2-003, REQ-TGV2-005~REQ-TGV2-010 */
 class V2StructuredAllGenerationCoordinatorTest {
 
+    /** [Req-ID]: REQ-TGV2-016 */
+    @Test
+    void executesReviewedPendingPointVerbatimAndDoesNotSubstituteTheNoFactFallback() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        RequirementMaterialTraversalService traversal = mock(RequirementMaterialTraversalService.class);
+        StructuredSkillExecutionPort skills = mock(StructuredSkillExecutionPort.class);
+        StructuredSkillSessionPort sessions = mock(StructuredSkillSessionPort.class);
+        StructuredGenerationAcceptanceStore store = mock(StructuredGenerationAcceptanceStore.class);
+        WorkbookExporter exporter = mock(WorkbookExporter.class);
+        var point = new ApprovedFunctionScope.ApprovedTestPoint("reviewed-point", "function-a",
+                ApprovedFunctionScope.ApprovedTestPointType.NORMAL_BEHAVIOR,
+                ApprovedFunctionScope.ApprovedTestPointSource.GENERAL_EXPERIENCE,
+                ApprovedFunctionScope.ApprovedTestPointStatus.PENDING_CONFIRMATION,
+                "验证待确认条件", List.of("触发时机尚未确认"));
+        CreateGenerationTaskRequest request = requestWithPoints(List.of(point));
+        stubApprovedScopeVersion(repository, request);
+        var function = request.approvedFunctionScope().functions().get(0);
+        when(repository.approvedFunctions("task-v2")).thenReturn(List.of(function));
+        when(repository.approvedTestPoints("task-v2")).thenReturn(List.of(point));
+        when(repository.hasCompleteMaterialInventory("task-v2", request.requirementScope())).thenReturn(true);
+        stubBoundedInventory(repository, material());
+        when(sessions.openStructuredSession()).thenReturn("session-v2");
+        when(store.register(any())).thenAnswer(invocation -> {
+            StructuredGenerationAcceptanceStore.WorkRegistration registration = invocation.getArgument(0);
+            return "requirement-fact-extraction".equals(registration.skillName()) ? "fact-work" : "design-work";
+        });
+        when(store.isCompleted("fact-work")).thenReturn(true);
+        when(store.claimRegistered("task-v2", "design-work", "structured-v2-worker"))
+                .thenReturn(java.util.Optional.of(claim("design-work", "task-v2")));
+        when(store.acceptedRequirementFactsV2Page("task-v2", "function-a", "", 100)).thenReturn(List.of());
+        when(skills.designFunctionalTestcasesV2(any())).thenAnswer(invocation -> {
+            var call = (com.testcaseagent.knowledgeagent.FunctionalTestcaseDesignV2Invocation)
+                    invocation.getArgument(0);
+            return success("functional-testcase-design", new FunctionalTestcaseDesignV2Result(
+                    call.input().functionKey(), call.input().testPoint().testPointKey(),
+                    FunctionalTestcaseDesignV2Result.GenerationOutcome.UNABLE_TO_GENERATE,
+                    List.of("触发时机尚未确认"), List.of()));
+        });
+        when(store.v2AggregateState("task-v2")).thenReturn(
+                new StructuredGenerationAcceptanceStore.V2AggregateState(2, 2, 0, 0, 1, 0, 0, 0, 1));
+        StructuredWorkbookRowSource rows = StructuredWorkbookRowSource.from(
+                new StructuredWorkbookExportRequest("task-v2", List.of(), List.of()));
+        when(repository.structuredWorkbookRows("task-v2")).thenReturn(rows);
+        WorkbookArtifact artifact = new WorkbookArtifact("artifact-v2", "a".repeat(64), Path.of("artifact.xlsx"));
+        when(exporter.exportV2StructuredRows(rows)).thenReturn(artifact);
+
+        new V2StructuredAllGenerationCoordinator(repository, traversal, skills, sessions, store, exporter,
+                new ObjectMapper(), noOpHeartbeat()).execute("task-v2", request);
+
+        ArgumentCaptor<com.testcaseagent.knowledgeagent.FunctionalTestcaseDesignV2Invocation> call =
+                ArgumentCaptor.forClass(com.testcaseagent.knowledgeagent.FunctionalTestcaseDesignV2Invocation.class);
+        verify(skills).designFunctionalTestcasesV2(call.capture());
+        assertThat(call.getValue().input().testPoint().testPointKey()).isEqualTo("reviewed-point");
+        assertThat(call.getValue().input().testPoint().description()).isEqualTo("验证待确认条件");
+        assertThat(call.getValue().input().testPoint().missingInformation())
+                .containsExactly("触发时机尚未确认");
+        assertThat(call.getValue().input().requirementFacts()).isEmpty();
+        verify(store, never()).registerMissingFactFallback(any());
+    }
+
+    /** [Req-ID]: REQ-TGV2-016 */
+    @Test
+    void rejectsReviewedPointSnapshotDriftBeforeOpeningAKeeSession() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        RequirementMaterialTraversalService traversal = mock(RequirementMaterialTraversalService.class);
+        StructuredSkillExecutionPort skills = mock(StructuredSkillExecutionPort.class);
+        StructuredSkillSessionPort sessions = mock(StructuredSkillSessionPort.class);
+        StructuredGenerationAcceptanceStore store = mock(StructuredGenerationAcceptanceStore.class);
+        WorkbookExporter exporter = mock(WorkbookExporter.class);
+        var point = new ApprovedFunctionScope.ApprovedTestPoint("reviewed-point", "function-a",
+                ApprovedFunctionScope.ApprovedTestPointType.NORMAL_BEHAVIOR,
+                ApprovedFunctionScope.ApprovedTestPointSource.GENERAL_EXPERIENCE,
+                ApprovedFunctionScope.ApprovedTestPointStatus.PENDING_CONFIRMATION,
+                "验证待确认条件", List.of("触发时机尚未确认"));
+        CreateGenerationTaskRequest request = requestWithPoints(List.of(point));
+        stubApprovedScopeVersion(repository, request);
+        when(repository.hasExactApprovedScopeSnapshot("task-v2")).thenReturn(false);
+        when(repository.approvedFunctions("task-v2"))
+                .thenReturn(request.approvedFunctionScope().functions());
+        when(repository.approvedTestPoints("task-v2")).thenReturn(List.of());
+
+        assertThatThrownBy(() -> new V2StructuredAllGenerationCoordinator(repository, traversal, skills, sessions,
+                store, exporter, new ObjectMapper(), noOpHeartbeat()).execute("task-v2", request))
+                .isInstanceOf(StructuredValidationException.class);
+
+        verify(sessions, never()).openStructuredSession();
+        verify(skills, never()).designFunctionalTestcasesV2(any());
+        verify(skills, never()).extractRequirementFactsV2(any());
+    }
+
+    /** [Req-ID]: REQ-TGV2-016 */
+    @Test
+    void rejectsANonCanonicalRawApprovedScopeSnapshotBeforeChangingStateOrOpeningKee() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        RequirementMaterialTraversalService traversal = mock(RequirementMaterialTraversalService.class);
+        StructuredSkillExecutionPort skills = mock(StructuredSkillExecutionPort.class);
+        StructuredSkillSessionPort sessions = mock(StructuredSkillSessionPort.class);
+        StructuredGenerationAcceptanceStore store = mock(StructuredGenerationAcceptanceStore.class);
+        WorkbookExporter exporter = mock(WorkbookExporter.class);
+        CreateGenerationTaskRequest request = request();
+        when(repository.hasExactApprovedScopeSnapshot("task-v2")).thenReturn(false);
+
+        assertThatThrownBy(() -> new V2StructuredAllGenerationCoordinator(repository, traversal, skills, sessions,
+                store, exporter, new ObjectMapper(), noOpHeartbeat()).execute("task-v2", request))
+                .isInstanceOf(StructuredValidationException.class);
+
+        verify(store, never()).updateTaskState(any(), any());
+        verify(sessions, never()).openStructuredSession();
+        verify(skills, never()).extractRequirementFactsV2(any());
+        verify(skills, never()).designFunctionalTestcasesV2(any());
+    }
+
+    /** [Req-ID]: REQ-TGV2-016 */
+    @Test
+    void rejectsApprovedScopeVersionDriftBeforeOpeningAKeeSession() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        RequirementMaterialTraversalService traversal = mock(RequirementMaterialTraversalService.class);
+        StructuredSkillExecutionPort skills = mock(StructuredSkillExecutionPort.class);
+        StructuredSkillSessionPort sessions = mock(StructuredSkillSessionPort.class);
+        StructuredGenerationAcceptanceStore store = mock(StructuredGenerationAcceptanceStore.class);
+        WorkbookExporter exporter = mock(WorkbookExporter.class);
+        CreateGenerationTaskRequest request = request();
+        when(repository.hasExactApprovedScopeSnapshot("task-v2")).thenReturn(true);
+        when(repository.hasDistinctApprovedAndDerivedTestPointKeys("task-v2")).thenReturn(true);
+        when(repository.approvedScopeVersion("task-v2")).thenReturn("different-scope-version");
+        when(repository.approvedFunctions("task-v2")).thenReturn(request.approvedFunctionScope().functions());
+        when(repository.approvedTestPoints("task-v2")).thenReturn(List.of());
+        when(repository.hasCompleteMaterialInventory("task-v2", request.requirementScope())).thenReturn(true);
+        stubBoundedInventory(repository, material());
+        when(sessions.openStructuredSession()).thenReturn("session-v2");
+        when(store.register(any())).thenAnswer(invocation ->
+                ((StructuredGenerationAcceptanceStore.WorkRegistration) invocation.getArgument(0)).identityKey());
+        when(store.isCompleted(any())).thenReturn(true);
+        when(store.acceptedRequirementFactsV2Page("task-v2", "function-a", "", 100)).thenReturn(List.of());
+        when(store.v2AggregateState("task-v2")).thenReturn(
+                new StructuredGenerationAcceptanceStore.V2AggregateState(2, 2, 0, 0, 1, 0, 0, 0, 1));
+        StructuredWorkbookRowSource rows = StructuredWorkbookRowSource.from(
+                new StructuredWorkbookExportRequest("task-v2", List.of(), List.of()));
+        when(repository.structuredWorkbookRows("task-v2")).thenReturn(rows);
+        when(exporter.exportV2StructuredRows(rows)).thenReturn(
+                new WorkbookArtifact("artifact-v2", "a".repeat(64), Path.of("artifact.xlsx")));
+
+        assertThatThrownBy(() -> new V2StructuredAllGenerationCoordinator(repository, traversal, skills, sessions,
+                store, exporter, new ObjectMapper(), noOpHeartbeat()).execute("task-v2", request))
+                .isInstanceOf(StructuredValidationException.class);
+
+        verify(sessions, never()).openStructuredSession();
+        verify(skills, never()).extractRequirementFactsV2(any());
+        verify(skills, never()).designFunctionalTestcasesV2(any());
+    }
+
+    /** [Req-ID]: REQ-TGV2-016 */
+    @Test
+    void rejectsReviewedPointKeyThatCollidesWithAFactDerivedPointBeforeDesignInvocation() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        RequirementMaterialTraversalService traversal = mock(RequirementMaterialTraversalService.class);
+        StructuredSkillExecutionPort skills = mock(StructuredSkillExecutionPort.class);
+        StructuredSkillSessionPort sessions = mock(StructuredSkillSessionPort.class);
+        StructuredGenerationAcceptanceStore store = mock(StructuredGenerationAcceptanceStore.class);
+        WorkbookExporter exporter = mock(WorkbookExporter.class);
+        CreateGenerationTaskRequest base = request();
+        var function = base.approvedFunctionScope().functions().get(0);
+        var fact = persistedFact("fact-collision");
+        String derivedPointKey = new V2GenerationPlanner().testPoint("task-v2", function, fact)
+                .input().testPoint().testPointKey();
+        var reviewed = new ApprovedFunctionScope.ApprovedTestPoint(derivedPointKey, function.functionKey(),
+                ApprovedFunctionScope.ApprovedTestPointType.NORMAL_BEHAVIOR,
+                ApprovedFunctionScope.ApprovedTestPointSource.GENERAL_EXPERIENCE,
+                ApprovedFunctionScope.ApprovedTestPointStatus.PENDING_CONFIRMATION,
+                "验证待确认条件", List.of("触发时机尚未确认"));
+        CreateGenerationTaskRequest request = requestWithPoints(List.of(reviewed));
+        stubApprovedScopeVersion(repository, request);
+        when(repository.hasDistinctApprovedAndDerivedTestPointKeys("task-v2")).thenReturn(false);
+        when(repository.approvedFunctions("task-v2")).thenReturn(List.of(function));
+        when(repository.approvedTestPoints("task-v2")).thenReturn(List.of(reviewed));
+        when(repository.hasCompleteMaterialInventory("task-v2", request.requirementScope())).thenReturn(true);
+        stubBoundedInventory(repository, material());
+        when(sessions.openStructuredSession()).thenReturn("session-v2");
+        when(store.register(any())).thenAnswer(invocation -> {
+            StructuredGenerationAcceptanceStore.WorkRegistration registration = invocation.getArgument(0);
+            return "requirement-fact-extraction".equals(registration.skillName()) ? "fact-work" : "design-work";
+        });
+        when(store.isCompleted(any())).thenReturn(true);
+        when(store.acceptedRequirementFactsV2Page("task-v2", function.functionKey(), "", 100))
+                .thenReturn(List.of(fact));
+        when(store.acceptedRequirementFactsV2Page("task-v2", function.functionKey(), fact.factKey(), 100))
+                .thenReturn(List.of());
+        when(store.v2AggregateState("task-v2")).thenReturn(
+                new StructuredGenerationAcceptanceStore.V2AggregateState(3, 3, 0, 0, 1, 1, 1, 0, 1));
+        StructuredWorkbookRowSource rows = StructuredWorkbookRowSource.from(
+                new StructuredWorkbookExportRequest("task-v2", List.of(), List.of()));
+        when(repository.structuredWorkbookRows("task-v2")).thenReturn(rows);
+        when(exporter.exportV2StructuredRows(rows)).thenReturn(
+                new WorkbookArtifact("artifact-v2", "a".repeat(64), Path.of("artifact.xlsx")));
+
+        assertThatThrownBy(() -> new V2StructuredAllGenerationCoordinator(repository, traversal, skills, sessions,
+                store, exporter, new ObjectMapper(), noOpHeartbeat()).execute("task-v2", request))
+                .isInstanceOf(StructuredValidationException.class);
+
+        verify(sessions, never()).openStructuredSession();
+        verify(store, never()).acceptedRequirementFactsV2Page(any(), any(), any(), anyInt());
+        verify(skills, never()).designFunctionalTestcasesV2(any());
+    }
+
+    /** [Req-ID]: REQ-TGV2-008, REQ-TGV2-016 */
+    @Test
+    void restartRegistersButDoesNotReinvokeAnAlreadyCompletedReviewedPoint() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        RequirementMaterialTraversalService traversal = mock(RequirementMaterialTraversalService.class);
+        StructuredSkillExecutionPort skills = mock(StructuredSkillExecutionPort.class);
+        StructuredSkillSessionPort sessions = mock(StructuredSkillSessionPort.class);
+        StructuredGenerationAcceptanceStore store = mock(StructuredGenerationAcceptanceStore.class);
+        WorkbookExporter exporter = mock(WorkbookExporter.class);
+        var point = new ApprovedFunctionScope.ApprovedTestPoint("reviewed-point", "function-a",
+                ApprovedFunctionScope.ApprovedTestPointType.NORMAL_BEHAVIOR,
+                ApprovedFunctionScope.ApprovedTestPointSource.GENERAL_EXPERIENCE,
+                ApprovedFunctionScope.ApprovedTestPointStatus.PENDING_CONFIRMATION,
+                "验证待确认条件", List.of("触发时机尚未确认"));
+        CreateGenerationTaskRequest request = requestWithPoints(List.of(point));
+        stubApprovedScopeVersion(repository, request);
+        var function = request.approvedFunctionScope().functions().get(0);
+        when(repository.approvedFunctions("task-v2")).thenReturn(List.of(function));
+        when(repository.approvedTestPoints("task-v2")).thenReturn(List.of(point));
+        when(repository.hasCompleteMaterialInventory("task-v2", request.requirementScope())).thenReturn(true);
+        stubBoundedInventory(repository, material());
+        when(sessions.openStructuredSession()).thenReturn("session-v2");
+        when(store.register(any())).thenAnswer(invocation -> {
+            StructuredGenerationAcceptanceStore.WorkRegistration registration = invocation.getArgument(0);
+            return "requirement-fact-extraction".equals(registration.skillName()) ? "fact-work" : "design-work";
+        });
+        when(store.isCompleted("fact-work")).thenReturn(true);
+        when(store.isCompleted("design-work")).thenReturn(true);
+        when(store.acceptedRequirementFactsV2Page("task-v2", "function-a", "", 100)).thenReturn(List.of());
+        when(store.v2AggregateState("task-v2")).thenReturn(
+                new StructuredGenerationAcceptanceStore.V2AggregateState(2, 2, 0, 0, 1, 0, 0, 0, 1));
+        StructuredWorkbookRowSource rows = StructuredWorkbookRowSource.from(
+                new StructuredWorkbookExportRequest("task-v2", List.of(), List.of()));
+        when(repository.structuredWorkbookRows("task-v2")).thenReturn(rows);
+        when(exporter.exportV2StructuredRows(rows)).thenReturn(
+                new WorkbookArtifact("artifact-v2", "a".repeat(64), Path.of("artifact.xlsx")));
+
+        new V2StructuredAllGenerationCoordinator(repository, traversal, skills, sessions, store, exporter,
+                new ObjectMapper(), noOpHeartbeat()).execute("task-v2", request);
+
+        verify(skills, never()).designFunctionalTestcasesV2(any());
+        verify(store, never()).registerMissingFactFallback(any());
+    }
+
+    /** [Req-ID]: REQ-TGV2-016 */
+    @Test
+    void invokesReviewedPointsInCallerOrderAcrossDifferentFunctions() {
+        GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
+        RequirementMaterialTraversalService traversal = mock(RequirementMaterialTraversalService.class);
+        StructuredSkillExecutionPort skills = mock(StructuredSkillExecutionPort.class);
+        StructuredSkillSessionPort sessions = mock(StructuredSkillSessionPort.class);
+        StructuredGenerationAcceptanceStore store = mock(StructuredGenerationAcceptanceStore.class);
+        WorkbookExporter exporter = mock(WorkbookExporter.class);
+        var functionA = request().approvedFunctionScope().functions().get(0);
+        var functionB = new ApprovedFunctionScope.ApprovedFunction(
+                "function-b", "功能B", "范围/功能B", "第二个功能");
+        var pointB = new ApprovedFunctionScope.ApprovedTestPoint("point-b", "function-b",
+                ApprovedFunctionScope.ApprovedTestPointType.BOUNDARY_VALUE,
+                ApprovedFunctionScope.ApprovedTestPointSource.GENERAL_EXPERIENCE,
+                ApprovedFunctionScope.ApprovedTestPointStatus.PENDING_CONFIRMATION,
+                "验证功能B的待确认边界", List.of("边界值尚未确认"));
+        var pointA = new ApprovedFunctionScope.ApprovedTestPoint("point-a", "function-a",
+                ApprovedFunctionScope.ApprovedTestPointType.STATE_TRANSITION,
+                ApprovedFunctionScope.ApprovedTestPointSource.GENERAL_EXPERIENCE,
+                ApprovedFunctionScope.ApprovedTestPointStatus.PENDING_CONFIRMATION,
+                "验证功能A的待确认状态", List.of("初始状态尚未确认"));
+        CreateGenerationTaskRequest request = requestWithScope(
+                new ApprovedFunctionScope("scope-2", List.of(functionA, functionB), List.of(pointB, pointA)));
+        stubApprovedScopeVersion(repository, request);
+        when(repository.approvedFunctions("task-v2")).thenReturn(List.of(functionA, functionB));
+        when(repository.approvedTestPoints("task-v2")).thenReturn(List.of(pointB, pointA));
+        when(repository.hasCompleteMaterialInventory("task-v2", request.requirementScope())).thenReturn(true);
+        stubBoundedInventory(repository, material());
+        when(sessions.openStructuredSession()).thenReturn("session-v2");
+        when(store.register(any())).thenAnswer(invocation -> {
+            StructuredGenerationAcceptanceStore.WorkRegistration registration = invocation.getArgument(0);
+            return "requirement-fact-extraction".equals(registration.skillName())
+                    ? "fact-" + registration.functionKey()
+                    : "design-" + registration.testPointKey();
+        });
+        when(store.isCompleted("fact-function-a")).thenReturn(true);
+        when(store.isCompleted("fact-function-b")).thenReturn(true);
+        when(store.claimRegistered("task-v2", "design-point-b", "structured-v2-worker"))
+                .thenReturn(java.util.Optional.of(claim("design-point-b", "task-v2")));
+        when(store.claimRegistered("task-v2", "design-point-a", "structured-v2-worker"))
+                .thenReturn(java.util.Optional.of(claim("design-point-a", "task-v2")));
+        when(store.acceptedRequirementFactsV2Page("task-v2", "function-a", "", 100)).thenReturn(List.of());
+        when(store.acceptedRequirementFactsV2Page("task-v2", "function-b", "", 100)).thenReturn(List.of());
+        when(skills.designFunctionalTestcasesV2(any())).thenAnswer(invocation -> {
+            var call = (com.testcaseagent.knowledgeagent.FunctionalTestcaseDesignV2Invocation)
+                    invocation.getArgument(0);
+            return success("functional-testcase-design", new FunctionalTestcaseDesignV2Result(
+                    call.input().functionKey(), call.input().testPoint().testPointKey(),
+                    FunctionalTestcaseDesignV2Result.GenerationOutcome.UNABLE_TO_GENERATE,
+                    call.input().testPoint().missingInformation(), List.of()));
+        });
+        when(store.v2AggregateState("task-v2")).thenReturn(
+                new StructuredGenerationAcceptanceStore.V2AggregateState(4, 4, 0, 0, 2, 0, 0, 0, 2));
+        StructuredWorkbookRowSource rows = StructuredWorkbookRowSource.from(
+                new StructuredWorkbookExportRequest("task-v2", List.of(), List.of()));
+        when(repository.structuredWorkbookRows("task-v2")).thenReturn(rows);
+        when(exporter.exportV2StructuredRows(rows)).thenReturn(
+                new WorkbookArtifact("artifact-v2", "a".repeat(64), Path.of("artifact.xlsx")));
+
+        new V2StructuredAllGenerationCoordinator(repository, traversal, skills, sessions, store, exporter,
+                new ObjectMapper(), noOpHeartbeat()).execute("task-v2", request);
+
+        ArgumentCaptor<com.testcaseagent.knowledgeagent.FunctionalTestcaseDesignV2Invocation> calls =
+                ArgumentCaptor.forClass(com.testcaseagent.knowledgeagent.FunctionalTestcaseDesignV2Invocation.class);
+        verify(skills, org.mockito.Mockito.times(2)).designFunctionalTestcasesV2(calls.capture());
+        assertThat(calls.getAllValues().stream()
+                .map(call -> call.input().testPoint().testPointKey()).toList())
+                .containsExactly("point-b", "point-a");
+        verify(store, never()).registerMissingFactFallback(any());
+    }
+
     @Test
     void persistsTheExactAllowlistedStageForAnOuterPlanningFailure() {
         GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
@@ -52,12 +372,14 @@ class V2StructuredAllGenerationCoordinatorTest {
         StructuredSkillSessionPort sessions = mock(StructuredSkillSessionPort.class);
         StructuredGenerationAcceptanceStore store = mock(StructuredGenerationAcceptanceStore.class);
         WorkbookExporter exporter = mock(WorkbookExporter.class);
+        CreateGenerationTaskRequest request = request();
+        stubApprovedScopeVersion(repository, request);
         when(repository.approvedFunctions("task-v2")).thenThrow(new IllegalStateException("sensitive details"));
 
         var coordinator = new V2StructuredAllGenerationCoordinator(repository, traversal, skills, sessions, store,
                 exporter, new ObjectMapper(), noOpHeartbeat());
 
-        assertThatThrownBy(() -> coordinator.execute("task-v2", request()))
+        assertThatThrownBy(() -> coordinator.execute("task-v2", request))
                 .isInstanceOf(StructuredValidationException.class);
         ArgumentCaptor<StructuredValidationFailure> failure = ArgumentCaptor.forClass(StructuredValidationFailure.class);
         verify(repository).failStructuredTask(org.mockito.ArgumentMatchers.eq("task-v2"),
@@ -76,6 +398,7 @@ class V2StructuredAllGenerationCoordinatorTest {
         WorkbookExporter exporter = mock(WorkbookExporter.class);
         StructuredWorkLeaseHeartbeat heartbeat = noOpHeartbeat();
         CreateGenerationTaskRequest request = request();
+        stubApprovedScopeVersion(repository, request);
         MaterialInventoryDocument material = material();
         ApprovedFunctionScope.ApprovedFunction function = request.approvedFunctionScope().functions().get(0);
         when(repository.approvedFunctions("task-v2")).thenReturn(List.of(function));
@@ -144,6 +467,7 @@ class V2StructuredAllGenerationCoordinatorTest {
         StructuredGenerationAcceptanceStore store = mock(StructuredGenerationAcceptanceStore.class);
         WorkbookExporter exporter = mock(WorkbookExporter.class);
         CreateGenerationTaskRequest request = request();
+        stubApprovedScopeVersion(repository, request);
         var function = request.approvedFunctionScope().functions().get(0);
         when(repository.approvedFunctions("task-v2")).thenReturn(List.of(function));
         when(repository.hasCompleteMaterialInventory("task-v2", request.requirementScope())).thenReturn(false);
@@ -202,6 +526,7 @@ class V2StructuredAllGenerationCoordinatorTest {
         StructuredGenerationAcceptanceStore store = mock(StructuredGenerationAcceptanceStore.class);
         WorkbookExporter exporter = mock(WorkbookExporter.class);
         CreateGenerationTaskRequest request = request();
+        stubApprovedScopeVersion(repository, request);
         var function = request.approvedFunctionScope().functions().get(0);
         when(repository.approvedFunctions("task-v2")).thenReturn(List.of(function));
         when(repository.hasCompleteMaterialInventory("task-v2", request.requirementScope())).thenReturn(false);
@@ -251,6 +576,7 @@ class V2StructuredAllGenerationCoordinatorTest {
         StructuredGenerationAcceptanceStore store = mock(StructuredGenerationAcceptanceStore.class);
         WorkbookExporter exporter = mock(WorkbookExporter.class);
         CreateGenerationTaskRequest request = request();
+        stubApprovedScopeVersion(repository, request);
         var function = request.approvedFunctionScope().functions().get(0);
         when(repository.approvedFunctions("task-v2")).thenReturn(List.of(function));
         when(repository.hasCompleteMaterialInventory("task-v2", request.requirementScope())).thenReturn(false);
@@ -289,6 +615,7 @@ class V2StructuredAllGenerationCoordinatorTest {
         StructuredGenerationAcceptanceStore store = mock(StructuredGenerationAcceptanceStore.class);
         WorkbookExporter exporter = mock(WorkbookExporter.class);
         CreateGenerationTaskRequest request = request();
+        stubApprovedScopeVersion(repository, request);
         var function = request.approvedFunctionScope().functions().get(0);
         when(repository.approvedFunctions("task-v2")).thenReturn(List.of(function));
         when(repository.hasCompleteMaterialInventory("task-v2", request.requirementScope())).thenReturn(true);
@@ -331,6 +658,7 @@ class V2StructuredAllGenerationCoordinatorTest {
         StructuredGenerationAcceptanceStore store = mock(StructuredGenerationAcceptanceStore.class);
         WorkbookExporter exporter = mock(WorkbookExporter.class);
         CreateGenerationTaskRequest request = request();
+        stubApprovedScopeVersion(repository, request);
         var function = request.approvedFunctionScope().functions().get(0);
         var fact = persistedFact("fact-retry");
         when(repository.approvedFunctions("task-v2")).thenReturn(List.of(function));
@@ -385,6 +713,7 @@ class V2StructuredAllGenerationCoordinatorTest {
         StructuredGenerationAcceptanceStore store = mock(StructuredGenerationAcceptanceStore.class);
         WorkbookExporter exporter = mock(WorkbookExporter.class);
         CreateGenerationTaskRequest request = request();
+        stubApprovedScopeVersion(repository, request);
         var function = request.approvedFunctionScope().functions().get(0);
         MaterialInventoryDocument material = material();
         when(repository.approvedFunctions("task-v2")).thenReturn(List.of(function));
@@ -472,7 +801,35 @@ class V2StructuredAllGenerationCoordinatorTest {
                 List.of(new com.testcaseagent.knowledgeagent.StructuredSourceQuoteV2("unit-a", "订单可以提交")));
     }
 
+    private static void stubApprovedScopeVersion(
+            GenerationTaskRepository repository, CreateGenerationTaskRequest request) {
+        when(repository.hasExactApprovedScopeSnapshot("task-v2")).thenReturn(true);
+        when(repository.hasDistinctApprovedAndDerivedTestPointKeys("task-v2")).thenReturn(true);
+        when(repository.approvedScopeVersion("task-v2"))
+                .thenReturn(request.approvedFunctionScope().scopeVersion());
+    }
+
     private static CreateGenerationTaskRequest request() {
         return GenerationWorkflowV2RoutingTest.request();
+    }
+
+    private static CreateGenerationTaskRequest requestWithPoints(
+            List<ApprovedFunctionScope.ApprovedTestPoint> points) {
+        CreateGenerationTaskRequest base = request();
+        ApprovedFunctionScope scope = new ApprovedFunctionScope(base.approvedFunctionScope().scopeVersion(),
+                base.approvedFunctionScope().functions(), points);
+        return requestWithScope(scope);
+    }
+
+    private static CreateGenerationTaskRequest requestWithScope(ApprovedFunctionScope scope) {
+        CreateGenerationTaskRequest base = request();
+        List<String> functionKeys = scope.functions().stream()
+                .map(ApprovedFunctionScope.ApprovedFunction::functionKey).toList();
+        java.util.LinkedHashMap<String, String> functionPaths = new java.util.LinkedHashMap<>();
+        scope.functions().forEach(function -> functionPaths.put(function.functionKey(), function.path()));
+        return new CreateGenerationTaskRequest(base.taskMode(), functionKeys.get(0), functionKeys,
+                functionPaths, base.fewShotPolicy(), base.schemaVersion(), base.promptVersion(), base.agentId(),
+                base.requirementScope(), base.exampleScope(), base.requirementAdmissionTypeKeys(), base.prompt(),
+                base.contractVersions(), scope);
     }
 }

@@ -14,7 +14,7 @@ import java.util.Set;
 /**
  * Resolves opaque browser choices to a freshly revalidated, immutable formal requirement scope.
  *
- * [Req-ID]: REQ-CAT-004, REQ-CAT-005, REQ-SCP-001, REQ-SCP-004
+ * [Req-ID]: REQ-CAT-004, REQ-CAT-005, REQ-SCP-001, REQ-SCP-004, REQ-TGV2-016
  */
 public final class DynamicTaskScopeResolver {
     private final DynamicScopeCatalogService catalogService;

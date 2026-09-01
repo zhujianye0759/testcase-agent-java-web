@@ -44,6 +44,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
@@ -94,6 +95,7 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
         jdbc.update("DELETE FROM v2_testability_feedback");
         jdbc.update("DELETE FROM v2_requirement_fact_quote");
         jdbc.update("DELETE FROM v2_requirement_fact");
+        jdbc.update("DELETE FROM v2_approved_test_point");
         jdbc.update("DELETE FROM v2_approved_function");
         jdbc.update("DELETE FROM structured_reconciliation_source_terminal");
         jdbc.update("DELETE FROM structured_reconciliation_relation_stage_binding");
@@ -266,6 +268,39 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
             softly.assertThat(jdbc.queryForObject("""
                     SELECT status FROM structured_generation_work_item WHERE id = ?
                     """, String.class, rejectedClaim.workItemId())).isEqualTo("FAILED");
+        });
+    }
+
+    /** [Req-ID]: REQ-TGV2-016 */
+    @Test
+    void rejectsAFactWindowBeforePublishingWhenItsDerivedPointAliasesAReviewedPoint() {
+        RequirementFactV2Validator validator = new RequirementFactV2Validator();
+        String windowKey = "8".repeat(64);
+        var claim = claimV2FactWindow(windowKey, 1, "evidence-1");
+        var input = v2FactInput(windowKey, "evidence-1", 1,
+                "已注册且状态正常的用户提交正确密码后系统进入首页");
+        var result = new RequirementFactExtractionV2Result("function-1", windowKey, List.of(
+                new RequirementFactExtractionV2Result.RequirementFact(
+                        RequirementFactExtractionV2Result.FactType.OUTPUT, "系统进入首页",
+                        List.of(new StructuredSourceQuoteV2("evidence-1", "系统进入首页")))), List.of());
+        String factKey = validator.validate(input, result).facts().get(0).factKey();
+        String reviewedPointKey = V2GenerationPlanner.factDerivedTestPointKey(
+                "task-1", "function-1", factKey);
+
+        assertThatThrownBy(() -> store.acceptRequirementFactsV2(
+                claim, validator, input, result, Set.of(reviewedPointKey)))
+                .isInstanceOf(IllegalStateException.class);
+
+        assertSoftly(softly -> {
+            softly.assertThat(jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM v2_requirement_fact WHERE first_work_item_id=?",
+                    Integer.class, claim.workItemId())).isZero();
+            softly.assertThat(jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM v2_work_publication WHERE work_item_id=?",
+                    Integer.class, claim.workItemId())).isZero();
+            softly.assertThat(jdbc.queryForObject(
+                    "SELECT accepted_result_sha256 FROM structured_generation_work_item WHERE id=?",
+                    String.class, claim.workItemId())).isNull();
         });
     }
 
@@ -1166,9 +1201,159 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
                 """, fallbackWorkId)).isEqualTo(fallbackBefore);
     }
 
+    /** [Req-ID]: REQ-TGV2-015, REQ-TGV2-016 */
+    @ParameterizedTest
+    @ValueSource(strings = {"description", "description-whitespace", "missing-information",
+            "missing-information-whitespace", "malformed-missing-information", "type", "stable-sequence",
+            "scope-version", "missing-row", "snapshot-description-whitespace",
+            "snapshot-missing-information-whitespace"})
+    void identityLabelRecoveryRebuildsReviewedPointIdentityAndRejectsPersistedSnapshotDrift(String drift)
+            throws Exception {
+        v2IdentityLabelRecoveryFixture();
+        ApprovedFunctionScope.ApprovedFunction function = new ApprovedFunctionScope.ApprovedFunction(
+                "function-1", "订单提交", "业务/订单提交", "");
+        ApprovedFunctionScope.ApprovedTestPoint reviewed = new ApprovedFunctionScope.ApprovedTestPoint(
+                "reviewed-point-1", "function-1",
+                ApprovedFunctionScope.ApprovedTestPointType.BOUNDARY_VALUE,
+                ApprovedFunctionScope.ApprovedTestPointSource.GENERAL_EXPERIENCE,
+                ApprovedFunctionScope.ApprovedTestPointStatus.PENDING_CONFIRMATION,
+                "验证待确认的订单数量边界", List.of("订单数量上限尚未确认"));
+        ApprovedFunctionScope approvedScope = new ApprovedFunctionScope(
+                "scope-v2", List.of(function), List.of(reviewed));
+        String frozenRequest = new ObjectMapper().findAndRegisterModules().writeValueAsString(
+                Map.of("approvedFunctionScope", approvedScope));
+        jdbc.update("UPDATE generation_task SET request_snapshot=CAST(? AS JSON) WHERE id='task-1'", frozenRequest);
+        jdbc.update("""
+                INSERT INTO v2_approved_test_point
+                (task_id, test_point_key, stable_sequence, scope_version, function_key, test_point_type,
+                 source_type, review_status, description_text, missing_information_json)
+                VALUES ('task-1', ?, 1, 'scope-v2', 'function-1', ?, ?, ?, ?, JSON_ARRAY(?))
+                """, reviewed.testPointKey(), reviewed.type().name(), reviewed.source().name(),
+                reviewed.status().name(), reviewed.description(), reviewed.missingInformation().get(0));
+        V2GenerationPlanner.TestPointPlan plan = new V2GenerationPlanner()
+                .approvedTestPoint("task-1", function, reviewed);
+        String workId = store.register(plan.registration());
+        StructuredGenerationAcceptanceStore.WorkClaim claim = store.claimRegistered(
+                "task-1", workId, "reviewed-point-worker").orElseThrow();
+        store.fail(claim, "business_validation_failed", StructuredValidationFailure.of(
+                StructuredValidationFailure.Code.TESTCASE_UNSUPPORTED_BUSINESS_DETAIL,
+                "$.testcases[0].name"));
+
+        assertThat(taskRepository.structuredRetryEligibility("task-1").canRetry()).isTrue();
+
+        switch (drift) {
+            case "description" -> jdbc.update("""
+                    UPDATE v2_approved_test_point SET description_text='被篡改的测试点描述'
+                    WHERE task_id='task-1' AND test_point_key=?
+                    """, reviewed.testPointKey());
+            case "description-whitespace" -> jdbc.update("""
+                    UPDATE v2_approved_test_point SET description_text=CONCAT(' ', description_text)
+                    WHERE task_id='task-1' AND test_point_key=?
+                    """, reviewed.testPointKey());
+            case "missing-information" -> jdbc.update("""
+                    UPDATE v2_approved_test_point SET missing_information_json=JSON_ARRAY('被篡改的缺失信息')
+                    WHERE task_id='task-1' AND test_point_key=?
+                    """, reviewed.testPointKey());
+            case "missing-information-whitespace" -> jdbc.update("""
+                    UPDATE v2_approved_test_point SET missing_information_json=JSON_ARRAY(' 订单数量上限尚未确认')
+                    WHERE task_id='task-1' AND test_point_key=?
+                    """, reviewed.testPointKey());
+            case "malformed-missing-information" -> jdbc.update("""
+                    UPDATE v2_approved_test_point SET missing_information_json=JSON_OBJECT('unexpected', true)
+                    WHERE task_id='task-1' AND test_point_key=?
+                    """, reviewed.testPointKey());
+            case "type" -> jdbc.update("""
+                    UPDATE v2_approved_test_point SET test_point_type='INPUT_VALIDATION'
+                    WHERE task_id='task-1' AND test_point_key=?
+                    """, reviewed.testPointKey());
+            case "stable-sequence" -> jdbc.update("""
+                    UPDATE v2_approved_test_point SET stable_sequence=2
+                    WHERE task_id='task-1' AND test_point_key=?
+                    """, reviewed.testPointKey());
+            case "scope-version" -> jdbc.update("""
+                    UPDATE v2_approved_test_point SET scope_version='scope-tampered'
+                    WHERE task_id='task-1' AND test_point_key=?
+                    """, reviewed.testPointKey());
+            case "missing-row" -> jdbc.update("""
+                    DELETE FROM v2_approved_test_point WHERE task_id='task-1' AND test_point_key=?
+                    """, reviewed.testPointKey());
+            case "snapshot-description-whitespace" -> jdbc.update("""
+                    UPDATE generation_task
+                    SET request_snapshot=JSON_SET(request_snapshot,
+                        '$.approvedFunctionScope.testPoints[0].description',
+                        CONCAT(' ', JSON_UNQUOTE(JSON_EXTRACT(request_snapshot,
+                            '$.approvedFunctionScope.testPoints[0].description'))))
+                    WHERE id='task-1'
+                    """);
+            case "snapshot-missing-information-whitespace" -> jdbc.update("""
+                    UPDATE generation_task
+                    SET request_snapshot=JSON_SET(request_snapshot,
+                        '$.approvedFunctionScope.testPoints[0].missingInformation[0]',
+                        CONCAT(' ', JSON_UNQUOTE(JSON_EXTRACT(request_snapshot,
+                            '$.approvedFunctionScope.testPoints[0].missingInformation[0]'))))
+                    WHERE id='task-1'
+                    """);
+            default -> throw new AssertionError("unsupported drift fixture");
+        }
+        assertThat(taskRepository.structuredRetryEligibility("task-1").canRetry()).isFalse();
+    }
+
+    /** [Req-ID]: REQ-TGV2-016 */
+    @Test
+    void exactApprovedScopeSnapshotStillChecksScopeVersionWhenHistoricalJsonOmitsTestPoints() throws Exception {
+        v2IdentityLabelRecoveryFixture();
+        ApprovedFunctionScope approvedScope = new ApprovedFunctionScope("scope-v2", List.of(
+                new ApprovedFunctionScope.ApprovedFunction(
+                        "function-1", "订单提交", "业务/订单提交", "")));
+        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
+        com.fasterxml.jackson.databind.node.ObjectNode scope = mapper.valueToTree(approvedScope);
+        scope.remove("testPoints");
+        scope.put("scopeVersion", " scope-v2");
+        String frozenRequest = mapper.writeValueAsString(Map.of("approvedFunctionScope", scope));
+        jdbc.update("UPDATE generation_task SET request_snapshot=CAST(? AS JSON) WHERE id='task-1'", frozenRequest);
+
+        assertThat(taskRepository.hasExactApprovedScopeSnapshot("task-1")).isFalse();
+    }
+
+    /** [Req-ID]: REQ-TGV2-016 */
+    @Test
+    void reviewedKeysCannotAliasAnyPersistedFactDerivedPointBeforeCoordinatorRecovery() throws Exception {
+        V2IdentityLabelRecoveryFixture fixture = v2IdentityLabelRecoveryFixture();
+        ApprovedFunctionScope.ApprovedFunction function = new ApprovedFunctionScope.ApprovedFunction(
+                "function-1", "订单提交", "业务/订单提交", "");
+        V2GenerationPlanner.PersistedFact fact = store.acceptedRequirementFactsV2("task-1", "function-1").get(0);
+        String collidingKey = new V2GenerationPlanner().testPoint("task-1", function, fact)
+                .input().testPoint().testPointKey();
+        ApprovedFunctionScope.ApprovedTestPoint reviewed = new ApprovedFunctionScope.ApprovedTestPoint(
+                collidingKey, "function-1", ApprovedFunctionScope.ApprovedTestPointType.BOUNDARY_VALUE,
+                ApprovedFunctionScope.ApprovedTestPointSource.GENERAL_EXPERIENCE,
+                ApprovedFunctionScope.ApprovedTestPointStatus.PENDING_CONFIRMATION,
+                "验证待确认边界", List.of("边界值尚未确认"));
+        ApprovedFunctionScope approvedScope = new ApprovedFunctionScope("scope-v2", List.of(function), List.of(reviewed));
+        String frozenRequest = new ObjectMapper().findAndRegisterModules().writeValueAsString(
+                Map.of("approvedFunctionScope", approvedScope));
+        jdbc.update("UPDATE generation_task SET request_snapshot=CAST(? AS JSON) WHERE id='task-1'", frozenRequest);
+        jdbc.update("""
+                INSERT INTO v2_approved_test_point
+                (task_id, test_point_key, stable_sequence, scope_version, function_key, test_point_type,
+                 source_type, review_status, description_text, missing_information_json)
+                VALUES ('task-1', ?, 1, 'scope-v2', 'function-1', 'BOUNDARY_VALUE',
+                        'GENERAL_EXPERIENCE', 'PENDING_CONFIRMATION', '验证待确认边界', JSON_ARRAY('边界值尚未确认'))
+                """, collidingKey);
+
+        assertThat(taskRepository.hasExactApprovedScopeSnapshot("task-1")).isTrue();
+        assertThat(taskRepository.hasDistinctApprovedAndDerivedTestPointKeys("task-1")).isFalse();
+        assertThat(jdbc.queryForObject("SELECT accepted_result_sha256 FROM structured_generation_work_item WHERE id=?",
+                String.class, fixture.factWorkId())).isNotBlank();
+    }
+
     /** [Req-ID]: REQ-TGV2-015 */
     @ParameterizedTest
-    @ValueSource(strings = {"coverage", "work-diagnostic", "attempt-history", "registration-lineage"})
+    @ValueSource(strings = {"coverage", "work-diagnostic", "attempt-history", "identity", "skill",
+            "operation", "ordinal-range", "material-key", "material-document", "source-label",
+            "evidence-keys", "context-evidence-keys", "evidence-storage-null", "context-storage-empty",
+            "function-key", "test-point-key",
+            "parent-work", "split-depth"})
     void identityLabelRecoveryRejectsInexactSupersededFallbackState(String mutation) {
         v2IdentityLabelRecoveryFixture();
         String fallbackWorkId = addAuditedSupersededNoFactFallback();
@@ -1186,7 +1371,48 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
                     UPDATE structured_generation_attempt SET failure_type='model_execution_failed'
                     WHERE work_item_id=?
                     """, fallbackWorkId);
-            case "registration-lineage" -> {
+            case "identity" -> jdbc.update("""
+                    UPDATE structured_generation_work_item SET identity_key=? WHERE id=?
+                    """, "9".repeat(64), fallbackWorkId);
+            case "skill" -> jdbc.update("""
+                    UPDATE structured_generation_work_item SET skill_name='requirement-fact-extraction' WHERE id=?
+                    """, fallbackWorkId);
+            case "operation" -> jdbc.update("""
+                    UPDATE structured_generation_work_item SET operation_name='REQUIREMENT_FACT_EXTRACTION_V2' WHERE id=?
+                    """, fallbackWorkId);
+            case "ordinal-range" -> jdbc.update("""
+                    UPDATE structured_generation_work_item SET ordinal_start=1, ordinal_end=1 WHERE id=?
+                    """, fallbackWorkId);
+            case "material-key" -> jdbc.update("""
+                    UPDATE structured_generation_work_item SET material_key='drifted-material' WHERE id=?
+                    """, fallbackWorkId);
+            case "material-document" -> jdbc.update("""
+                    UPDATE structured_generation_work_item SET material_document_id='drifted-document' WHERE id=?
+                    """, fallbackWorkId);
+            case "source-label" -> jdbc.update("""
+                    UPDATE structured_generation_work_item SET source_label='drifted-source' WHERE id=?
+                    """, fallbackWorkId);
+            case "evidence-keys" -> jdbc.update("""
+                    UPDATE structured_generation_work_item SET allowed_evidence_keys_json=JSON_ARRAY('drifted-evidence')
+                    WHERE id=?
+                    """, fallbackWorkId);
+            case "context-evidence-keys" -> jdbc.update("""
+                    UPDATE structured_generation_work_item SET context_evidence_keys_json=JSON_ARRAY('drifted-context')
+                    WHERE id=?
+                    """, fallbackWorkId);
+            case "evidence-storage-null" -> jdbc.update("""
+                    UPDATE structured_generation_work_item SET allowed_evidence_keys_json=NULL WHERE id=?
+                    """, fallbackWorkId);
+            case "context-storage-empty" -> jdbc.update("""
+                    UPDATE structured_generation_work_item SET context_evidence_keys_json=JSON_ARRAY() WHERE id=?
+                    """, fallbackWorkId);
+            case "function-key" -> jdbc.update("""
+                    UPDATE structured_generation_work_item SET function_key='drifted-function' WHERE id=?
+                    """, fallbackWorkId);
+            case "test-point-key" -> jdbc.update("""
+                    UPDATE structured_generation_work_item SET test_point_key='drifted-point' WHERE id=?
+                    """, fallbackWorkId);
+            case "parent-work" -> {
                 String completedFactWork = jdbc.queryForObject("""
                         SELECT id FROM structured_generation_work_item
                         WHERE task_id='task-1' AND operation_name='REQUIREMENT_FACT_EXTRACTION_V2'
@@ -1194,10 +1420,13 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
                         """, String.class);
                 jdbc.update("""
                         UPDATE structured_generation_work_item
-                        SET parent_work_item_id=?, split_depth=1
+                        SET parent_work_item_id=?
                         WHERE id=?
                         """, completedFactWork, fallbackWorkId);
             }
+            case "split-depth" -> jdbc.update("""
+                    UPDATE structured_generation_work_item SET split_depth=1 WHERE id=?
+                    """, fallbackWorkId);
             default -> throw new IllegalArgumentException("unknown mutation");
         }
         Map<String, Object> before = v2ExpectedResultsRecoveryFullSnapshot();
@@ -1911,6 +2140,7 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
                 (task_id, function_key, stable_sequence, scope_version, name_text, path_text, description_text)
                 VALUES ('task-1', 'function-unaffected', 3, 'scope-v2', '其他功能', '范围/其他功能', '')
                 """);
+        freezeV2ApprovedScopeSnapshot("task-1");
         jdbc.update("""
                 INSERT INTO v2_requirement_fact
                 (task_id, fact_key, first_work_item_id, function_key, fact_type, statement_text)
@@ -2116,8 +2346,9 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
                     new FunctionalTestcaseDesignV2Result(functionKey,
                             fallback.input().testPoint().testPointKey(),
                             FunctionalTestcaseDesignV2Result.GenerationOutcome.UNABLE_TO_GENERATE,
-                            List.of(V2GenerationPlanner.missingFormalFactInformation()), List.of()));
+                             List.of(V2GenerationPlanner.missingFormalFactInformation()), List.of()));
         }
+        freezeV2ApprovedScopeSnapshot("task-1");
 
         var eligibility = taskRepository.structuredRetryEligibility("task-1");
         assertSoftly(softly -> {
@@ -2175,6 +2406,7 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
                 (task_id, function_key, stable_sequence, scope_version, name_text, path_text, description_text)
                 VALUES ('task-1', 'function-3', 3, 'scope-v2', '独立功能', '范围/独立功能', '')
                 """);
+        freezeV2ApprovedScopeSnapshot("task-1");
         String completedWindow = "5".repeat(64);
         String completedWork = store.register(new StructuredGenerationAcceptanceStore.WorkRegistration(
                 "task-1", completedWindow, "requirement-fact-extraction", "REQUIREMENT_FACT_EXTRACTION_V2",
@@ -2341,6 +2573,7 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
                 (task_id, function_key, stable_sequence, scope_version, name_text, path_text, description_text)
                 VALUES ('task-1', 'function-3', 3, 'scope-v2', '独立功能', '范围/独立功能', '')
                 """);
+        freezeV2ApprovedScopeSnapshot("task-1");
         var function = new ApprovedFunctionScope.ApprovedFunction(
                 "function-3", "独立功能", "范围/独立功能", "");
         String factWindow = "4".repeat(64);
@@ -7382,11 +7615,12 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
         jdbc.update("""
                 UPDATE generation_task
                 SET task_mode='ALL', status='GENERATING', structured_processing_status='RUNNING',
-                    structured_coverage_status='PENDING', request_snapshot=JSON_OBJECT('scope', 'frozen-v2'),
+                    structured_coverage_status='PENDING',
                     workflow_version='2.0', input_version='2.0', artifact_version='2.0',
                     approved_scope_version='scope-v2'
                 WHERE id='task-1'
                 """);
+        freezeV2ApprovedScopeSnapshot("task-1");
         V2GenerationPlanner planner = new V2GenerationPlanner();
         ApprovedFunctionScope.ApprovedFunction function = new ApprovedFunctionScope.ApprovedFunction(
                 "function-1", "订单提交", "业务/订单提交", "");
@@ -7457,11 +7691,12 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
         jdbc.update("""
                 UPDATE generation_task
                 SET task_mode='ALL', status='GENERATING', structured_processing_status='RUNNING',
-                    structured_coverage_status='PENDING', request_snapshot=JSON_OBJECT('scope', 'frozen-v2'),
+                    structured_coverage_status='PENDING',
                     workflow_version='2.0', input_version='2.0', artifact_version='2.0',
                     approved_scope_version='scope-v2'
                 WHERE id='task-1'
                 """);
+        freezeV2ApprovedScopeSnapshot("task-1");
         String factWindow = "7".repeat(64);
         String factWorkId = store.register(new StructuredGenerationAcceptanceStore.WorkRegistration(
                 "task-1", factWindow, "requirement-fact-extraction", "REQUIREMENT_FACT_EXTRACTION_V2",
@@ -7626,7 +7861,7 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
         jdbc.update("""
                 UPDATE generation_task
                 SET task_mode='ALL', status='GENERATING', structured_processing_status='RUNNING',
-                    structured_coverage_status='PENDING', request_snapshot=JSON_OBJECT('scope', 'frozen-v2'),
+                    structured_coverage_status='PENDING',
                     workflow_version='2.0', input_version='2.0', artifact_version='2.0',
                     approved_scope_version='scope-v2'
                 WHERE id='task-1'
@@ -7636,6 +7871,7 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
                 (task_id, function_key, stable_sequence, scope_version, name_text, path_text, description_text)
                 VALUES ('task-1', 'function-2', 2, 'scope-v2', '结果查询', '业务/结果查询', '')
                 """);
+        freezeV2ApprovedScopeSnapshot("task-1");
         List<ApprovedFunctionScope.ApprovedFunction> functions = List.of(
                 new ApprovedFunctionScope.ApprovedFunction("function-1", "订单提交", "业务/订单提交", ""),
                 new ApprovedFunctionScope.ApprovedFunction("function-2", "结果查询", "业务/结果查询", ""));
@@ -7689,11 +7925,12 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
         jdbc.update("""
                 UPDATE generation_task
                 SET task_mode='ALL', status='GENERATING', structured_processing_status='RUNNING',
-                    structured_coverage_status='PENDING', request_snapshot=JSON_OBJECT('scope', 'frozen-v2'),
+                    structured_coverage_status='PENDING',
                     workflow_version='2.0', input_version='2.0', artifact_version='2.0',
                     approved_scope_version='scope-v2'
                 WHERE id=?
                 """, taskId);
+        freezeV2ApprovedScopeSnapshot(taskId);
         List<StructuredGenerationAcceptanceStore.WorkRegistration> registrations = List.of(
                 new StructuredGenerationAcceptanceStore.WorkRegistration(
                         taskId, "d".repeat(64), "requirement-fact-extraction",
@@ -7741,6 +7978,19 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
                 (task_id, document_id, unit_id, document_role, chunk_index, ordinal, content, start_at, end_at)
                 VALUES (?, 'document-1', 'evidence-1', 'REQUIREMENT', 0, 1, '通用合成证据', 0, 6)
                 """, taskId);
+    }
+
+    /** Stores the same immutable V2 admission snapshot that production creation persists before recovery tests run. */
+    private void freezeV2ApprovedScopeSnapshot(String taskId) {
+        try {
+            ApprovedFunctionScope scope = new ApprovedFunctionScope(
+                    "scope-v2", taskRepository.approvedFunctions(taskId), List.of());
+            String snapshot = new ObjectMapper().findAndRegisterModules().writeValueAsString(
+                    Map.of("approvedFunctionScope", scope));
+            jdbc.update("UPDATE generation_task SET request_snapshot=CAST(? AS JSON) WHERE id=?", snapshot, taskId);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("cannot freeze synthetic V2 scope", exception);
+        }
     }
 
     /** Captures immutable request and attempt audit fields retained by a V2 technical recovery. */

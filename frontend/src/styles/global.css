@@ -856,6 +856,31 @@ p {
   gap: var(--space-16);
 }
 
+.task-form__approved-function,
+.task-form__approved-test-point {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-16);
+  padding: var(--space-16);
+  border: 1px solid var(--color-glass-border);
+  border-radius: var(--radius-md);
+  background: var(--color-glass-inset);
+}
+
+.task-form__approved-test-points {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: var(--space-16);
+  padding-top: var(--space-8);
+  border-top: 1px solid var(--color-glass-border);
+}
+
+.task-form__approved-test-points h3,
+.task-form__approved-test-points p {
+  margin: var(--space-0);
+}
+
 .task-form__scope-cascade > label,
 .task-form__scope-value {
   min-width: 0;
@@ -1773,6 +1798,8 @@ button:disabled {
   .task-form__mode .task-form__choice,
   .task-form__scope-cascade,
   .task-form__materials,
+  .task-form__approved-function,
+  .task-form__approved-test-point,
   .task-detail__summary,
   .task-detail__description-list,
   .task-detail__cards {

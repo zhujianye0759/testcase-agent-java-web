@@ -843,15 +843,168 @@ public final class GenerationTaskRepository {
                     """, taskId, function.functionKey(), index + 1, approved.scopeVersion(), function.name(),
                     function.path(), function.description());
         }
+        for (int index = 0; index < approved.testPoints().size(); index++) {
+            ApprovedFunctionScope.ApprovedTestPoint point = approved.testPoints().get(index);
+            jdbcTemplate.update("""
+                    INSERT INTO v2_approved_test_point
+                    (task_id, test_point_key, stable_sequence, scope_version, function_key, test_point_type,
+                     source_type, review_status, description_text, missing_information_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, taskId, point.testPointKey(), index + 1, approved.scopeVersion(), point.functionKey(),
+                    point.type().name(), point.source().name(), point.status().name(), point.description(),
+                    asJson(point.missingInformation()));
+        }
     }
 
     /** Reads the immutable V2 scope in its task-owned sequence; an empty list identifies a historical task. */
     public List<ApprovedFunctionScope.ApprovedFunction> approvedFunctions(String taskId) {
+        return approvedFunctions(taskId, false);
+    }
+
+    private List<ApprovedFunctionScope.ApprovedFunction> approvedFunctions(String taskId, boolean lockRows) {
         return jdbcTemplate.query("""
-                SELECT function_key, name_text, path_text, description_text
-                FROM v2_approved_function WHERE task_id = ? ORDER BY stable_sequence
-                """, (row, ignored) -> new ApprovedFunctionScope.ApprovedFunction(row.getString("function_key"),
-                row.getString("name_text"), row.getString("path_text"), row.getString("description_text")), taskId);
+                SELECT approved_function.stable_sequence, approved_function.scope_version, task.approved_scope_version,
+                       approved_function.function_key, approved_function.name_text,
+                       approved_function.path_text, approved_function.description_text
+                FROM v2_approved_function approved_function
+                JOIN generation_task task ON task.id=approved_function.task_id
+                WHERE approved_function.task_id = ? ORDER BY approved_function.stable_sequence%s
+                """.formatted(lockRows ? " FOR UPDATE" : ""), (row, rowNumber) -> {
+            if (row.getInt("stable_sequence") != rowNumber + 1
+                    || !Objects.equals(row.getString("scope_version"), row.getString("approved_scope_version"))) {
+                throw new IllegalStateException("approved function snapshot coordinates do not match the task");
+            }
+            String key = row.getString("function_key");
+            String name = row.getString("name_text");
+            String path = row.getString("path_text");
+            String description = row.getString("description_text");
+            ApprovedFunctionScope.ApprovedFunction function = new ApprovedFunctionScope.ApprovedFunction(
+                    key, name, path, description);
+            if (!Objects.equals(key, function.functionKey()) || !Objects.equals(name, function.name())
+                    || !Objects.equals(path, function.path())
+                    || !Objects.equals(description, function.description())) {
+                throw new IllegalStateException("approved function snapshot fields are not canonical");
+            }
+            return function;
+        }, taskId);
+    }
+
+    /** Reads the task-owned approved-scope version used to close coordinator recovery against the request snapshot. */
+    public String approvedScopeVersion(String taskId) {
+        return jdbcTemplate.queryForObject(
+                "SELECT approved_scope_version FROM generation_task WHERE id = ?", String.class, taskId);
+    }
+
+    /** Reads caller-reviewed pending points in their immutable task-owned order. [Req-ID]: REQ-TGV2-016 */
+    public List<ApprovedFunctionScope.ApprovedTestPoint> approvedTestPoints(String taskId) {
+        return approvedTestPoints(taskId, false);
+    }
+
+    private List<ApprovedFunctionScope.ApprovedTestPoint> approvedTestPoints(String taskId, boolean lockRows) {
+        return jdbcTemplate.query("""
+                SELECT point.stable_sequence, point.scope_version, task.approved_scope_version,
+                       point.test_point_key, point.function_key, point.test_point_type,
+                       point.source_type, point.review_status, point.description_text,
+                       point.missing_information_json
+                FROM v2_approved_test_point point
+                JOIN generation_task task ON task.id=point.task_id
+                WHERE point.task_id = ? ORDER BY point.stable_sequence%s
+                """.formatted(lockRows ? " FOR UPDATE" : ""), (row, rowNumber) -> {
+            if (row.getInt("stable_sequence") != rowNumber + 1
+                    || !Objects.equals(row.getString("scope_version"), row.getString("approved_scope_version"))) {
+                throw new IllegalStateException("approved test-point snapshot coordinates do not match the task");
+            }
+            String testPointKey = row.getString("test_point_key");
+            String functionKey = row.getString("function_key");
+            String description = row.getString("description_text");
+            ApprovedFunctionScope.ApprovedTestPoint point = approvedTestPoint(row);
+            if (!Objects.equals(testPointKey, point.testPointKey())
+                    || !Objects.equals(functionKey, point.functionKey())
+                    || !Objects.equals(description, point.description())
+                    || !recoveryStringList(row.getString("missing_information_json"))
+                            .equals(point.missingInformation())) {
+                throw new IllegalStateException("approved test-point snapshot fields are not canonical");
+            }
+            return point;
+        },
+                taskId);
+    }
+
+    /**
+     * Closes the raw caller snapshot against both immutable V20/V25 projections before any V2 KEE call.
+     * The work identity intentionally excludes reader wording, so recovery replays the ordered projection instead of
+     * hiding mutable text inside a work key. Historical snapshots may omit only the later {@code testPoints} field;
+     * all fields they do contain remain exact and no V25 rows may appear behind an omitted field.
+     * [Req-ID]: REQ-TGV2-016
+     */
+    public boolean hasExactApprovedScopeSnapshot(String taskId) {
+        String requestSnapshot = jdbcTemplate.queryForObject(
+                "SELECT request_snapshot FROM generation_task WHERE id = ?", String.class, taskId);
+        return hasExactApprovedScopeSnapshot(taskId, requestSnapshot, false);
+    }
+
+    private boolean hasExactApprovedScopeSnapshot(
+            String taskId, String requestSnapshot, boolean lockRows) {
+        try {
+            List<ApprovedFunctionScope.ApprovedFunction> persistedFunctions = approvedFunctions(taskId, lockRows);
+            List<ApprovedFunctionScope.ApprovedTestPoint> persisted = approvedTestPoints(taskId, lockRows);
+            JsonNode root = objectMapper.readTree(requestSnapshot);
+            JsonNode scope = root == null ? null : root.get("approvedFunctionScope");
+            if (scope == null || !scope.isObject()) return false;
+            JsonNode points = scope.get("testPoints");
+            boolean historicalPointsOmitted = points == null || points.isNull();
+            if (!historicalPointsOmitted && !points.isArray()) return false;
+            String taskScopeVersion = jdbcTemplate.queryForObject(
+                    "SELECT approved_scope_version FROM generation_task WHERE id = ?", String.class, taskId);
+            if (!Objects.equals(scope.path("scopeVersion").textValue(), taskScopeVersion)) return false;
+            ApprovedFunctionScope frozen = objectMapper.convertValue(scope, ApprovedFunctionScope.class);
+            com.fasterxml.jackson.databind.node.ObjectNode canonical = objectMapper.valueToTree(frozen);
+            if (historicalPointsOmitted) canonical.remove("testPoints");
+            if (!scope.equals(canonical)) return false;
+            return persistedFunctions.equals(frozen.functions()) && persisted.equals(frozen.testPoints());
+        } catch (JsonProcessingException | IllegalArgumentException | IllegalStateException
+                 | InvalidV2RecoverySnapshotException invalidSnapshot) {
+            // Stored coordinates and snapshots are untrusted recovery input. Their contents must not survive in logs.
+            return false;
+        }
+    }
+
+    /**
+     * Rejects caller-owned identities that alias deterministic Java points already implied by this task snapshot.
+     * The two fallback identities are reserved for every function even before either fallback becomes necessary.
+     * [Req-ID]: REQ-TGV2-016
+     */
+    public boolean hasDistinctApprovedAndDerivedTestPointKeys(String taskId) {
+        try {
+            List<ApprovedFunctionScope.ApprovedFunction> functions = approvedFunctions(taskId);
+            Set<String> reviewed = approvedTestPoints(taskId).stream()
+                    .map(ApprovedFunctionScope.ApprovedTestPoint::testPointKey)
+                    .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+            Set<String> derived = new LinkedHashSet<>();
+            Set<String> functionKeys = functions.stream()
+                    .map(ApprovedFunctionScope.ApprovedFunction::functionKey)
+                    .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+            for (String functionKey : functionKeys) {
+                if (!derived.add(V2GenerationPlanner.missingFormalFactPointKey(taskId, functionKey))
+                        || !derived.add(V2GenerationPlanner.incompleteFactWindowsPointKey(taskId, functionKey))) {
+                    return false;
+                }
+            }
+            jdbcTemplate.query("""
+                    SELECT function_key, fact_key FROM v2_requirement_fact
+                    WHERE task_id=? ORDER BY function_key, fact_key
+                    """, (org.springframework.jdbc.core.RowCallbackHandler) row -> {
+                String functionKey = row.getString("function_key");
+                if (!functionKeys.contains(functionKey)
+                        || !derived.add(V2GenerationPlanner.factDerivedTestPointKey(
+                                taskId, functionKey, row.getString("fact_key")))) {
+                    throw new InvalidV2RecoverySnapshotException();
+                }
+            }, taskId);
+            return Collections.disjoint(reviewed, derived);
+        } catch (IllegalArgumentException | IllegalStateException | InvalidV2RecoverySnapshotException invalid) {
+            return false;
+        }
     }
 
     /**
@@ -1233,6 +1386,11 @@ public final class GenerationTaskRepository {
                 || "{}".equals(task.requestSnapshot().strip())
                 || !hasCompleteFrozenInventory(taskId, lockTask)) {
             return unavailableRetry("任务材料范围不完整，不能重试");
+        }
+        if (GenerationContractVersions.V2.equals(task.workflowVersion())
+                && (!hasExactApprovedScopeSnapshot(taskId, task.requestSnapshot(), lockTask)
+                    || !hasDistinctApprovedAndDerivedTestPointKeys(taskId))) {
+            return unavailableRetry("已审核测试点快照不完整，不能重试");
         }
         if (v2FactValidationRecoveryTask) {
             return v2FactValidationRecoveryDecision(taskId, task, unfinished, lockTask);
@@ -1839,17 +1997,26 @@ public final class GenerationTaskRepository {
                 taskId, affectedFunctions, suffix);
         Map<String, V2TaskFactProjection> facts = loadV2FactsForFunctions(
                 taskId, affectedFunctions, suffix);
+        List<ApprovedFunctionScope.ApprovedTestPoint> reviewedPoints = loadV2ApprovedTestPoints(
+                taskId, affectedFunctions, suffix);
         Map<FunctionPointKey, V2GenerationPlanner.TestPointPlan> plans = buildV2TestPointPlans(
-                taskId, functions, facts);
+                taskId, functions, facts, reviewedPoints);
         Set<String> replayedDesignIds = new LinkedHashSet<>(failedIds);
         replayedDesignIds.addAll(supersededFallbackIds);
-        for (V2FactWorkRow work : snapshot.works()) {
-            if (!replayedDesignIds.contains(work.id())) continue;
-            V2GenerationPlanner.TestPointPlan plan = plans.get(
-                    new FunctionPointKey(work.functionKey(), work.testPointKey()));
-            if (plan == null || !matchesV2WorkRegistration(work, plan.registration())) {
-                return unavailableRetry("V2 身份标签失败工作身份无法从已发布事实重建");
+        List<V2FactWorkRow> replayedDesignWorks = snapshot.works().stream()
+                .filter(work -> replayedDesignIds.contains(work.id())).toList();
+        try {
+            // Evidence arrays are stored as JSON and deliberately omitted from the compact task snapshot. Rehydrate
+            // them under the same lock before comparing the complete planner registration. [Req-ID]: REQ-TGV2-015
+            for (V2FactWorkRow work : hydrateV2FactWorkEvidence(taskId, replayedDesignWorks, suffix)) {
+                V2GenerationPlanner.TestPointPlan plan = plans.get(
+                        new FunctionPointKey(work.functionKey(), work.testPointKey()));
+                if (plan == null || !matchesV2WorkRegistration(work, plan.registration())) {
+                    return unavailableRetry("V2 身份标签失败工作身份无法从已发布事实重建");
+                }
             }
+        } catch (InvalidV2RecoverySnapshotException invalidSnapshot) {
+            return unavailableRetry("V2 身份标签失败工作证据坐标不符合规范登记形态");
         }
         return new StructuredRetryDecision(StructuredRetryEligibility.eligible(), null,
                 StructuredRetryMutation.RECOVER_V2_IDENTITY_LABEL_REJECTION);
@@ -2652,6 +2819,34 @@ public final class GenerationTaskRepository {
         return result;
     }
 
+    /** Loads the immutable admission-owned points under the same lock scope as a recovery proof. */
+    private List<ApprovedFunctionScope.ApprovedTestPoint> loadV2ApprovedTestPoints(
+            String taskId, Set<String> functionKeys, String suffix) {
+        if (functionKeys.isEmpty()) return List.of();
+        String placeholders = functionKeys.stream().map(ignored -> "?")
+                .collect(java.util.stream.Collectors.joining(", "));
+        List<Object> parameters = new ArrayList<>(1 + functionKeys.size());
+        parameters.add(taskId);
+        parameters.addAll(functionKeys);
+        return jdbcTemplate.query("""
+                SELECT test_point_key, function_key, test_point_type, source_type, review_status,
+                       description_text, missing_information_json
+                FROM v2_approved_test_point
+                WHERE task_id=? AND function_key IN (%s)
+                ORDER BY stable_sequence%s
+                """.formatted(placeholders, suffix), (row, ignored) -> approvedTestPoint(row),
+                parameters.toArray());
+    }
+
+    private ApprovedFunctionScope.ApprovedTestPoint approvedTestPoint(ResultSet row) throws SQLException {
+        return new ApprovedFunctionScope.ApprovedTestPoint(
+                row.getString("test_point_key"), row.getString("function_key"),
+                ApprovedFunctionScope.ApprovedTestPointType.valueOf(row.getString("test_point_type")),
+                ApprovedFunctionScope.ApprovedTestPointSource.valueOf(row.getString("source_type")),
+                ApprovedFunctionScope.ApprovedTestPointStatus.valueOf(row.getString("review_status")),
+                row.getString("description_text"), recoveryStringList(row.getString("missing_information_json")));
+    }
+
     private List<V2FactWorkRow> hydrateV2FactWorkEvidence(
             String taskId, List<V2FactWorkRow> works, String suffix) {
         if (works.isEmpty()) return List.of();
@@ -2666,9 +2861,9 @@ public final class GenerationTaskRepository {
                 FROM structured_generation_work_item WHERE task_id=? AND id IN (%s)
                 ORDER BY id%s
                 """.formatted(placeholders, suffix), (org.springframework.jdbc.core.RowCallbackHandler) row ->
-                evidence.put(row.getString("id"), new V2EvidenceWindow(
-                        recoveryOptionalStringList(row.getString("allowed_evidence_keys_json")),
-                        recoveryOptionalStringList(row.getString("context_evidence_keys_json")))),
+                evidence.put(row.getString("id"), canonicalV2EvidenceWindow(
+                        row.getString("allowed_evidence_keys_json"),
+                        row.getString("context_evidence_keys_json"))),
                 parameters.toArray());
         if (evidence.size() != works.size()) throw new InvalidV2RecoverySnapshotException();
         return works.stream().map(work -> {
@@ -2680,6 +2875,21 @@ public final class GenerationTaskRepository {
                     work.acceptedResultSha256(), work.validationErrorCode(), work.validationErrorPath(),
                     work.validationErrorMessage(), work.hasLease(), work.runningAttempt());
         }).toList();
+    }
+
+    /**
+     * Preserves the planner's canonical JSON presence rules instead of treating SQL NULL and an empty array as the
+     * same historical coordinate. Registrations always persist the target array, while an empty context is NULL.
+     * [Req-ID]: REQ-TGV2-015
+     */
+    private V2EvidenceWindow canonicalV2EvidenceWindow(String evidenceValue, String contextValue) {
+        if (evidenceValue == null) throw new InvalidV2RecoverySnapshotException();
+        List<String> evidenceKeys = recoveryStringList(evidenceValue);
+        List<String> contextEvidenceKeys = recoveryOptionalStringList(contextValue);
+        if (contextValue != null && contextEvidenceKeys.isEmpty()) {
+            throw new InvalidV2RecoverySnapshotException();
+        }
+        return new V2EvidenceWindow(evidenceKeys, contextEvidenceKeys);
     }
 
     /**
@@ -2749,7 +2959,8 @@ public final class GenerationTaskRepository {
     /** Builds every deterministic test-point input once per function for the complete locked recovery snapshot. */
     private static Map<FunctionPointKey, V2GenerationPlanner.TestPointPlan> buildV2TestPointPlans(
             String taskId, Map<String, V2ApprovedFunctionRow> functions,
-            Map<String, V2TaskFactProjection> factsByKey) {
+            Map<String, V2TaskFactProjection> factsByKey,
+            List<ApprovedFunctionScope.ApprovedTestPoint> reviewedPoints) {
         Map<String, List<V2GenerationPlanner.PersistedFact>> factsByFunction = new LinkedHashMap<>();
         try {
             factsByKey.forEach((factKey, fact) -> factsByFunction
@@ -2763,17 +2974,36 @@ public final class GenerationTaskRepository {
         }
         Map<FunctionPointKey, V2GenerationPlanner.TestPointPlan> plans = new LinkedHashMap<>();
         V2GenerationPlanner planner = new V2GenerationPlanner();
+        Map<String, List<ApprovedFunctionScope.ApprovedTestPoint>> reviewedByFunction = new LinkedHashMap<>();
+        reviewedPoints.forEach(point -> reviewedByFunction
+                .computeIfAbsent(point.functionKey(), ignored -> new ArrayList<>()).add(point));
         for (V2ApprovedFunctionRow row : functions.values()) {
             ApprovedFunctionScope.ApprovedFunction function = new ApprovedFunctionScope.ApprovedFunction(
                     row.functionKey(), row.name(), row.path(), row.description());
-            V2GenerationPlanner.TestPointPlan missing = planner.missingFormalFactTestPoint(taskId, function);
-            plans.put(new FunctionPointKey(row.functionKey(), missing.input().testPoint().testPointKey()), missing);
-            for (V2GenerationPlanner.TestPointPlan plan : planner.testPoints(
-                    taskId, function, factsByFunction.getOrDefault(row.functionKey(), List.of()))) {
-                plans.put(new FunctionPointKey(row.functionKey(), plan.input().testPoint().testPointKey()), plan);
+            List<ApprovedFunctionScope.ApprovedTestPoint> functionReviewed =
+                    reviewedByFunction.getOrDefault(row.functionKey(), List.of());
+            if (functionReviewed.isEmpty()) {
+                V2GenerationPlanner.TestPointPlan missing = planner.missingFormalFactTestPoint(taskId, function);
+                if (!registerUniqueTestPointPlan(plans, row.functionKey(), missing)) return Map.of();
+            }
+            for (V2GenerationPlanner.PersistedFact fact :
+                    factsByFunction.getOrDefault(row.functionKey(), List.of())) {
+                V2GenerationPlanner.TestPointPlan plan = planner.testPoint(taskId, function, fact);
+                if (!registerUniqueTestPointPlan(plans, row.functionKey(), plan)) return Map.of();
+            }
+            for (ApprovedFunctionScope.ApprovedTestPoint reviewed : functionReviewed) {
+                V2GenerationPlanner.TestPointPlan plan = planner.approvedTestPoint(taskId, function, reviewed);
+                if (!registerUniqueTestPointPlan(plans, row.functionKey(), plan)) return Map.of();
             }
         }
         return Map.copyOf(plans);
+    }
+
+    private static boolean registerUniqueTestPointPlan(
+            Map<FunctionPointKey, V2GenerationPlanner.TestPointPlan> plans,
+            String functionKey, V2GenerationPlanner.TestPointPlan plan) {
+        FunctionPointKey key = new FunctionPointKey(functionKey, plan.input().testPoint().testPointKey());
+        return plans.putIfAbsent(key, plan) == null;
     }
 
     /**
@@ -3113,8 +3343,10 @@ public final class GenerationTaskRepository {
         Map<String, V2ApprovedFunctionRow> batchFunctions = loadV2ApprovedFunctions(
                 taskId, functionKeys, suffix);
         Map<String, V2TaskFactProjection> facts = loadV2FactsForFunctions(taskId, functionKeys, suffix);
+        List<ApprovedFunctionScope.ApprovedTestPoint> reviewedPoints = loadV2ApprovedTestPoints(
+                taskId, functionKeys, suffix);
         return new V2TestcaseBusinessBatch(testPointsByWork, outcomesByWork,
-                buildV2TestPointPlans(taskId, batchFunctions, facts));
+                buildV2TestPointPlans(taskId, batchFunctions, facts, reviewedPoints));
     }
 
     private Map<String, V2TaskFactProjection> loadV2FactsForFunctions(
@@ -4021,8 +4253,10 @@ public final class GenerationTaskRepository {
                 taskId, affectedFunctions, " FOR UPDATE");
         Map<String, V2TaskFactProjection> facts = loadV2FactsForFunctions(
                 taskId, affectedFunctions, " FOR UPDATE");
+        List<ApprovedFunctionScope.ApprovedTestPoint> reviewedPoints = loadV2ApprovedTestPoints(
+                taskId, affectedFunctions, " FOR UPDATE");
         Map<FunctionPointKey, V2GenerationPlanner.TestPointPlan> plans = buildV2TestPointPlans(
-                taskId, functions, facts);
+                taskId, functions, facts, reviewedPoints);
         for (V2FallbackWorkRow fallback : fallbacks) {
             V2GenerationPlanner.TestPointPlan plan = plans.get(
                     new FunctionPointKey(fallback.functionKey(), fallback.testPointKey()));

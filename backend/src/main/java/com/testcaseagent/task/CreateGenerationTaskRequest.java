@@ -14,7 +14,7 @@ import java.util.Map;
 /**
  * Frozen request for the one-feature tracer task.
  *
- * [Req-ID]: REQ-TSK-001, REQ-KAG-002
+ * [Req-ID]: REQ-TSK-001, REQ-KAG-002, REQ-TGV2-016
  */
 public record CreateGenerationTaskRequest(
         GenerationTaskMode taskMode,
