@@ -48,4 +48,7 @@
 
 - 首次不可变 JAR `testcase-agent-backend-v2-identity-label-recovery-20260901-61db48e.jar`（54,537,093 bytes，SHA-256 `FD913376856D396101610433849E51D1E86E24F3FA4E8625501174895CF6AC0F`）已按单实例、3060 秒外层等待部署为 PID 14148。8082 `/api/tasks`、`/api/task-options` 与 5173 代理均为 HTTP 200，Flyway 仍为 V24；33 张表的计数、逐表摘要和全库摘要 `2256A7189B176C141B9B687C58560E6915F6CABF7E40F76F6688730808A3D7BD` 前后完全一致。
 - 第二个不可变 JAR `testcase-agent-backend-v2-identity-label-recovery-live-20260901-40a7282.jar`（54,539,052 bytes，SHA-256 `30377B298B338D7FDFBE66F6B5604560AB88054503B8520A192FBEE83C69B1A7`）部署为唯一 PID 37648 后，API、代理、V24 和上述数据库摘要仍完全相同，但 `canRetry` 仍为 false。只读历史证明原因是上述两个退役规则的连续 attempt 谱系，而非副作用；仍未发送 retry。
-- 最终修复构件、部署身份和 `canRetry false -> true` 的全等复验待本轮代码门禁与最终部署完成后补充。
+- 最终提交 `f6eb0a78c8296a2c00b9e72cc82784301244b243` 已推送到 `origin/codex/enforce-formal-testcase-grounding`。从该精确提交构建的不可变 JAR 为 `backend/target/testcase-agent-backend-v2-identity-label-recovery-final-20260901-f6eb0a7.jar`，54,540,691 bytes，SHA-256 `4657DFC424F9D3DC49A9CD59184317CA11E35636F1FA3A4D48EDCD3B9EF47154`。
+- 最终 JAR 按单实例、隐藏窗口和 3060 秒外层等待部署为唯一 8082 PID 36072；8082 `/api/tasks`、`/api/task-options` 与 5173 `/api/tasks` 代理均为 HTTP 200，stderr 为 0 bytes。启动日志确认 Flyway V24 已校验且无需迁移。
+- 部署前后任务总数均为 23、在途均为 0，目标任务仍为 `PARTIAL/FAILED/UNABLE_TO_GENERATE`，5 个 work、9 个 attempt、artifact 和全部 33 张表的计数/逐表摘要均完全相同；数据库总摘要均为 `2256A7189B176C141B9B687C58560E6915F6CABF7E40F76F6688730808A3D7BD`。唯一预期变化是只读 API 计算的 `canRetry=false -> true`，没有执行 retry、创建任务、调用 KEE 或写入业务数据。
+- 可核验证据目录：`backend/target/acceptance/tgv2-015-superseded-fallback-final-deploy-20260901-f6eb0a7`，其中 `snapshot-PRE.json` 与 `snapshot-POST.json` 保存内容安全的逐表计数/摘要、状态、运行 JAR 和 PID。
