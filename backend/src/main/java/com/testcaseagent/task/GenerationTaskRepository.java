@@ -128,6 +128,8 @@ public final class GenerationTaskRepository {
             "^\\$\\.requirement_facts\\[[0-9]+]\\.statement$");
     private static final Pattern V2_EXPECTED_RESULTS_PATH = Pattern.compile(
             "^\\$\\.testcases\\[[0-9]+]\\.expected_results$");
+    private static final Pattern V2_IDENTITY_LABEL_PATH = Pattern.compile(
+            "^\\$\\.testcases\\[[0-9]+]\\.(?:name|title)$");
 
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
@@ -1023,7 +1025,7 @@ public final class GenerationTaskRepository {
      * work set so its next owner creates the attempt. Conditional updates and row locks keep every supported path
      * single-winner; the V2 fact-validation path may requeue multiple zero-write windows in one closed transaction.
      *
-     * [Req-ID]: REQ-CAG-007, REQ-TGV2-011, REQ-TGV2-012, REQ-TGV2-013, REQ-TGV2-014
+     * [Req-ID]: REQ-CAG-007, REQ-TGV2-011, REQ-TGV2-012, REQ-TGV2-013, REQ-TGV2-014, REQ-TGV2-015
      */
     public int retryFailedBatches(String taskId) {
         return retryTransactionTemplate.execute(status -> {
@@ -1033,7 +1035,8 @@ public final class GenerationTaskRepository {
             // established retry branches retain their existing transaction semantics.
             // [Req-ID]: REQ-TGV2-013
             if ((decision.mutation() == StructuredRetryMutation.RECOVER_V2_ZERO_WRITE_TECHNICAL_FAILURE
-                    || decision.mutation() == StructuredRetryMutation.RECOVER_V2_EXPECTED_RESULTS_REJECTION)
+                    || decision.mutation() == StructuredRetryMutation.RECOVER_V2_EXPECTED_RESULTS_REJECTION
+                    || decision.mutation() == StructuredRetryMutation.RECOVER_V2_IDENTITY_LABEL_REJECTION)
                     && !Objects.equals(TransactionSynchronizationManager.getCurrentTransactionIsolationLevel(),
                             TransactionDefinition.ISOLATION_READ_COMMITTED)) {
                 return 0;
@@ -1085,7 +1088,7 @@ public final class GenerationTaskRepository {
      * <p>The POST repeats this decision while holding the task row lock; callers must not treat this read as
      * authorization.</p>
      *
-     * [Req-ID]: REQ-ESR-001, REQ-ESR-004, REQ-TGV2-011, REQ-TGV2-012, REQ-TGV2-014
+     * [Req-ID]: REQ-ESR-001, REQ-ESR-004, REQ-TGV2-011, REQ-TGV2-012, REQ-TGV2-014, REQ-TGV2-015
      */
     public StructuredRetryEligibility structuredRetryEligibility(String taskId) {
         return structuredRetryEligibility(taskId, false).eligibility();
@@ -1104,6 +1107,9 @@ public final class GenerationTaskRepository {
         if (decision.mutation() == StructuredRetryMutation.RECOVER_V2_EXPECTED_RESULTS_REJECTION) {
             return recoverV2ExpectedResultsRejectedTask(taskId);
         }
+        if (decision.mutation() == StructuredRetryMutation.RECOVER_V2_IDENTITY_LABEL_REJECTION) {
+            return recoverV2IdentityLabelRejectedTask(taskId);
+        }
         int workChanged = switch (decision.mutation()) {
             case REQUEUE_FAILED_WORK -> jdbcTemplate.update("""
                         UPDATE structured_generation_work_item
@@ -1115,7 +1121,8 @@ public final class GenerationTaskRepository {
                     taskId, decision.workItemId());
             case RESUME_QUEUED_RESIDUE, RESUME_EXPIRED_RUNNING_RESIDUE, RESUME_STAGE_GAP -> 1;
             case RECOVER_V2_ATOMICITY_REJECTION, RECOVER_V2_DIRECT_EVIDENCE_REJECTION,
-                    RECOVER_V2_ZERO_WRITE_TECHNICAL_FAILURE, RECOVER_V2_EXPECTED_RESULTS_REJECTION ->
+                    RECOVER_V2_ZERO_WRITE_TECHNICAL_FAILURE, RECOVER_V2_EXPECTED_RESULTS_REJECTION,
+                    RECOVER_V2_IDENTITY_LABEL_REJECTION ->
                     throw new IllegalStateException("V2 fact recovery must use its exact mutation");
         };
         int taskChanged = decision.mutation() == StructuredRetryMutation.RESUME_QUEUED_RESIDUE
@@ -1166,15 +1173,18 @@ public final class GenerationTaskRepository {
         boolean v2FactValidationRecoveryTask = isV2FactValidationRecoveryTask(task);
         boolean v2ZeroWriteTechnicalRecoveryTask = isV2ZeroWriteTechnicalRecoveryTask(task);
         boolean v2ExpectedResultsRecoveryTask = isV2ExpectedResultsRecoveryTask(task);
+        boolean v2IdentityLabelRecoveryTask = isV2IdentityLabelRecoveryTask(task);
         if (!GenerationTaskStatus.FAILED.name().equals(task.status())
                 && !v2FactValidationRecoveryTask
                 && !v2ZeroWriteTechnicalRecoveryTask
-                && !v2ExpectedResultsRecoveryTask) {
+                && !v2ExpectedResultsRecoveryTask
+                && !v2IdentityLabelRecoveryTask) {
             return unavailableRetry("任务当前状态不允许重试");
         }
         if (task.cancellationRequested()) return unavailableRetry("任务已取消或正在取消，不能重试");
         List<RetryWorkRow> unfinished = jdbcTemplate.query("""
-                        SELECT work.id, work.identity_key, work.status, work.accepted_result_sha256, work.skill_name,
+                        SELECT work.id, work.identity_key, work.status, work.coverage_status,
+                               work.accepted_result_sha256, work.skill_name,
                                work.operation_name, work.function_key, work.test_point_key,
                                work.ordinal_start, work.ordinal_end,
                                work.validation_error_code, work.validation_error_path, work.validation_error_message,
@@ -1199,7 +1209,7 @@ public final class GenerationTaskRepository {
                         ORDER BY work.created_at, work.id%s
                         """.formatted(lockTask ? " FOR UPDATE" : ""),
                 (row, ignored) -> new RetryWorkRow(row.getString("id"), row.getString("identity_key"),
-                        row.getString("status"),
+                        row.getString("status"), row.getString("coverage_status"),
                         row.getString("accepted_result_sha256"), row.getString("skill_name"),
                          row.getString("operation_name"), row.getString("function_key"),
                          row.getString("test_point_key"),
@@ -1226,6 +1236,12 @@ public final class GenerationTaskRepository {
         }
         if (v2FactValidationRecoveryTask) {
             return v2FactValidationRecoveryDecision(taskId, task, unfinished, lockTask);
+        }
+        // Identity-label failures share the same PARTIAL artifact envelope as technical zero-write failures, but they
+        // intentionally retain completed fact publications. Select the more specific business-validation branch first.
+        // [Req-ID]: REQ-TGV2-015
+        if (v2IdentityLabelRecoveryTask) {
+            return v2IdentityLabelRecoveryDecision(taskId, task, unfinished, lockTask);
         }
         if (v2ZeroWriteTechnicalRecoveryTask) {
             return v2ZeroWriteTechnicalRecoveryDecision(taskId, task, unfinished, lockTask);
@@ -1708,6 +1724,151 @@ public final class GenerationTaskRepository {
                 && task.artifactId() == null && task.artifactSha256() == null && task.artifactPath() == null;
     }
 
+    /** Selects only the terminal failure artifact produced by the retired identity-label grounding rule. */
+    private static boolean isV2IdentityLabelRecoveryTask(RetryTaskRow task) {
+        return GenerationTaskStatus.PARTIAL.name().equals(task.status())
+                && StructuredProcessingStatus.FAILED.name().equals(task.processingStatus())
+                && StructuredCoverageStatus.UNABLE_TO_GENERATE.name().equals(task.coverageStatus())
+                && GenerationContractVersions.V2.equals(task.workflowVersion())
+                && GenerationContractVersions.V2.equals(task.inputVersion())
+                && GenerationContractVersions.V2.equals(task.artifactVersion())
+                && nonBlank(task.resultSnapshot())
+                && task.validationErrorCode() == null
+                && task.validationErrorPath() == null
+                && task.validationErrorMessage() == null
+                && nonBlank(task.artifactId())
+                && nonBlank(task.artifactSha256())
+                && task.artifactSha256().matches("(?i)[0-9a-f]{64}")
+                && nonBlank(task.artifactPath());
+    }
+
+    /**
+     * Revalidates the complete retained fact projection and the exact zero-write design failure set.
+     * Function, task, project and fixture identities never participate in authorization. [Req-ID]: REQ-TGV2-015
+     */
+    private StructuredRetryDecision v2IdentityLabelRecoveryDecision(
+            String taskId, RetryTaskRow task, List<RetryWorkRow> unfinished, boolean lockRows) {
+        if (unfinished.isEmpty() || !hasUniqueFailureArtifact(taskId, task.artifactId(),
+                task.artifactSha256(), task.artifactPath(), lockRows)) {
+            return unavailableRetry("V2 身份标签失败制品或处理项不符合安全恢复条件");
+        }
+        Set<String> failedIds = new LinkedHashSet<>();
+        for (RetryWorkRow work : unfinished) {
+            Optional<StoredValidationDiagnostic> workDiagnostic = strictStoredValidationDiagnostic(
+                    work.validationErrorCode(), work.validationErrorPath(), work.validationErrorMessage());
+            if (!"FAILED".equals(work.status())
+                    || !"functional-testcase-design".equals(work.skillName())
+                    || !"FUNCTIONAL_TESTCASE_DESIGN_V2".equals(work.operationName())
+                    || !nonBlank(work.functionKey()) || !nonBlank(work.testPointKey())
+                    || work.coverageStatus() != null || work.acceptedResultSha256() != null
+                    || work.hasLease() || work.hasRunningAttempt()
+                    || workDiagnostic.isEmpty()
+                    || !StructuredValidationFailure.Code.TESTCASE_UNSUPPORTED_BUSINESS_DETAIL.name()
+                            .equals(workDiagnostic.get().code())
+                    || !V2_IDENTITY_LABEL_PATH.matcher(workDiagnostic.get().path()).matches()
+                    || !hasOnlyIdentityLabelValidationAttempts(
+                            v2TechnicalRecoveryAttempts(work.id()), workDiagnostic.get())) {
+                return unavailableRetry("V2 身份标签失败历史不符合安全恢复条件");
+            }
+            failedIds.add(work.id());
+        }
+        if (hasAnyV2TestcaseDesignProjection(taskId, lockRows)) {
+            return unavailableRetry("V2 身份标签失败已存在部分设计结果");
+        }
+        V2RecoverySnapshot snapshot;
+        try {
+            snapshot = loadV2RecoverySnapshot(taskId, Set.of(), lockRows);
+        } catch (InvalidV2RecoverySnapshotException invalidSnapshot) {
+            return unavailableRetry("V2 已发布事实无法安全复验");
+        }
+        if (!snapshot.exactTaskFactProjection()) {
+            return unavailableRetry("V2 已发布事实集合与回放结果不闭合");
+        }
+        if (!snapshot.exactSplitLineage() || !snapshot.exactFailedLeafEvidence()) {
+            return unavailableRetry("V2 冻结事实窗口谱系不闭合");
+        }
+        if (snapshot.works().stream()
+                .filter(row -> "REQUIREMENT_FACT_EXTRACTION_V2".equals(row.operationName()))
+                .filter(row -> "COMPLETED".equals(row.status()))
+                .anyMatch(row -> !snapshot.completeFactProjections().getOrDefault(row.id(), false))) {
+            return unavailableRetry("V2 已完成事实窗口与发布账本不闭合");
+        }
+        if (!isSafeV2IdentityLabelWorkGraph(snapshot, failedIds)) {
+            return unavailableRetry("V2 身份标签失败工作图不符合安全恢复条件");
+        }
+        Set<String> affectedFunctions = unfinished.stream().map(RetryWorkRow::functionKey)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        String suffix = lockRows ? " FOR UPDATE" : "";
+        Map<String, V2ApprovedFunctionRow> functions = loadV2ApprovedFunctions(
+                taskId, affectedFunctions, suffix);
+        Map<String, V2TaskFactProjection> facts = loadV2FactsForFunctions(
+                taskId, affectedFunctions, suffix);
+        Map<FunctionPointKey, V2GenerationPlanner.TestPointPlan> plans = buildV2TestPointPlans(
+                taskId, functions, facts);
+        for (V2FactWorkRow work : snapshot.works()) {
+            if (!failedIds.contains(work.id())) continue;
+            V2GenerationPlanner.TestPointPlan plan = plans.get(
+                    new FunctionPointKey(work.functionKey(), work.testPointKey()));
+            if (plan == null || !work.identityKey().equals(plan.registration().identityKey())) {
+                return unavailableRetry("V2 身份标签失败工作身份无法从已发布事实重建");
+            }
+        }
+        return new StructuredRetryDecision(StructuredRetryEligibility.eligible(), null,
+                StructuredRetryMutation.RECOVER_V2_IDENTITY_LABEL_REJECTION);
+    }
+
+    private static boolean hasOnlyIdentityLabelValidationAttempts(
+            List<V2TechnicalRecoveryAttemptRow> attempts, StoredValidationDiagnostic workDiagnostic) {
+        if (attempts.isEmpty()) return false;
+        int expectedAttemptNumber = attempts.size();
+        boolean latest = true;
+        for (V2TechnicalRecoveryAttemptRow attempt : attempts) {
+            Optional<StoredValidationDiagnostic> diagnostic = strictStoredValidationDiagnostic(
+                    attempt.validationErrorCode(), attempt.validationErrorPath(), attempt.validationErrorMessage());
+            if (attempt.attemptNumber() != expectedAttemptNumber--
+                    || !"FAILED".equals(attempt.status()) || attempt.completedAt() == null
+                    || !"business_validation_failed".equals(attempt.failureType())
+                    || diagnostic.isEmpty()
+                    || !StructuredValidationFailure.Code.TESTCASE_UNSUPPORTED_BUSINESS_DETAIL.name()
+                            .equals(diagnostic.get().code())
+                    || !V2_IDENTITY_LABEL_PATH.matcher(diagnostic.get().path()).matches()
+                    || latest && !diagnostic.get().equals(workDiagnostic)) return false;
+            latest = false;
+        }
+        return true;
+    }
+
+    private static boolean isSafeV2IdentityLabelWorkGraph(
+            V2RecoverySnapshot snapshot, Set<String> failedIds) {
+        if (failedIds.isEmpty() || !snapshot.exactTaskFactProjection() || !snapshot.exactSplitLineage()
+                || !snapshot.exactFailedLeafEvidence()) return false;
+        int completedFactWorks = 0;
+        for (V2FactWorkRow row : snapshot.works()) {
+            if (row.hasLease() || row.runningAttempt()) return false;
+            if ("REQUIREMENT_FACT_EXTRACTION_V2".equals(row.operationName())) {
+                if (!"requirement-fact-extraction".equals(row.skillName())) return false;
+                if ("COMPLETED".equals(row.status())) {
+                    completedFactWorks++;
+                    if (!nonBlank(row.acceptedResultSha256())
+                            || !snapshot.completeFactProjections().getOrDefault(row.id(), false)) return false;
+                } else if (!"SPLIT".equals(row.status()) || row.acceptedResultSha256() != null
+                        || snapshot.allWorkOwnedBusinessIds().contains(row.id())) {
+                    return false;
+                }
+            } else if ("FUNCTIONAL_TESTCASE_DESIGN_V2".equals(row.operationName())) {
+                if (!"functional-testcase-design".equals(row.skillName())
+                        || !failedIds.contains(row.id()) || !"FAILED".equals(row.status())
+                        || row.acceptedResultSha256() != null
+                        || snapshot.allWorkOwnedBusinessIds().contains(row.id())) return false;
+            } else {
+                return false;
+            }
+        }
+        return completedFactWorks > 0 && snapshot.works().stream()
+                .filter(row -> "FUNCTIONAL_TESTCASE_DESIGN_V2".equals(row.operationName()))
+                .map(V2FactWorkRow::id).collect(java.util.stream.Collectors.toSet()).equals(failedIds);
+    }
+
     /**
      * Proves the complete zero-write design rejection graph while independently replaying the accepted fact projection.
      * The function/test-point identities are derived from retained facts, so fixture or project identities cannot widen
@@ -1728,6 +1889,7 @@ public final class GenerationTaskRepository {
             boolean exactDesign = "functional-testcase-design".equals(work.skillName())
                     && "FUNCTIONAL_TESTCASE_DESIGN_V2".equals(work.operationName())
                     && nonBlank(work.functionKey()) && nonBlank(work.testPointKey())
+                    && work.coverageStatus() == null
                     && work.acceptedResultSha256() == null && !work.hasLease() && !work.hasRunningAttempt();
             if (!exactDesign) return unavailableRetry("V2 用例设计处理项不符合安全恢复条件");
             if ("FAILED".equals(work.status())
@@ -3797,6 +3959,68 @@ public final class GenerationTaskRepository {
                 """, taskId);
         if (requeued != failedWorks.size() || superseded != fallbacks.size() || taskChanged != 1) {
             throw new IllegalStateException("V2 expected-results recovery did not mutate its complete locked set");
+        }
+        return true;
+    }
+
+    /**
+     * Requeues the complete identity-label rejection set while keeping the old workbook as a non-downloadable
+     * replacement baseline. The next successful terminal publish atomically replaces its coordinates; this method
+     * never deletes the historical file or creates an attempt. [Req-ID]: REQ-TGV2-015
+     */
+    private boolean recoverV2IdentityLabelRejectedTask(String taskId) {
+        List<IdentityLabelRecoveryWork> failedWorks = jdbcTemplate.query("""
+                SELECT id, coverage_status, validation_error_code, validation_error_path, validation_error_message
+                FROM structured_generation_work_item
+                WHERE task_id=? AND status='FAILED'
+                  AND skill_name='functional-testcase-design'
+                  AND operation_name='FUNCTIONAL_TESTCASE_DESIGN_V2'
+                  AND validation_error_code='TESTCASE_UNSUPPORTED_BUSINESS_DETAIL'
+                  AND accepted_result_sha256 IS NULL
+                  AND lease_owner IS NULL AND lease_expires_at IS NULL
+                ORDER BY created_at, id FOR UPDATE
+                """, (row, ignored) -> new IdentityLabelRecoveryWork(
+                row.getString("id"), row.getString("coverage_status"), row.getString("validation_error_code"),
+                row.getString("validation_error_path"), row.getString("validation_error_message")), taskId);
+        if (failedWorks.isEmpty() || failedWorks.stream().anyMatch(work -> {
+            Optional<StoredValidationDiagnostic> diagnostic = strictStoredValidationDiagnostic(
+                    work.validationErrorCode(), work.validationErrorPath(), work.validationErrorMessage());
+            return work.coverageStatus() != null || diagnostic.isEmpty()
+                    || !StructuredValidationFailure.Code.TESTCASE_UNSUPPORTED_BUSINESS_DETAIL.name()
+                            .equals(diagnostic.get().code())
+                    || !V2_IDENTITY_LABEL_PATH.matcher(diagnostic.get().path()).matches();
+        })) {
+            throw new IllegalStateException("V2 identity-label recovery lost its locked work set");
+        }
+        int requeued = 0;
+        for (IdentityLabelRecoveryWork work : failedWorks) {
+            requeued += jdbcTemplate.update("""
+                    UPDATE structured_generation_work_item
+                    SET status='QUEUED', lease_owner=NULL, lease_expires_at=NULL,
+                        validation_error_code=NULL, validation_error_path=NULL, validation_error_message=NULL
+                    WHERE id=? AND task_id=? AND status='FAILED'
+                      AND skill_name='functional-testcase-design'
+                      AND operation_name='FUNCTIONAL_TESTCASE_DESIGN_V2'
+                      AND validation_error_code=? AND validation_error_path=? AND validation_error_message=?
+                      AND coverage_status IS NULL
+                      AND accepted_result_sha256 IS NULL
+                      AND lease_owner IS NULL AND lease_expires_at IS NULL
+                    """, work.id(), taskId, work.validationErrorCode(), work.validationErrorPath(),
+                    work.validationErrorMessage());
+        }
+        int taskChanged = jdbcTemplate.update("""
+                UPDATE generation_task
+                SET status='QUEUED', structured_processing_status='PENDING', structured_coverage_status='PENDING',
+                    result_snapshot=NULL,
+                    validation_error_code=NULL, validation_error_path=NULL, validation_error_message=NULL
+                WHERE id=? AND status='PARTIAL' AND structured_processing_status='FAILED'
+                  AND structured_coverage_status='UNABLE_TO_GENERATE'
+                  AND workflow_version='2.0' AND input_version='2.0' AND artifact_version='2.0'
+                  AND artifact_id IS NOT NULL AND artifact_sha256 IS NOT NULL AND artifact_path IS NOT NULL
+                  AND validation_error_code IS NULL AND validation_error_path IS NULL AND validation_error_message IS NULL
+                """, taskId);
+        if (requeued != failedWorks.size() || taskChanged != 1) {
+            throw new IllegalStateException("V2 identity-label recovery did not mutate its complete frozen set");
         }
         return true;
     }
@@ -6759,6 +6983,7 @@ public final class GenerationTaskRepository {
             String id,
             String identityKey,
             String status,
+            String coverageStatus,
             String acceptedResultSha256,
             String skillName,
             String operationName,
@@ -6915,6 +7140,10 @@ public final class GenerationTaskRepository {
     /** Keeps the historical overall-expectation recovery projection distinct from direct-evidence recovery. */
     private record ExpectedResultsRecoveryWork(String id, String functionKey, String validationErrorPath) { }
 
+    private record IdentityLabelRecoveryWork(
+            String id, String coverageStatus, String validationErrorCode,
+            String validationErrorPath, String validationErrorMessage) { }
+
     /** Internal marker for historical JSON that cannot participate in a fail-closed recovery proof. */
     private static final class InvalidV2RecoverySnapshotException extends RuntimeException {
         private static final long serialVersionUID = 1L;
@@ -6940,7 +7169,8 @@ public final class GenerationTaskRepository {
         RECOVER_V2_ATOMICITY_REJECTION,
         RECOVER_V2_DIRECT_EVIDENCE_REJECTION,
         RECOVER_V2_ZERO_WRITE_TECHNICAL_FAILURE,
-        RECOVER_V2_EXPECTED_RESULTS_REJECTION
+        RECOVER_V2_EXPECTED_RESULTS_REJECTION,
+        RECOVER_V2_IDENTITY_LABEL_REJECTION
     }
 
     private record TaskFailureSnapshot(String failureSummary) {

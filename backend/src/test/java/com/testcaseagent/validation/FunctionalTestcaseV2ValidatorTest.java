@@ -2,6 +2,7 @@ package com.testcaseagent.validation;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 import com.testcaseagent.knowledgeagent.FunctionalTestcaseDesignV2Input;
 import com.testcaseagent.knowledgeagent.FunctionalTestcaseDesignV2Result;
@@ -9,11 +10,14 @@ import com.testcaseagent.knowledgeagent.FunctionalTestcaseDesignV2Result.CaseSta
 import com.testcaseagent.knowledgeagent.FunctionalTestcaseDesignV2Result.GenerationOutcome;
 import com.testcaseagent.knowledgeagent.RequirementFactExtractionV2Result.FactType;
 import com.testcaseagent.knowledgeagent.StructuredSourceQuoteV2;
+import java.time.Duration;
 import java.util.LinkedHashSet;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
-/** V2 outcome/business-closure acceptance tests. [Req-ID]: REQ-TGV2-005, REQ-TGV2-006, REQ-TGV2-014 */
+/** V2 outcome/business-closure acceptance tests. [Req-ID]: REQ-TGV2-005, REQ-TGV2-006, REQ-TGV2-014, REQ-TGV2-015 */
 class FunctionalTestcaseV2ValidatorTest {
     private final FunctionalTestcaseV2Validator validator = new FunctionalTestcaseV2Validator();
 
@@ -318,6 +322,330 @@ class FunctionalTestcaseV2ValidatorTest {
                 "$.testcases[0].inputs[0].sequence");
     }
 
+    /** [Req-ID]: REQ-TGV2-015 */
+    @Test
+    void acceptsNameAndTitleComposedFromCurrentFunctionPointAndGenericWrappers() {
+        var supportedInput = new FunctionalTestcaseDesignV2Input("function-1", "批次处理", "业务→批次处理",
+                "该描述不能支撑执行字段",
+                new FunctionalTestcaseDesignV2Input.TestPoint("point-1",
+                        FunctionalTestcaseDesignV2Input.TestPointType.NORMAL_BEHAVIOR,
+                        FunctionalTestcaseDesignV2Input.Basis.FORMAL_REQUIREMENT, "提交批次", List.of()),
+                List.of(new FunctionalTestcaseDesignV2Input.RequirementFact("fact-1", FactType.BUSINESS_RULE,
+                        "提交批次", List.of(new StructuredSourceQuoteV2("unit-1", "提交批次")))));
+        var candidate = identityCandidate(
+                testcaseWithStep("提交批次", "提交批次", "实际结果符合预期"),
+                "验证批次处理提交批次", "批次处理提交批次测试用例");
+
+        assertThat(validator.validate(supportedInput,
+                result(GenerationOutcome.GENERATED, List.of(), List.of(candidate))).formalCoverageSatisfied())
+                .isTrue();
+    }
+
+    /** [Req-ID]: REQ-TGV2-015 */
+    @Test
+    void acceptsCurrentPointIdentityTogetherWithOneCompleteFact() {
+        var supportedInput = new FunctionalTestcaseDesignV2Input("function-1", "批次处理", "业务/批次处理", "",
+                new FunctionalTestcaseDesignV2Input.TestPoint("point-1",
+                        FunctionalTestcaseDesignV2Input.TestPointType.NORMAL_BEHAVIOR,
+                        FunctionalTestcaseDesignV2Input.Basis.FORMAL_REQUIREMENT, "校验提交入口", List.of()),
+                List.of(new FunctionalTestcaseDesignV2Input.RequirementFact("fact-1", FactType.BUSINESS_RULE,
+                        "保存批次", List.of(new StructuredSourceQuoteV2("unit-1", "保存批次")))));
+        var candidate = identityCandidate(
+                testcaseWithStep("保存批次", "保存批次", "实际结果符合预期"),
+                "批次处理校验提交入口保存批次", "校验提交入口保存批次测试用例");
+
+        assertThat(validator.validate(supportedInput,
+                result(GenerationOutcome.GENERATED, List.of(), List.of(candidate))).formalCoverageSatisfied())
+                .isTrue();
+    }
+
+    /** [Req-ID]: REQ-TGV2-015 */
+    @Test
+    void rejectsGenericOnlyNameThatDoesNotIdentifyTheCurrentScope() {
+        var genericSupportingInput = new FunctionalTestcaseDesignV2Input("function-1", "提交订单", "订单/提交", "",
+                new FunctionalTestcaseDesignV2Input.TestPoint("point-1",
+                        FunctionalTestcaseDesignV2Input.TestPointType.NORMAL_BEHAVIOR,
+                        FunctionalTestcaseDesignV2Input.Basis.FORMAL_REQUIREMENT, "提交订单", List.of()),
+                List.of(new FunctionalTestcaseDesignV2Input.RequirementFact("fact-1", FactType.BUSINESS_RULE,
+                        "提交后记录结果", List.of(new StructuredSourceQuoteV2("unit-1", "提交后记录结果")))));
+        var candidate = identityCandidate(testcase(CaseStatus.FORMAL, List.of()),
+                "记录结果", "提交订单");
+
+        assertUnsupportedCase(genericSupportingInput, candidate, "$.testcases[0].name");
+    }
+
+    /** [Req-ID]: REQ-TGV2-015 */
+    @Test
+    void matchesARealIdentityBeforeTreatingItsPrefixAsGenericScaffolding() {
+        var supportedInput = new FunctionalTestcaseDesignV2Input("function-1", "操作记录", "审计/操作记录", "",
+                new FunctionalTestcaseDesignV2Input.TestPoint("point-1",
+                        FunctionalTestcaseDesignV2Input.TestPointType.NORMAL_BEHAVIOR,
+                        FunctionalTestcaseDesignV2Input.Basis.FORMAL_REQUIREMENT, "查看记录", List.of()),
+                List.of(new FunctionalTestcaseDesignV2Input.RequirementFact("fact-1", FactType.BUSINESS_RULE,
+                        "查看记录", List.of(new StructuredSourceQuoteV2("unit-1", "查看记录")))));
+        var candidate = identityCandidate(
+                testcaseWithStep("查看记录", "查看记录", "实际结果符合预期"), "操作记录", "验证操作记录");
+
+        assertThat(validator.validate(supportedInput,
+                result(GenerationOutcome.GENERATED, List.of(), List.of(candidate))).formalCoverageSatisfied())
+                .isTrue();
+    }
+
+    /** [Req-ID]: REQ-TGV2-015 */
+    @Test
+    void executionFieldCannotUseTheArtificialBoundaryBetweenTwoFacts() {
+        var multiFactInput = new FunctionalTestcaseDesignV2Input("function-1", "批次处理", "业务/批次处理", "",
+                new FunctionalTestcaseDesignV2Input.TestPoint("point-1",
+                        FunctionalTestcaseDesignV2Input.TestPointType.NORMAL_BEHAVIOR,
+                        FunctionalTestcaseDesignV2Input.Basis.FORMAL_REQUIREMENT, "处理批次", List.of()),
+                List.of(
+                        new FunctionalTestcaseDesignV2Input.RequirementFact("fact-1", FactType.BUSINESS_RULE,
+                                "开启批次", List.of(new StructuredSourceQuoteV2("unit-1", "开启批次"))),
+                        new FunctionalTestcaseDesignV2Input.RequirementFact("fact-2", FactType.BUSINESS_RULE,
+                                "关闭批次", List.of(new StructuredSourceQuoteV2("unit-2", "关闭批次")))));
+        var base = testcaseWithReferences(CaseStatus.FORMAL, List.of(), List.of("fact-1", "fact-2"),
+                List.of("unit-1", "unit-2"));
+        var step = new FunctionalTestcaseDesignV2Result.Step(1, "开启批次关闭批次", "关闭批次",
+                "实际结果符合预期", "", "记录结果");
+        var candidate = new FunctionalTestcaseDesignV2Result.Testcase("批次处理", "处理批次", base.priority(),
+                base.preconditions(), base.initialization(), base.inputs(), List.of(step), List.of("关闭批次"),
+                base.evaluationCriteria(), base.resultEvaluationCriteria(), base.terminationConditions(),
+                base.resultCollection(), base.requirementFactKeys(), base.evidenceKeys(), base.caseStatus(),
+                base.missingInformation());
+
+        assertUnsupportedCase(multiFactInput, candidate, "$.testcases[0].steps[0].action");
+    }
+
+    /** [Req-ID]: REQ-TGV2-015 */
+    @Test
+    void executionFieldCannotSupplyTheInternalSourceSeparator() {
+        var multiFactInput = new FunctionalTestcaseDesignV2Input("function-1", "批次处理", "业务/批次处理", "",
+                new FunctionalTestcaseDesignV2Input.TestPoint("point-1",
+                        FunctionalTestcaseDesignV2Input.TestPointType.NORMAL_BEHAVIOR,
+                        FunctionalTestcaseDesignV2Input.Basis.FORMAL_REQUIREMENT, "处理批次", List.of()),
+                List.of(
+                        new FunctionalTestcaseDesignV2Input.RequirementFact("fact-1", FactType.BUSINESS_RULE,
+                                "开启批次", List.of(new StructuredSourceQuoteV2("unit-1", "开启批次"))),
+                        new FunctionalTestcaseDesignV2Input.RequirementFact("fact-2", FactType.BUSINESS_RULE,
+                                "关闭批次", List.of(new StructuredSourceQuoteV2("unit-2", "关闭批次")))));
+        var base = testcaseWithReferences(CaseStatus.FORMAL, List.of(), List.of("fact-1", "fact-2"),
+                List.of("unit-1", "unit-2"));
+        var step = new FunctionalTestcaseDesignV2Result.Step(1, "开启批次\u0000关闭批次", "关闭批次",
+                "实际结果符合预期", "", "记录结果");
+        var candidate = new FunctionalTestcaseDesignV2Result.Testcase("批次处理", "处理批次", base.priority(),
+                base.preconditions(), base.initialization(), base.inputs(), List.of(step), List.of("关闭批次"),
+                base.evaluationCriteria(), base.resultEvaluationCriteria(), base.terminationConditions(),
+                base.resultCollection(), base.requirementFactKeys(), base.evidenceKeys(), base.caseStatus(),
+                base.missingInformation());
+
+        assertUnsupportedCase(multiFactInput, candidate, "$.testcases[0].steps[0].action");
+    }
+
+    /** [Req-ID]: REQ-TGV2-015 */
+    @Test
+    void acceptsCurrentScopeBeforeClassifyingItsLiteralTextAsGeneric() {
+        var supportedInput = new FunctionalTestcaseDesignV2Input("function-1", "记录结果", "审计/记录结果", "",
+                new FunctionalTestcaseDesignV2Input.TestPoint("point-1",
+                        FunctionalTestcaseDesignV2Input.TestPointType.NORMAL_BEHAVIOR,
+                        FunctionalTestcaseDesignV2Input.Basis.FORMAL_REQUIREMENT, "查看审计", List.of()),
+                List.of(new FunctionalTestcaseDesignV2Input.RequirementFact("fact-1", FactType.BUSINESS_RULE,
+                        "查看审计", List.of(new StructuredSourceQuoteV2("unit-1", "查看审计")))));
+        var candidate = identityCandidate(
+                testcaseWithStep("查看审计", "查看审计", "实际结果符合预期"), "记录结果", "查看审计");
+
+        assertThat(validator.validate(supportedInput,
+                result(GenerationOutcome.GENERATED, List.of(), List.of(candidate))).formalCoverageSatisfied())
+                .isTrue();
+    }
+
+    /** [Req-ID]: REQ-TGV2-015 */
+    @Test
+    void acceptsPrefixWrappedScopeWithoutStrippingItsBusinessSuffix() {
+        var supportedInput = new FunctionalTestcaseDesignV2Input(
+                "function-1", "批次异常场景", "业务/批次异常场景", "",
+                new FunctionalTestcaseDesignV2Input.TestPoint("point-1",
+                        FunctionalTestcaseDesignV2Input.TestPointType.NORMAL_BEHAVIOR,
+                        FunctionalTestcaseDesignV2Input.Basis.FORMAL_REQUIREMENT, "提交批次", List.of()),
+                List.of(new FunctionalTestcaseDesignV2Input.RequirementFact("fact-1", FactType.BUSINESS_RULE,
+                        "提交批次", List.of(new StructuredSourceQuoteV2("unit-1", "提交批次")))));
+        var candidate = identityCandidate(
+                testcaseWithStep("提交批次", "提交批次", "实际结果符合预期"),
+                "验证批次异常场景", "批次异常场景");
+
+        assertThat(validator.validate(supportedInput,
+                result(GenerationOutcome.GENERATED, List.of(), List.of(candidate))).formalCoverageSatisfied())
+                .isTrue();
+    }
+
+    /** [Req-ID]: REQ-TGV2-015 */
+    @Test
+    void rejectsWrapperOnlyIdentityEvenWhenOneFactContainsIt() {
+        var supportedInput = new FunctionalTestcaseDesignV2Input("function-1", "批次处理", "业务/批次处理", "",
+                new FunctionalTestcaseDesignV2Input.TestPoint("point-1",
+                        FunctionalTestcaseDesignV2Input.TestPointType.NORMAL_BEHAVIOR,
+                        FunctionalTestcaseDesignV2Input.Basis.FORMAL_REQUIREMENT, "提交批次", List.of()),
+                List.of(new FunctionalTestcaseDesignV2Input.RequirementFact("fact-1", FactType.BUSINESS_RULE,
+                        "验证测试用例", List.of(new StructuredSourceQuoteV2("unit-1", "验证测试用例")))));
+        var candidate = identityCandidate(
+                testcaseWithStep("验证测试用例", "验证测试用例", "实际结果符合预期"),
+                "验证", "批次处理");
+
+        assertUnsupportedCase(supportedInput, candidate, "$.testcases[0].name");
+    }
+
+    /** [Req-ID]: REQ-TGV2-015 */
+    @ParameterizedTest
+    @ValueSource(strings = {"验证记录结果", "记录结果测试用例", "验证记录结果测试用例",
+            "验证检查记录结果", "记录结果测试用例测试用例"})
+    void rejectsWrappedGenericOnlyIdentityEvenWhenOneFactContainsIt(String genericIdentity) {
+        var supportedInput = new FunctionalTestcaseDesignV2Input("function-1", "批次处理", "业务/批次处理", "",
+                new FunctionalTestcaseDesignV2Input.TestPoint("point-1",
+                        FunctionalTestcaseDesignV2Input.TestPointType.NORMAL_BEHAVIOR,
+                        FunctionalTestcaseDesignV2Input.Basis.FORMAL_REQUIREMENT, "提交批次", List.of()),
+                List.of(new FunctionalTestcaseDesignV2Input.RequirementFact("fact-1", FactType.BUSINESS_RULE,
+                        genericIdentity, List.of(new StructuredSourceQuoteV2("unit-1", genericIdentity)))));
+        var candidate = identityCandidate(
+                testcaseWithStep(genericIdentity, genericIdentity, "实际结果符合预期"),
+                genericIdentity, "批次处理");
+
+        assertUnsupportedCase(supportedInput, candidate, "$.testcases[0].name");
+    }
+
+    /** [Req-ID]: REQ-TGV2-015 */
+    @Test
+    void validatesDeepRepeatedWrappersWithoutMaterializingTheWrapperCrossProduct() {
+        var supportedInput = new FunctionalTestcaseDesignV2Input("function-1", "批次处理", "业务/批次处理", "",
+                new FunctionalTestcaseDesignV2Input.TestPoint("point-1",
+                        FunctionalTestcaseDesignV2Input.TestPointType.NORMAL_BEHAVIOR,
+                        FunctionalTestcaseDesignV2Input.Basis.FORMAL_REQUIREMENT, "提交批次", List.of()),
+                List.of(new FunctionalTestcaseDesignV2Input.RequirementFact("fact-1", FactType.BUSINESS_RULE,
+                        "提交批次", List.of(new StructuredSourceQuoteV2("unit-1", "提交批次")))));
+        String wrappedName = "验证".repeat(250) + "批次处理" + "测试用例".repeat(250);
+        var candidate = identityCandidate(
+                testcaseWithStep("提交批次", "提交批次", "实际结果符合预期"), wrappedName, "批次处理");
+
+        assertTimeoutPreemptively(Duration.ofMillis(500), () ->
+                assertThat(validator.validate(supportedInput,
+                        result(GenerationOutcome.GENERATED, List.of(), List.of(candidate)))
+                        .formalCoverageSatisfied()).isTrue());
+    }
+
+    /** [Req-ID]: REQ-TGV2-015 */
+    @Test
+    void rejectsUnsupportedLongCoreWithOverlappingSuffixesWithoutScanningDominatedSlices() {
+        String longCore = "甲".repeat(1_000) + "乙";
+        List<FunctionalTestcaseDesignV2Input.RequirementFact> facts = new java.util.ArrayList<>();
+        facts.add(new FunctionalTestcaseDesignV2Input.RequirementFact("fact-0", FactType.BUSINESS_RULE,
+                "提交批次", List.of(new StructuredSourceQuoteV2("unit-0", "提交批次"))));
+        for (int index = 1; index < 100; index++) {
+            String nearMatch = "甲".repeat(1_000) + "丙" + (char) (0x4e00 + index);
+            facts.add(new FunctionalTestcaseDesignV2Input.RequirementFact("fact-" + index, FactType.BUSINESS_RULE,
+                    nearMatch, List.of(new StructuredSourceQuoteV2("unit-" + index, nearMatch))));
+        }
+        var supportedInput = new FunctionalTestcaseDesignV2Input("function-1", "批次处理", "业务/批次处理", "",
+                new FunctionalTestcaseDesignV2Input.TestPoint("point-1",
+                        FunctionalTestcaseDesignV2Input.TestPointType.NORMAL_BEHAVIOR,
+                        FunctionalTestcaseDesignV2Input.Basis.FORMAL_REQUIREMENT, "提交批次", List.of()),
+                facts);
+        String wrappedName = longCore + "测试用例".repeat(1_000);
+        var base = testcaseWithStep("提交批次", "提交批次", "实际结果符合预期");
+        var candidate = new FunctionalTestcaseDesignV2Result.Testcase(wrappedName, "批次处理", base.priority(),
+                base.preconditions(), base.initialization(), base.inputs(), base.steps(), base.expectedResults(),
+                base.evaluationCriteria(), base.resultEvaluationCriteria(), base.terminationConditions(),
+                base.resultCollection(), facts.stream().map(FunctionalTestcaseDesignV2Input.RequirementFact::factKey).toList(),
+                facts.stream().flatMap(fact -> fact.sourceQuotes().stream()).map(StructuredSourceQuoteV2::evidenceKey).toList(),
+                base.caseStatus(), base.missingInformation());
+
+        assertTimeoutPreemptively(Duration.ofMillis(500), () ->
+                assertUnsupportedCase(supportedInput, candidate, "$.testcases[0].name"));
+    }
+
+    /** [Req-ID]: REQ-TGV2-015 */
+    @Test
+    void rejectsLongUnwrappedIdentityWithoutScanningUnreachableBoundariesForEveryFact() {
+        String unsupportedName = "x".repeat(15_000);
+        List<FunctionalTestcaseDesignV2Input.RequirementFact> facts = new java.util.ArrayList<>();
+        for (int index = 0; index < 100; index++) {
+            String statement = "fact" + index;
+            facts.add(new FunctionalTestcaseDesignV2Input.RequirementFact("fact-" + index, FactType.BUSINESS_RULE,
+                    statement, List.of(new StructuredSourceQuoteV2("unit-" + index, statement + "quote"))));
+        }
+        var supportedInput = new FunctionalTestcaseDesignV2Input("function-1", "批次处理", "业务/批次处理", "",
+                new FunctionalTestcaseDesignV2Input.TestPoint("point-1",
+                        FunctionalTestcaseDesignV2Input.TestPointType.NORMAL_BEHAVIOR,
+                        FunctionalTestcaseDesignV2Input.Basis.FORMAL_REQUIREMENT, "提交批次", List.of()),
+                facts);
+        var base = testcaseWithStep("fact0", "fact0", "实际结果符合预期");
+        var candidate = new FunctionalTestcaseDesignV2Result.Testcase(unsupportedName, "批次处理", base.priority(),
+                base.preconditions(), base.initialization(), base.inputs(), base.steps(), base.expectedResults(),
+                base.evaluationCriteria(), base.resultEvaluationCriteria(), base.terminationConditions(),
+                base.resultCollection(), facts.stream().map(FunctionalTestcaseDesignV2Input.RequirementFact::factKey).toList(),
+                facts.stream().flatMap(fact -> fact.sourceQuotes().stream()).map(StructuredSourceQuoteV2::evidenceKey).toList(),
+                base.caseStatus(), base.missingInformation());
+
+        assertTimeoutPreemptively(Duration.ofMillis(500), () -> {
+            // Repeated public validations expose CPU amplification without relying on private implementation hooks.
+            for (int repeat = 0; repeat < 40; repeat++) {
+                assertUnsupportedCase(supportedInput, candidate, "$.testcases[0].name");
+            }
+        });
+    }
+
+    /** [Req-ID]: REQ-TGV2-015 */
+    @Test
+    void rejectsNameThatUsesAnotherFunctionOrTestPointLabel() {
+        var candidate = identityCandidate(testcase(CaseStatus.FORMAL, List.of()),
+                "验证退款处理提交批次", "提交批次");
+        var currentInput = new FunctionalTestcaseDesignV2Input("function-1", "批次处理", "业务/批次处理", "",
+                new FunctionalTestcaseDesignV2Input.TestPoint("point-1",
+                        FunctionalTestcaseDesignV2Input.TestPointType.NORMAL_BEHAVIOR,
+                        FunctionalTestcaseDesignV2Input.Basis.FORMAL_REQUIREMENT, "提交批次", List.of()),
+                List.of(new FunctionalTestcaseDesignV2Input.RequirementFact("fact-1", FactType.BUSINESS_RULE,
+                        "提交批次", List.of(new StructuredSourceQuoteV2("unit-1", "提交批次")))));
+
+        assertUnsupportedCase(currentInput, candidate, "$.testcases[0].name");
+    }
+
+    /** [Req-ID]: REQ-TGV2-015 */
+    @Test
+    void rejectsNameThatCombinesScatteredFactsIntoANewBusinessConclusion() {
+        var multiFactInput = new FunctionalTestcaseDesignV2Input("function-1", "批次处理", "业务/批次处理", "",
+                new FunctionalTestcaseDesignV2Input.TestPoint("point-1",
+                        FunctionalTestcaseDesignV2Input.TestPointType.NORMAL_BEHAVIOR,
+                        FunctionalTestcaseDesignV2Input.Basis.FORMAL_REQUIREMENT, "处理批次", List.of()),
+                List.of(
+                        new FunctionalTestcaseDesignV2Input.RequirementFact("fact-1", FactType.BUSINESS_RULE,
+                                "开启批次", List.of(new StructuredSourceQuoteV2("unit-1", "开启批次"))),
+                        new FunctionalTestcaseDesignV2Input.RequirementFact("fact-2", FactType.BUSINESS_RULE,
+                                "关闭批次", List.of(new StructuredSourceQuoteV2("unit-2", "关闭批次")))));
+        var candidate = identityCandidate(
+                testcaseWithReferences(CaseStatus.FORMAL, List.of(), List.of("fact-1", "fact-2"),
+                        List.of("unit-1", "unit-2")),
+                "验证批次关闭批次", "批次处理");
+
+        assertUnsupportedCase(multiFactInput, candidate, "$.testcases[0].name");
+    }
+
+    /** [Req-ID]: REQ-TGV2-015 */
+    @Test
+    void formalCandidateCannotUsePendingPointDescriptionAsIdentitySupport() {
+        var pendingInput = new FunctionalTestcaseDesignV2Input("function-1", "批次处理", "业务/批次处理", "",
+                new FunctionalTestcaseDesignV2Input.TestPoint("point-1",
+                        FunctionalTestcaseDesignV2Input.TestPointType.NORMAL_BEHAVIOR,
+                        FunctionalTestcaseDesignV2Input.Basis.GENERAL_EXPERIENCE, "人工补录批次", List.of("缺少正式依据")),
+                List.of(new FunctionalTestcaseDesignV2Input.RequirementFact("fact-1", FactType.BUSINESS_RULE,
+                        "提交批次", List.of(new StructuredSourceQuoteV2("unit-1", "提交批次")))));
+        var candidate = identityCandidate(testcase(CaseStatus.FORMAL, List.of()),
+                "验证批次处理人工补录批次", "人工补录批次测试用例");
+
+        assertThatThrownBy(() -> validator.validate(pendingInput,
+                result(GenerationOutcome.GENERATED, List.of(), List.of(candidate))))
+                .isInstanceOfSatisfying(StructuredValidationException.class, failure -> {
+                    assertThat(failure.failure().code()).isEqualTo("TESTCASE_UNSUPPORTED_BUSINESS_DETAIL");
+                    assertThat(failure.failure().path()).isEqualTo("$.testcases[0].name");
+                });
+    }
+
     private void assertUnsupportedCase(FunctionalTestcaseDesignV2Input input,
             FunctionalTestcaseDesignV2Result.Testcase candidate, String expectedPath) {
         assertThatThrownBy(() -> validator.validate(input,
@@ -356,6 +684,14 @@ class FunctionalTestcaseV2ValidatorTest {
                 base.evaluationCriteria(), base.resultEvaluationCriteria(), base.terminationConditions(),
                 base.resultCollection(), base.requirementFactKeys(), base.evidenceKeys(), base.caseStatus(),
                 base.missingInformation());
+    }
+
+    private static FunctionalTestcaseDesignV2Result.Testcase identityCandidate(
+            FunctionalTestcaseDesignV2Result.Testcase base, String name, String title) {
+        return new FunctionalTestcaseDesignV2Result.Testcase(name, title, base.priority(), base.preconditions(),
+                base.initialization(), base.inputs(), base.steps(), base.expectedResults(), base.evaluationCriteria(),
+                base.resultEvaluationCriteria(), base.terminationConditions(), base.resultCollection(),
+                base.requirementFactKeys(), base.evidenceKeys(), base.caseStatus(), base.missingInformation());
     }
 
     private void assertUnsupportedDetail(String action, String expectedPath) {

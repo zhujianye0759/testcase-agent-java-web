@@ -321,9 +321,9 @@ class V2StructuredAllGenerationCoordinatorTest {
                 StructuredProcessingStatus.COMPLETED, StructuredCoverageStatus.UNABLE_TO_GENERATE);
     }
 
-    /** [Req-ID]: REQ-TGV2-014 */
+    /** [Req-ID]: REQ-TGV2-014, REQ-TGV2-015 */
     @Test
-    void expectedResultsRecoverySkipsCompletedFactsAndCallsOnlyTheRequeuedDesignWork() {
+    void designRecoverySkipsCompletedFactsAndCallsOnlyTheRequeuedDesignWork() {
         GenerationTaskRepository repository = mock(GenerationTaskRepository.class);
         RequirementMaterialTraversalService traversal = mock(RequirementMaterialTraversalService.class);
         StructuredSkillExecutionPort skills = mock(StructuredSkillExecutionPort.class);
