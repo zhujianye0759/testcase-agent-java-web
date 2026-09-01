@@ -67,7 +67,7 @@ Java 每次调用只传一个已持久化测试点及其有依据的事实。`ge
 
 若旧 V2 validator 仅因这一错误等值规则拒绝用例设计，显式恢复只允许处理同一任务内零接收的 `FUNCTIONAL_TESTCASE_DESIGN_V2` 工作：全部失败 attempt 必须是 `business_validation_failed / TESTCASE_UNSUPPORTED_BUSINESS_DETAIL`，path 仅可逐次指向 `name` 或 `title`，最新 attempt 必须与当前 work 诊断一致；失败 work 的 coverage status 必须为空，且不得有 accepted hash、租约、运行 attempt、用例、步骤、绑定、生成结果或发布账本；已完成事实 work 及其事实、引文、反馈和发布账本保持不变。恢复只重排未完成设计 work；下一次协调执行按稳定身份跳过已完成事实，不得重新调用事实 Skill。
 
-历史身份标签误拒使用另一条严格恢复分支，不能借用总体预期或技术故障白名单。事务在固定锁序下要求 V2 `PARTIAL/FAILED/UNABLE_TO_GENERATE`、当前制品 ID/SHA/路径唯一归属、全部未完成工作均为零写入设计工作、所有历史 attempt 均为 `TESTCASE_UNSUPPORTED_BUSINESS_DETAIL` 且 path 只指向 `name/title`，并证明没有测试点结果、用例、步骤、绑定或设计发布账本。mutation 只重排该完整失败集合并清除当前任务诊断；旧 attempt 和磁盘制品文件不删除，失败制品坐标作为同任务待替换版本保留。任务进入执行态后，既有下载门禁必须隐藏该制品；新终态制品只可通过既有原子发布路径替换坐标。已完成事实/反馈/发布账本不变。任何身份漂移、额外未完成工作、部分设计发布、租约或并发领取均失败关闭。
+历史身份标签误拒使用另一条严格恢复分支，不能借用总体预期或技术故障白名单。事务在固定锁序下要求 V2 `PARTIAL/FAILED/UNABLE_TO_GENERATE`、当前制品 ID/SHA/路径唯一归属、全部未完成工作均为零写入设计工作、所有历史 attempt 均为 `TESTCASE_UNSUPPORTED_BUSINESS_DETAIL` 且 path 只指向 `name/title`，并证明没有测试点结果、用例、步骤、绑定或设计发布账本。历史终态允许两种精确外壳：已有结果快照且任务诊断三元组全空，或结果快照为空且任务诊断是安全的 `name/title` 误拒并与至少一个失败 work 的最新诊断完全一致；混合、部分或不一致外壳均拒绝。mutation 只重排该完整失败集合并清除当前任务诊断；旧 attempt 和磁盘制品文件不删除，失败制品坐标作为同任务待替换版本保留。任务进入执行态后，既有下载门禁必须隐藏该制品；新终态制品只可通过既有原子发布路径替换坐标。已完成事实/反馈/发布账本不变。任何身份漂移、额外未完成工作、部分设计发布、租约或并发领取均失败关闭。
 
 ### 5. 处理状态与覆盖结果分轴
 

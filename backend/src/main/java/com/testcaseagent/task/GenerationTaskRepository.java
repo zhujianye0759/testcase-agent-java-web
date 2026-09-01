@@ -1732,14 +1732,24 @@ public final class GenerationTaskRepository {
                 && GenerationContractVersions.V2.equals(task.workflowVersion())
                 && GenerationContractVersions.V2.equals(task.inputVersion())
                 && GenerationContractVersions.V2.equals(task.artifactVersion())
-                && nonBlank(task.resultSnapshot())
-                && task.validationErrorCode() == null
-                && task.validationErrorPath() == null
-                && task.validationErrorMessage() == null
+                && isV2IdentityLabelRecoveryEnvelope(task.resultSnapshot(), task.validationErrorCode(),
+                        task.validationErrorPath(), task.validationErrorMessage())
                 && nonBlank(task.artifactId())
                 && nonBlank(task.artifactSha256())
                 && task.artifactSha256().matches("(?i)[0-9a-f]{64}")
                 && nonBlank(task.artifactPath());
+    }
+
+    /** Accepts both historical terminal envelopes without weakening their diagnostic identity. */
+    private static boolean isV2IdentityLabelRecoveryEnvelope(
+            String resultSnapshot, String code, String path, String message) {
+        boolean legacySnapshot = nonBlank(resultSnapshot) && code == null && path == null && message == null;
+        Optional<StoredValidationDiagnostic> diagnostic = strictStoredValidationDiagnostic(code, path, message);
+        boolean diagnosticOnly = resultSnapshot == null && diagnostic.isPresent()
+                && StructuredValidationFailure.Code.TESTCASE_UNSUPPORTED_BUSINESS_DETAIL.name()
+                        .equals(diagnostic.get().code())
+                && V2_IDENTITY_LABEL_PATH.matcher(diagnostic.get().path()).matches();
+        return legacySnapshot || diagnosticOnly;
     }
 
     /**
@@ -1753,6 +1763,9 @@ public final class GenerationTaskRepository {
             return unavailableRetry("V2 身份标签失败制品或处理项不符合安全恢复条件");
         }
         Set<String> failedIds = new LinkedHashSet<>();
+        Optional<StoredValidationDiagnostic> taskDiagnostic = strictStoredValidationDiagnostic(
+                task.validationErrorCode(), task.validationErrorPath(), task.validationErrorMessage());
+        boolean taskDiagnosticMatched = taskDiagnostic.isEmpty();
         for (RetryWorkRow work : unfinished) {
             Optional<StoredValidationDiagnostic> workDiagnostic = strictStoredValidationDiagnostic(
                     work.validationErrorCode(), work.validationErrorPath(), work.validationErrorMessage());
@@ -1770,7 +1783,11 @@ public final class GenerationTaskRepository {
                             v2TechnicalRecoveryAttempts(work.id()), workDiagnostic.get())) {
                 return unavailableRetry("V2 身份标签失败历史不符合安全恢复条件");
             }
+            if (taskDiagnostic.equals(workDiagnostic)) taskDiagnosticMatched = true;
             failedIds.add(work.id());
+        }
+        if (!taskDiagnosticMatched) {
+            return unavailableRetry("V2 身份标签任务诊断与失败处理项不一致");
         }
         if (hasAnyV2TestcaseDesignProjection(taskId, lockRows)) {
             return unavailableRetry("V2 身份标签失败已存在部分设计结果");
@@ -3969,6 +3986,17 @@ public final class GenerationTaskRepository {
      * never deletes the historical file or creates an attempt. [Req-ID]: REQ-TGV2-015
      */
     private boolean recoverV2IdentityLabelRejectedTask(String taskId) {
+        IdentityLabelRecoveryTaskEnvelope taskEnvelope = jdbcTemplate.queryForObject("""
+                SELECT result_snapshot, validation_error_code, validation_error_path, validation_error_message
+                FROM generation_task WHERE id=? FOR UPDATE
+                """, (row, ignored) -> new IdentityLabelRecoveryTaskEnvelope(
+                row.getString("result_snapshot"), row.getString("validation_error_code"),
+                row.getString("validation_error_path"), row.getString("validation_error_message")), taskId);
+        if (taskEnvelope == null || !isV2IdentityLabelRecoveryEnvelope(taskEnvelope.resultSnapshot(),
+                taskEnvelope.validationErrorCode(), taskEnvelope.validationErrorPath(),
+                taskEnvelope.validationErrorMessage())) {
+            throw new IllegalStateException("V2 identity-label recovery lost its locked task envelope");
+        }
         List<IdentityLabelRecoveryWork> failedWorks = jdbcTemplate.query("""
                 SELECT id, coverage_status, validation_error_code, validation_error_path, validation_error_message
                 FROM structured_generation_work_item
@@ -4008,17 +4036,33 @@ public final class GenerationTaskRepository {
                     """, work.id(), taskId, work.validationErrorCode(), work.validationErrorPath(),
                     work.validationErrorMessage());
         }
+        String envelopePredicate;
+        Object[] envelopeArguments;
+        if (taskEnvelope.resultSnapshot() == null) {
+            envelopePredicate = """
+                    result_snapshot IS NULL
+                      AND validation_error_code=? AND validation_error_path=? AND validation_error_message=?
+                    """;
+            envelopeArguments = new Object[] {taskEnvelope.validationErrorCode(), taskEnvelope.validationErrorPath(),
+                    taskEnvelope.validationErrorMessage(), taskId};
+        } else {
+            envelopePredicate = """
+                    result_snapshot=CAST(? AS JSON)
+                      AND validation_error_code IS NULL AND validation_error_path IS NULL
+                      AND validation_error_message IS NULL
+                    """;
+            envelopeArguments = new Object[] {taskEnvelope.resultSnapshot(), taskId};
+        }
         int taskChanged = jdbcTemplate.update("""
                 UPDATE generation_task
                 SET status='QUEUED', structured_processing_status='PENDING', structured_coverage_status='PENDING',
                     result_snapshot=NULL,
                     validation_error_code=NULL, validation_error_path=NULL, validation_error_message=NULL
-                WHERE id=? AND status='PARTIAL' AND structured_processing_status='FAILED'
+                WHERE %s AND id=? AND status='PARTIAL' AND structured_processing_status='FAILED'
                   AND structured_coverage_status='UNABLE_TO_GENERATE'
                   AND workflow_version='2.0' AND input_version='2.0' AND artifact_version='2.0'
                   AND artifact_id IS NOT NULL AND artifact_sha256 IS NOT NULL AND artifact_path IS NOT NULL
-                  AND validation_error_code IS NULL AND validation_error_path IS NULL AND validation_error_message IS NULL
-                """, taskId);
+                """.formatted(envelopePredicate), envelopeArguments);
         if (requeued != failedWorks.size() || taskChanged != 1) {
             throw new IllegalStateException("V2 identity-label recovery did not mutate its complete frozen set");
         }
@@ -7142,6 +7186,10 @@ public final class GenerationTaskRepository {
 
     private record IdentityLabelRecoveryWork(
             String id, String coverageStatus, String validationErrorCode,
+            String validationErrorPath, String validationErrorMessage) { }
+
+    private record IdentityLabelRecoveryTaskEnvelope(
+            String resultSnapshot, String validationErrorCode,
             String validationErrorPath, String validationErrorMessage) { }
 
     /** Internal marker for historical JSON that cannot participate in a fail-closed recovery proof. */

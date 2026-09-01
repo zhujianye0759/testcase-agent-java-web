@@ -1094,6 +1094,12 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
                 SET validation_error_code=?, validation_error_path=?, validation_error_message=?
                 WHERE id=?
                 """, latest.code(), latest.path(), latest.storageMessage(), designWork);
+        // The terminal task envelope records the same latest safe diagnostic as the failed work.
+        jdbc.update("""
+                UPDATE generation_task
+                SET validation_error_code=?, validation_error_path=?, validation_error_message=?
+                WHERE id='task-1'
+                """, latest.code(), latest.path(), latest.storageMessage());
         jdbc.update("""
                 INSERT INTO structured_generation_attempt
                 (id, work_item_id, attempt_number, status, failure_type, created_at, completed_at,
@@ -1200,11 +1206,49 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
     }
 
     /** [Req-ID]: REQ-TGV2-015 */
+    @Test
+    void identityLabelRecoveryRetainsLegacySnapshotEnvelopeCompatibility() {
+        V2IdentityLabelRecoveryFixture fixture = v2IdentityLabelRecoveryFixture();
+        jdbc.update("""
+                UPDATE generation_task
+                SET result_snapshot=JSON_OBJECT('terminal', true),
+                    validation_error_code=NULL, validation_error_path=NULL, validation_error_message=NULL
+                WHERE id='task-1'
+                """);
+        List<Map<String, Object>> attemptsBefore = taskAttemptSnapshot("task-1");
+
+        assertThat(taskRepository.structuredRetryEligibility("task-1").canRetry()).isTrue();
+        assertThat(taskRepository.retryFailedBatches("task-1")).isEqualTo(1);
+        assertSoftly(softly -> {
+            softly.assertThat(taskRepository.taskStatus("task-1")).isEqualTo(GenerationTaskStatus.QUEUED);
+            softly.assertThat(jdbc.queryForList("""
+                    SELECT status FROM structured_generation_work_item
+                    WHERE id IN (?, ?) ORDER BY id
+                    """, String.class, fixture.designWorkIds().get(0), fixture.designWorkIds().get(1)))
+                    .containsOnly("QUEUED");
+            softly.assertThat(jdbc.queryForMap("""
+                    SELECT result_snapshot, validation_error_code, validation_error_path, validation_error_message,
+                           artifact_id, artifact_sha256, artifact_path
+                    FROM generation_task WHERE id='task-1'
+                    """)).containsEntry("result_snapshot", null)
+                    .containsEntry("validation_error_code", null)
+                    .containsEntry("validation_error_path", null)
+                    .containsEntry("validation_error_message", null)
+                    .containsEntry("artifact_id", "artifact-label-v2")
+                    .containsEntry("artifact_sha256", "e".repeat(64))
+                    .containsEntry("artifact_path", "fixture-label-v2.xlsx");
+            softly.assertThat(taskAttemptSnapshot("task-1")).isEqualTo(attemptsBefore);
+            softly.assertThat(taskRepository.findReadyArtifact("artifact-label-v2")).isEmpty();
+        });
+    }
+
+    /** [Req-ID]: REQ-TGV2-015 */
     @ParameterizedTest
     @ValueSource(strings = {"accepted-hash", "lease", "running-attempt", "wrong-code", "wrong-path",
             "wrong-failure-type", "wrong-operation", "latest-diagnostic-mismatch", "work-coverage",
             "artifact-identity", "test-point", "generation-outcome",
-            "test-case", "publication", "extra-unfinished", "wrong-design-identity", "v1-contract"})
+            "test-case", "publication", "extra-unfinished", "wrong-design-identity", "v1-contract",
+            "task-diagnostic-mismatch", "result-diagnostic-conflict"})
     void identityLabelRecoveryRejectsEveryNearStateWithoutMutation(String mutation) {
         V2IdentityLabelRecoveryFixture fixture = v2IdentityLabelRecoveryFixture();
         String designWork = fixture.designWorkIds().get(0);
@@ -1290,6 +1334,18 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
                     "f".repeat(64), designWork);
             case "v1-contract" -> jdbc.update(
                     "UPDATE generation_task SET workflow_version='1.0' WHERE id='task-1'");
+            case "task-diagnostic-mismatch" -> {
+                StructuredValidationFailure mismatch = StructuredValidationFailure.of(
+                        StructuredValidationFailure.Code.TESTCASE_UNSUPPORTED_BUSINESS_DETAIL,
+                        "$.testcases[99].name");
+                jdbc.update("""
+                        UPDATE generation_task
+                        SET validation_error_code=?, validation_error_path=?, validation_error_message=?
+                        WHERE id='task-1'
+                        """, mismatch.code(), mismatch.path(), mismatch.storageMessage());
+            }
+            case "result-diagnostic-conflict" -> jdbc.update(
+                    "UPDATE generation_task SET result_snapshot=JSON_OBJECT('terminal', true) WHERE id='task-1'");
             default -> throw new IllegalArgumentException("unknown mutation");
         }
         Map<String, Object> before = v2ExpectedResultsRecoveryFullSnapshot();
@@ -7319,6 +7375,9 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
                 "function-1", "订单提交", "业务/订单提交", "");
         List<String> designWorkIds = new java.util.ArrayList<>();
         int index = 0;
+        StructuredValidationFailure taskFailure = StructuredValidationFailure.of(
+                StructuredValidationFailure.Code.TESTCASE_UNSUPPORTED_BUSINESS_DETAIL,
+                "$.testcases[0].name");
         for (V2GenerationPlanner.PersistedFact fact : store.acceptedRequirementFactsV2("task-1", "function-1")) {
             V2GenerationPlanner.TestPointPlan point = planner.testPoint("task-1", function, fact);
             String workId = store.register(point.registration());
@@ -7332,11 +7391,11 @@ class StructuredGenerationAcceptanceStoreIntegrationTest {
         jdbc.update("""
                 UPDATE generation_task
                 SET status='PARTIAL', structured_processing_status='FAILED',
-                    structured_coverage_status='UNABLE_TO_GENERATE', result_snapshot=JSON_OBJECT('terminal', true),
+                    structured_coverage_status='UNABLE_TO_GENERATE', result_snapshot=NULL,
                     artifact_id='artifact-label-v2', artifact_sha256=?, artifact_path='fixture-label-v2.xlsx',
-                    validation_error_code=NULL, validation_error_path=NULL, validation_error_message=NULL
+                    validation_error_code=?, validation_error_path=?, validation_error_message=?
                 WHERE id='task-1'
-                """, "e".repeat(64));
+                """, "e".repeat(64), taskFailure.code(), taskFailure.path(), taskFailure.storageMessage());
         return new V2IdentityLabelRecoveryFixture(factClaim.workItemId(), List.copyOf(designWorkIds));
     }
 

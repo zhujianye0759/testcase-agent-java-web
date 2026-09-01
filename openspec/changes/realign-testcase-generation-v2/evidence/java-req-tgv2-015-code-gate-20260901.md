@@ -14,13 +14,14 @@
 - 最终实现复审发现字符串固定点会物化左右包装组合。新增 250 层前缀与 250 层后缀的公开 validator 边界测试，旧实现在 500ms 内超时且堆栈停在变体 `HashSet`；改为可达左右索引后不再复制笛卡尔积字符串并通过。首次实现编译时曾出现普通 lambda 捕获错误，已单独修正，不作为业务 RED。
 - 标准/实现轴复审随后指出：仅改为边界索引仍可能逐个比较大量共享长前缀的 terminal slice，CPU 最坏复杂度仍偏高。最终实现只保留同一起点的最短非空 terminal slice（较长且被包含的 slice 必然由此前缀蕴含），并用预计算失败表的 KMP 做线性包含匹配；新增长 unsupported core、100 条事实和 1000 个重叠后缀的公开 validator 回归。该项是静态复杂度发现后的防回归测试，最终 500ms 门槛通过，不虚构为旧实现已触发的 RED。
 - 最终标准复审还发现 exact composition 会为每条语义来源遍历标签的全部字符位置，即使包装边界极稀疏。新增 15,000 字符、100 条事实、连续 40 次公共校验的资源边界，旧实现于 500ms 超时且堆栈停在 `hasReachableIdentityComposition`；边界对象改为只遍历实际可达起止索引后 GREEN。
+- 首次部署的数据库全等门禁证明线上旧任务使用“`result_snapshot` 为空且 task 保存安全 `name` 误拒诊断”的历史终态外壳，而原测试夹具只覆盖“有快照、无 task 诊断”，因此 `canRetry` 仍为 false。新增真实外壳 RED 后，恢复门禁仅增加两种精确历史外壳的兼容：task 安全诊断必须与至少一个失败 work 的最新诊断完全一致；快照和诊断混合、部分诊断或不一致仍失败关闭。实现复审又发现旧快照用例只验证资格，没有执行 mutation；端到端测试随即 RED，证明 MySQL JSON 列与字符串参数的普通等值谓词会更新 0 行。最终 SQL 使用 `CAST(? AS JSON)` 做类型明确的原快照条件更新后 GREEN，旧 attempt、制品坐标和已发布事实仍原样保留。
 - 保留明确拒绝对照：跨功能、跨测试点、跨事实拼接、待确认测试点支撑正式标签、纯通用名称、角色/环境/阈值/状态/错误码臆造、部分业务写入和近似恢复状态。
 
 ## 测试与静态检查
 
 - validator 聚焦：35/35 通过。
-- REQ-TGV2-015 相关测试：`StructuredGenerationAcceptanceStoreIntegrationTest` 450、`V2StructuredAllGenerationCoordinatorTest` 8、`FunctionalTestcaseV2ValidatorTest` 35，共 493/493 通过。
-- 完整后端：1106/1106 通过，失败 0、错误 0、跳过 0；Maven `BUILD SUCCESS`（2026-09-01 10:33:48+08，06:13）。
+- REQ-TGV2-015 相关测试：`StructuredGenerationAcceptanceStoreIntegrationTest` 453、`V2StructuredAllGenerationCoordinatorTest` 8、`FunctionalTestcaseV2ValidatorTest` 35，共 496/496 通过。
+- 完整后端：1109/1109 通过，失败 0、错误 0、跳过 0；最终 Maven `BUILD SUCCESS`（2026-09-01 11:22:18+08，06:17）。
 - 前端：Vitest 58/58 通过；TypeScript 类型检查、ESLint、Vite 生产构建均通过。本轮没有前端代码变更。
 - `openspec validate realign-testcase-generation-v2 --strict`：通过。
 - `git diff --check`：退出码 0，仅有 Git 的 LF/CRLF 工作副本提示。
@@ -41,4 +42,5 @@
 
 ## 部署与 live 门禁
 
-待不可变 JAR 构建、唯一 8082 部署和 live 零副作用比对完成后补充。
+- 首次不可变 JAR `testcase-agent-backend-v2-identity-label-recovery-20260901-61db48e.jar`（54,537,093 bytes，SHA-256 `FD913376856D396101610433849E51D1E86E24F3FA4E8625501174895CF6AC0F`）已按单实例、3060 秒外层等待部署为 PID 14148。8082 `/api/tasks`、`/api/task-options` 与 5173 代理均为 HTTP 200，Flyway 仍为 V24；33 张表的计数、逐表摘要和全库摘要 `2256A7189B176C141B9B687C58560E6915F6CABF7E40F76F6688730808A3D7BD` 前后完全一致。
+- 该次 live 门禁未放行：`canRetry` 仍为 false。原因不是业务副作用，而是上述线上历史终态外壳此前未被测试覆盖；没有发送 retry。最终修复构件、部署身份和 `canRetry false -> true` 的全等复验待本轮代码门禁与最终部署完成后补充。
